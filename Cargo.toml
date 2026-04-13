@@ -1,0 +1,22 @@
+[package]
+name = "brrmmmm"
+version = "0.1.0"
+edition = "2024"
+description = "Standalone sidecar runner CLI for VZGLYD sidecar WASM modules"
+
+[[bin]]
+name = "brrmmmm"
+path = "src/main.rs"
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+wasmtime = { version = "32", features = ["component-model"] }
+wasmtime-wasi = "32"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+reqwest = { version = "0.12", features = ["blocking", "json", "rustls-tls"], default-features = false }
+tokio = { version = "1", features = ["full"] }
+anyhow = "1"
+thiserror = "2"
+ctrlc = "3"
+env_logger = "0.11"
