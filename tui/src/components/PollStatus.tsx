@@ -73,7 +73,7 @@ export function PollStatus({
       {isSleeping && (
         <Box flexDirection="row" gap={1}>
           <Text dimColor>next poll in:</Text>
-          <Text color="cyan" bold>
+          <Text color="#FFB300" bold>
             {countdown}
           </Text>
         </Box>

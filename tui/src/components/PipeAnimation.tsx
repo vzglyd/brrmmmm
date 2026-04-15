@@ -27,20 +27,22 @@ export function PipeAnimation({ publishedReceivedAt, cycleCount }: Props) {
     };
   }, [publishedReceivedAt]);
 
-  // Top-left: red when ingesting or processing; green when emitting; gray at idle.
+  const AMBER = "#FFB300";
+
+  // Top-left: red when ingesting or processing; amber when emitting; gray at idle.
   const tlColor =
     stage === "ingesting" || stage === "processing" ? "red"
-    : stage === "emitting" ? "green"
+    : stage === "emitting" ? AMBER
     : "gray";
 
-  // Bottom-left: red when ingesting only; green when processing or emitting; gray at idle.
+  // Bottom-left: red when ingesting only; amber when processing or emitting; gray at idle.
   const blColor =
     stage === "ingesting" ? "red"
-    : stage === "processing" || stage === "emitting" ? "green"
+    : stage === "processing" || stage === "emitting" ? AMBER
     : "gray";
 
-  // Right side: green when emitting; gray otherwise.
-  const rColor = stage === "emitting" ? "green" : "gray";
+  // Right side: amber when emitting; gray otherwise.
+  const rColor = stage === "emitting" ? AMBER : "gray";
 
   const icon =
     stage === "ingesting" ? "◀"

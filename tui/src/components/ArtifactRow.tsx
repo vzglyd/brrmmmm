@@ -12,8 +12,8 @@ interface Props {
 export function ArtifactRow({ artifacts, cycleCount }: Props) {
   const [focusedPane, setFocusedPane] = useState<"raw" | "output">("output");
 
-  useInput((input) => {
-    if (input === "\t") {
+  useInput((_input, key) => {
+    if (key.tab) {
       setFocusedPane((p) => (p === "raw" ? "output" : "raw"));
     }
   });

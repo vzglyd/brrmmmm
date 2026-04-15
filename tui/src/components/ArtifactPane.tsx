@@ -60,7 +60,7 @@ export function ArtifactPane({ title, artifact, isFocused }: Props) {
     <Box
       ref={boxRef}
       borderStyle="single"
-      borderColor={isFocused ? "cyan" : "gray"}
+      borderColor={isFocused ? "#FFB300" : "gray"}
       flexDirection="column"
       paddingX={1}
       flexGrow={1}
@@ -68,7 +68,7 @@ export function ArtifactPane({ title, artifact, isFocused }: Props) {
     >
       {/* Title row */}
       <Box flexDirection="row" justifyContent="space-between">
-        <Text bold color={isFocused ? "cyan" : "white"}>
+        <Text bold color={isFocused ? "#FFB300" : "white"}>
           {title}
         </Text>
         {scrollHint !== "" && <Text dimColor>{scrollHint}</Text>}
