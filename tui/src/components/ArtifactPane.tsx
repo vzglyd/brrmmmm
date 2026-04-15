@@ -8,6 +8,9 @@ interface Props {
   isFocused: boolean;
 }
 
+const AMBER = "#FFB300";
+const H_STEP = 8; // columns per left/right keypress
+
 function prettyJson(raw: string): string {
   try {
     return JSON.stringify(JSON.parse(raw), null, 2);
@@ -16,51 +19,97 @@ function prettyJson(raw: string): string {
   }
 }
 
+/**
+ * Build a vertical scrollbar as one character per content row.
+ * Returns spaces when the content fits without scrolling.
+ */
+function buildVScrollbar(
+  scrollTop: number,
+  totalLines: number,
+  visibleLines: number,
+): string[] {
+  if (totalLines <= visibleLines || visibleLines <= 0) {
+    return Array(visibleLines).fill(" ");
+  }
+  const thumbSize = Math.max(1, Math.round((visibleLines / totalLines) * visibleLines));
+  const maxThumbTop = visibleLines - thumbSize;
+  const thumbTop = Math.round((scrollTop / (totalLines - visibleLines)) * maxThumbTop);
+
+  return Array.from({ length: visibleLines }, (_, i) =>
+    i >= thumbTop && i < thumbTop + thumbSize ? "█" : "░",
+  );
+}
+
 export function ArtifactPane({ title, artifact, isFocused }: Props) {
   const [scrollTop, setScrollTop] = useState(0);
-  // Start with a reasonable guess; corrected after first layout measurement.
+  const [scrollLeft, setScrollLeft] = useState(0);
   const [visibleLines, setVisibleLines] = useState(10);
+  const [visibleCols, setVisibleCols] = useState(40);
   const boxRef = useRef<DOMElement>(null);
 
-  // Re-measure on every render so terminal resize is picked up automatically.
-  // React will skip the re-render if the value hasn't changed.
+  // Re-measure every render to pick up terminal resize.
   useEffect(() => {
     if (boxRef.current) {
-      const { height } = measureElement(boxRef.current);
-      // border top+bottom (2) + title row (1) + meta row (1) = 4 overhead
+      const { height, width } = measureElement(boxRef.current);
+      // Overhead: border×2 + title row + meta row = 4 vertical rows
       setVisibleLines(Math.max(1, height - 4));
+      // Overhead: border×2 + paddingX×2 + scrollbar col = 5 horizontal chars
+      setVisibleCols(Math.max(1, width - 5));
     }
   });
 
-  const lines = artifact ? prettyJson(artifact.preview).split("\n") : [];
-  const totalLines = lines.length;
+  const rawLines = artifact ? prettyJson(artifact.preview).split("\n") : [];
+  const totalLines = rawLines.length;
+  const maxLineWidth = rawLines.reduce((m, l) => Math.max(m, l.length), 0);
 
-  // Clamp scroll when content or viewport changes.
-  const maxScroll = Math.max(0, totalLines - visibleLines);
-  const safeScrollTop = Math.min(scrollTop, maxScroll);
+  const maxScrollV = Math.max(0, totalLines - visibleLines);
+  const maxScrollH = Math.max(0, maxLineWidth - visibleCols);
+
+  const safeTop = Math.min(scrollTop, maxScrollV);
+  const safeLeft = Math.min(scrollLeft, maxScrollH);
 
   useInput(
     (_, key) => {
-      if (key.upArrow) setScrollTop((t) => Math.max(0, t - 1));
-      if (key.downArrow) setScrollTop((t) => Math.min(t + 1, maxScroll));
-      if (key.pageUp) setScrollTop((t) => Math.max(0, t - visibleLines));
-      if (key.pageDown) setScrollTop((t) => Math.min(t + visibleLines, maxScroll));
+      if (key.upArrow)    setScrollTop((t)  => Math.max(0, t - 1));
+      if (key.downArrow)  setScrollTop((t)  => Math.min(t + 1, maxScrollV));
+      if (key.pageUp)     setScrollTop((t)  => Math.max(0, t - visibleLines));
+      if (key.pageDown)   setScrollTop((t)  => Math.min(t + visibleLines, maxScrollV));
+      if (key.leftArrow)  setScrollLeft((l) => Math.max(0, l - H_STEP));
+      if (key.rightArrow) setScrollLeft((l) => Math.min(l + H_STEP, maxScrollH));
     },
     { isActive: isFocused },
   );
 
-  const visibleContent = lines.slice(safeScrollTop, safeScrollTop + visibleLines);
+  // Reset horizontal scroll when new artifact arrives.
+  const prevKindRef = useRef<string | null>(null);
+  useEffect(() => {
+    const currentKind = artifact?.kind ?? null;
+    if (currentKind !== prevKindRef.current) {
+      setScrollTop(0);
+      setScrollLeft(0);
+      prevKindRef.current = currentKind;
+    }
+  }, [artifact?.kind]);
 
-  const scrollHint =
+  // Slice vertical viewport, then horizontal viewport per line.
+  const visibleContent = rawLines
+    .slice(safeTop, safeTop + visibleLines)
+    .map((line) => line.slice(safeLeft, safeLeft + visibleCols));
+
+  const scrollbar = buildVScrollbar(safeTop, totalLines, visibleLines);
+
+  // Title-row scroll indicator.
+  const vHint =
     totalLines > visibleLines
-      ? ` ${safeScrollTop > 0 ? "↑" : " "}${safeScrollTop + visibleLines < totalLines ? "↓" : " "} ${safeScrollTop + 1}–${Math.min(safeScrollTop + visibleLines, totalLines)}/${totalLines}`
+      ? ` ${safeTop > 0 ? "↑" : " "}${safeTop + visibleLines < totalLines ? "↓" : " "} ${safeTop + 1}–${Math.min(safeTop + visibleLines, totalLines)}/${totalLines}`
       : "";
+  const hHint = maxScrollH > 0 ? ` ←→ col ${safeLeft + 1}` : "";
 
   return (
     <Box
       ref={boxRef}
       borderStyle="single"
-      borderColor={isFocused ? "#FFB300" : "gray"}
+      borderColor={isFocused ? AMBER : "gray"}
       flexDirection="column"
       paddingX={1}
       flexGrow={1}
@@ -68,27 +117,47 @@ export function ArtifactPane({ title, artifact, isFocused }: Props) {
     >
       {/* Title row */}
       <Box flexDirection="row" justifyContent="space-between">
-        <Text bold color={isFocused ? "#FFB300" : "white"}>
+        <Text bold color={isFocused ? AMBER : "white"}>
           {title}
         </Text>
-        {scrollHint !== "" && <Text dimColor>{scrollHint}</Text>}
+        {(vHint || hHint) && (
+          <Text dimColor>{vHint}{hHint}</Text>
+        )}
       </Box>
 
-      {/* Content */}
       {!artifact ? (
         <Text dimColor>No {title.toLowerCase()} data yet</Text>
       ) : (
-        <Box flexDirection="column" overflow="hidden">
+        <>
+          {/* Meta row */}
           <Text dimColor>
-            {artifact.size_bytes}B —{" "}
+            {artifact.size_bytes < 1024
+              ? `${artifact.size_bytes}B`
+              : `${(artifact.size_bytes / 1024).toFixed(1)}KB`}
+            {" — "}
             {new Date(artifact.received_at_ms).toISOString().slice(11, 19)}
           </Text>
-          {visibleContent.map((line, i) => (
-            <Text key={safeScrollTop + i} wrap="truncate">
-              {line}
-            </Text>
-          ))}
-        </Box>
+
+          {/* Content + scrollbar */}
+          <Box flexDirection="row" overflow="hidden">
+            {/* Lines */}
+            <Box flexDirection="column" flexGrow={1} overflow="hidden">
+              {visibleContent.map((line, i) => (
+                <Text key={safeTop + i} wrap="truncate">
+                  {line || " "}
+                </Text>
+              ))}
+            </Box>
+            {/* Vertical scrollbar column */}
+            <Box flexDirection="column" width={1}>
+              {scrollbar.map((ch, i) => (
+                <Text key={i} dimColor={ch === "░"} color={ch === "█" ? AMBER : undefined}>
+                  {ch}
+                </Text>
+              ))}
+            </Box>
+          </Box>
+        </>
       )}
     </Box>
   );

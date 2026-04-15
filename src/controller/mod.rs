@@ -325,8 +325,7 @@ fn register_vzglyd_host_on_linker(
             let size = data.len();
             let received_at = now_ms();
 
-            let preview = String::from_utf8_lossy(data.get(..500.min(size)).unwrap_or(&data))
-                .into_owned();
+            let preview = String::from_utf8_lossy(&data).into_owned();
 
             let artifact = Artifact {
                 kind: "published_output".to_string(),
@@ -402,8 +401,7 @@ fn register_vzglyd_host_on_linker(
             };
             let size = data.len();
             let received_at = now_ms();
-            let preview = String::from_utf8_lossy(data.get(..500.min(size)).unwrap_or(&data))
-                .into_owned();
+            let preview = String::from_utf8_lossy(&data).into_owned();
 
             let artifact = Artifact {
                 kind: kind.clone(),
@@ -597,7 +595,7 @@ fn register_vzglyd_host_on_linker(
             if let crate::host::host_request::HostResponse::Http { status_code, body, .. } = &response {
                 if *status_code < 400 {
                     let received_at_ms = now_ms();
-                    let preview = String::from_utf8_lossy(&body[..body.len().min(500)]).into_owned();
+                    let preview = String::from_utf8_lossy(body).into_owned();
                     let raw_artifact = Artifact {
                         kind: "raw_source_payload".to_string(),
                         data: body.clone(),
