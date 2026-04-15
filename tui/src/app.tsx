@@ -4,6 +4,7 @@ import { Box, useApp, useInput } from "ink";
 import { type BrrEvent } from "./types.js";
 import { initialState, reducer } from "./store.js";
 import { useEventStream } from "./hooks/useEventStream.js";
+import { useTerminalSize } from "./hooks/useTerminalSize.js";
 
 import { Header } from "./components/Header.js";
 import { EnvPanel } from "./components/EnvPanel.js";
@@ -41,6 +42,8 @@ export function App({ wasmPath, rustBin, extraArgs }: AppProps) {
 
   useEventStream(rustBin, wasmPath, extraArgs, onEvent, onExit);
 
+  const { rows } = useTerminalSize();
+
   // q to quit
   useInput((input, key) => {
     if (input === "q" || (key.ctrl && input === "c")) {
@@ -51,7 +54,7 @@ export function App({ wasmPath, rustBin, extraArgs }: AppProps) {
   const { describe, polling } = state;
 
   return (
-    <Box flexDirection="column">
+    <Box flexDirection="column" height={rows} overflow="hidden">
       {/* Header */}
       <Header
         wasmPath={state.wasmPath}
@@ -80,8 +83,10 @@ export function App({ wasmPath, rustBin, extraArgs }: AppProps) {
       {/* Last request */}
       <RequestPanel request={state.lastRequest} />
 
-      {/* Three-column artifact row: raw | pipe animation | output */}
-      <ArtifactRow artifacts={state.artifacts} cycleCount={state.cycleCount} />
+      {/* Three-column artifact row: raw | pipe animation | output — grows to fill remaining space */}
+      <Box flexGrow={1} overflow="hidden">
+        <ArtifactRow artifacts={state.artifacts} cycleCount={state.cycleCount} />
+      </Box>
 
       {/* Log strip */}
       <EventLog logs={state.logs} />
