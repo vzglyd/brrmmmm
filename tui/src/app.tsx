@@ -40,14 +40,17 @@ export function App({ wasmPath, rustBin, extraArgs }: AppProps) {
     [dispatch]
   );
 
-  useEventStream(rustBin, wasmPath, extraArgs, onEvent, onExit);
+  const sendCommand = useEventStream(rustBin, wasmPath, extraArgs, onEvent, onExit);
 
   const { rows } = useTerminalSize();
 
-  // q to quit
+  // q = quit, f = force refresh (skip current sleep and poll immediately)
   useInput((input, key) => {
     if (input === "q" || (key.ctrl && input === "c")) {
       exit();
+    }
+    if (input === "f") {
+      sendCommand("force");
     }
   });
 
@@ -80,8 +83,8 @@ export function App({ wasmPath, rustBin, extraArgs }: AppProps) {
         </Box>
       </Box>
 
-      {/* Last request */}
-      <RequestPanel request={state.lastRequest} />
+      {/* Pipeline trace */}
+      <RequestPanel request={state.lastRequest} artifacts={state.artifacts} describe={state.describe} />
 
       {/* Three-column artifact row: raw | pipe animation | output — grows to fill remaining space */}
       <Box flexGrow={1} overflow="hidden">

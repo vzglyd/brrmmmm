@@ -45,7 +45,7 @@ export function PipeAnimation({ publishedReceivedAt, cycleCount }: Props) {
   const rColor = stage === "emitting" ? AMBER : "gray";
 
   const icon =
-    stage === "ingesting" ? "◀"
+    stage === "ingesting" ? "▶"
     : stage === "processing" ? "▶"
     : stage === "emitting" ? "◆"
     : "·";

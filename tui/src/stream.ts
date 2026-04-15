@@ -8,6 +8,7 @@ export type ExitCallback = (code: number | null) => void;
 export interface StreamHandle {
   process: ChildProcess;
   stop: () => void;
+  sendCommand: (cmd: string) => void;
 }
 
 /**
@@ -29,7 +30,7 @@ export function spawnEventStream(
   const child = spawn(
     rustBin,
     ["run", wasmPath, "--events", ...extraArgs],
-    { stdio: ["ignore", "pipe", "pipe"] }
+    { stdio: ["pipe", "pipe", "pipe"] }
   );
 
   const rl = createInterface({ input: child.stdout! });
@@ -56,6 +57,9 @@ export function spawnEventStream(
     process: child,
     stop: () => {
       child.kill("SIGTERM");
+    },
+    sendCommand: (cmd: string) => {
+      child.stdin?.write(cmd.endsWith("\n") ? cmd : cmd + "\n");
     },
   };
 }
