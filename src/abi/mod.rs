@@ -133,6 +133,22 @@ pub struct SidecarDescribe {
     pub artifact_types: Vec<String>,
 }
 
+impl std::fmt::Display for PollStrategy {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            PollStrategy::FixedInterval { interval_secs } => {
+                write!(f, "fixed_interval {interval_secs}s")
+            }
+            PollStrategy::ExponentialBackoff { base_secs, max_secs } => {
+                write!(f, "exponential_backoff base={base_secs}s max={max_secs}s")
+            }
+            PollStrategy::Jittered { base_secs, jitter_secs } => {
+                write!(f, "jittered base={base_secs}s jitter={jitter_secs}s")
+            }
+        }
+    }
+}
+
 // ── Artifact metadata ────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

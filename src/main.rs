@@ -3,14 +3,9 @@ use std::io::{BufRead, Write};
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand, ValueEnum};
 
-mod abi;
-mod controller;
-mod events;
-mod host;
-mod persistence;
-
-use controller::{SidecarController, inspect_wasm_contract, validate_inspection};
-use events::{EnvVarStatus, Event, EventSink, now_ts};
+use brrmmmm::controller::{SidecarController, inspect_wasm_contract, validate_inspection};
+use brrmmmm::events::{self, EnvVarStatus, Event, EventSink, now_ts};
+use brrmmmm::{params, persistence};
 
 #[derive(ValueEnum, Clone, Default, PartialEq)]
 enum OutputFormat {
@@ -205,54 +200,6 @@ fn main() -> Result<()> {
     }
 }
 
-fn parse_env_vars(raw: &[String]) -> Vec<(String, String)> {
-    raw.iter()
-        .filter_map(|s| {
-            s.split_once('=')
-                .map(|(k, v)| (k.to_string(), v.to_string()))
-        })
-        .collect()
-}
-
-fn parse_params_bytes(
-    params_json: Option<&str>,
-    params_file: Option<&str>,
-) -> Result<Option<Vec<u8>>> {
-    let raw = if let Some(raw) = params_json {
-        Some(raw.to_string())
-    } else if let Some(path) = params_file {
-        Some(std::fs::read_to_string(path).with_context(|| format!("read params file: {path}"))?)
-    } else {
-        None
-    };
-    let Some(raw) = raw else {
-        return Ok(None);
-    };
-
-    let value: serde_json::Value =
-        serde_json::from_str(&raw).context("sidecar params must be valid JSON")?;
-    if !value.is_object() {
-        anyhow::bail!("sidecar params must be a JSON object");
-    }
-    serde_json::to_vec(&value)
-        .map(Some)
-        .context("serialize sidecar params")
-}
-
-fn format_poll_strategy(poll: &abi::PollStrategy) -> String {
-    match poll {
-        abi::PollStrategy::FixedInterval { interval_secs } => {
-            format!("fixed_interval {interval_secs}s")
-        }
-        abi::PollStrategy::ExponentialBackoff { base_secs, max_secs } => {
-            format!("exponential_backoff base={base_secs}s max={max_secs}s")
-        }
-        abi::PollStrategy::Jittered { base_secs, jitter_secs } => {
-            format!("jittered base={base_secs}s jitter={jitter_secs}s")
-        }
-    }
-}
-
 fn print_table(rows: &[(&str, String)]) {
     let key_w = rows.iter().map(|(k, _)| k.len()).max().unwrap_or(0);
     let val_w = rows.iter().map(|(_, v)| v.len()).max().unwrap_or(0).min(60);
@@ -276,8 +223,8 @@ fn cmd_run(
     _verbose: bool,
     output: OutputFormat,
 ) -> Result<()> {
-    let env_vars = parse_env_vars(env);
-    let params_bytes = parse_params_bytes(params_json, params_file)?;
+    let env_vars = params::parse_env_vars(env);
+    let params_bytes = params::parse_params_bytes(params_json, params_file)?;
 
     let sink = if events_mode {
         EventSink::for_stdout()
@@ -480,7 +427,7 @@ fn cmd_inspect(wasm_path: &str, output: OutputFormat) -> Result<()> {
             );
             if let Some(d) = d {
                 if let Some(poll) = &d.poll_strategy {
-                    println!("poll_strategy:  {}", format_poll_strategy(poll));
+                    println!("poll_strategy:  {poll}");
                 }
                 println!("artifacts:      {}", d.artifact_types.join(", "));
                 if !d.optional_env_vars.is_empty() {
@@ -510,7 +457,7 @@ fn cmd_inspect(wasm_path: &str, output: OutputFormat) -> Result<()> {
             ];
             if let Some(d) = d {
                 if let Some(poll) = &d.poll_strategy {
-                    rows.push(("poll_strategy", format_poll_strategy(poll)));
+                    rows.push(("poll_strategy", poll.to_string()));
                 }
                 rows.push(("artifacts", d.artifact_types.join(", ")));
                 if !d.optional_env_vars.is_empty() {

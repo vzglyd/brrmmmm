@@ -4,7 +4,7 @@ pub const WIRE_VERSION: u8 = 1;
 
 // ── Host-mediated request (sidecar → host) ─────────────────────────
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum HostRequest {
     HttpsGet {
@@ -21,7 +21,7 @@ pub enum HostRequest {
     },
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Header {
     pub name: String,
     pub value: String,
@@ -33,7 +33,7 @@ fn default_timeout() -> u32 {
 
 // ── Host response (host → sidecar) ─────────────────────────────────
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum HostResponse {
     Http {
@@ -51,7 +51,7 @@ pub enum HostResponse {
     },
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ErrorKind {
     Dns,
@@ -78,7 +78,6 @@ struct VersionedResponse {
     payload: HostResponse,
 }
 
-#[allow(dead_code)]
 pub fn encode_request(req: &HostRequest) -> Vec<u8> {
     let wrapper = VersionedRequest {
         wire_version: WIRE_VERSION,
@@ -87,7 +86,6 @@ pub fn encode_request(req: &HostRequest) -> Vec<u8> {
     serde_json::to_vec(&wrapper).expect("serialize host request")
 }
 
-#[allow(dead_code)]
 pub fn decode_response(bytes: &[u8]) -> Result<HostResponse, String> {
     let wrapper: VersionedResponse =
         serde_json::from_slice(bytes).map_err(|e| format!("decode response: {e}"))?;
