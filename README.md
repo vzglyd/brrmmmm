@@ -6,44 +6,56 @@ Loads any `wasm32-wasip1` sidecar, provides the host ABI it expects, and deliver
 
 ## 30-second demo
 
-![Terminal demo](demos/terminal.gif)
+![CLI demo](demos/cli.gif)
+
+![TUI demo](demos/tui.gif)
 
 ```bash
-# Install
-cargo install --git https://github.com/vzglyd/brrmmmm
-
-# Build the demo weather sidecar (no API key required)
+# Clone and install (the demo sidecar WASM is pre-built in demos/)
 git clone https://github.com/vzglyd/brrmmmm && cd brrmmmm
-rustup target add wasm32-wasip1
-cargo build --manifest-path sidecars/demo-weather/Cargo.toml \
-  --target wasm32-wasip1 --release
-WASM=sidecars/demo-weather/target/wasm32-wasip1/release/demo_weather_sidecar.wasm
+cargo install --path .
+WASM=demos/demo_weather_sidecar.wasm
 
-# Validate, inspect, fetch, watch
+# Validate, inspect, one-shot fetch
 brrmmmm validate $WASM
-brrmmmm inspect $WASM
-brrmmmm run $WASM --once
-brrmmmm $WASM
+brrmmmm --output table inspect $WASM
+brrmmmm --output json run $WASM --once
 ```
 
-`brrmmmm run --once` prints:
+`brrmmmm --output json run --once` prints:
 
 ```json
-{"ok":true,"location":"Berlin","temperature_c":14.2,"condition":"partly cloudy","wind_speed_ms":3.1,"is_day":true}
+{"condition":"partly cloudy","is_day":true,"location":"Berlin","ok":true,"temperature_c":14.2,"wind_speed_ms":3.1}
+```
+
+For the TUI, build the Node.js frontend first (requires Node.js):
+
+```bash
+npm --prefix tui run build
+brrmmmm $WASM
 ```
 
 ## Install
 
 ```bash
-cargo install --git https://github.com/vzglyd/brrmmmm
+git clone https://github.com/vzglyd/brrmmmm && cd brrmmmm
+cargo install --path .
 ```
 
 Requires Rust stable. Verify with `brrmmmm --version`.
 
-To also build sidecars (including the demo), you need the `wasm32-wasip1` target:
+The repo includes a pre-built demo sidecar at `demos/demo_weather_sidecar.wasm` — no additional toolchain needed to run the demo.
+
+To build sidecars from source (including your own):
 
 ```bash
 rustup target add wasm32-wasip1
+```
+
+To use the TUI (`brrmmmm sidecar.wasm` without a subcommand), build the Node.js frontend from the cloned repo:
+
+```bash
+npm --prefix tui run build   # requires Node.js 20+
 ```
 
 ## Usage

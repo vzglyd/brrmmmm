@@ -8,6 +8,14 @@ repository = "https://github.com/vzglyd/brrmmmm"
 homepage = "https://github.com/vzglyd/brrmmmm"
 documentation = "https://docs.rs/brrmmmm"
 readme = "README.md"
+exclude = [
+    ".codex",
+    ".github",
+    "demos",
+    "docs",
+    "sidecars",
+    "tui",
+]
 
 [[bin]]
 name = "brrmmmm"

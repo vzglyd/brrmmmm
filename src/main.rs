@@ -35,9 +35,10 @@ EXAMPLES:
     version
 )]
 struct Cli {
-    /// Output format: text (default), json, or table
-    #[arg(long, global = true, value_enum, default_value_t = OutputFormat::Text)]
-    output: OutputFormat,
+    /// Output format: json, text, or table.
+    /// Default: json for inspect, text for validate and run.
+    #[arg(long, global = true, value_enum)]
+    output: Option<OutputFormat>,
 
     #[command(subcommand)]
     command: Commands,
@@ -117,6 +118,13 @@ fn find_tui_script() -> Option<std::path::PathBuf> {
             }
         }
     }
+    // CWD: user runs from within the cloned repo after cargo install --path .
+    if let Ok(cwd) = std::env::current_dir() {
+        let p = cwd.join("tui/dist/index.js");
+        if p.exists() {
+            return Some(p);
+        }
+    }
     None
 }
 
@@ -188,10 +196,12 @@ fn main() -> Result<()> {
             log_channel,
             events,
             verbose,
-            cli.output,
+            cli.output.unwrap_or(OutputFormat::Text),
         ),
-        Commands::Inspect { wasm_path } => cmd_inspect(&wasm_path, cli.output),
-        Commands::Validate { wasm_path } => cmd_validate(&wasm_path, cli.output),
+        Commands::Inspect { wasm_path } =>
+            cmd_inspect(&wasm_path, cli.output.unwrap_or(OutputFormat::Json)),
+        Commands::Validate { wasm_path } =>
+            cmd_validate(&wasm_path, cli.output.unwrap_or(OutputFormat::Text)),
     }
 }
 

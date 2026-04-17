@@ -1,4 +1,5 @@
 target/
+sidecars/**/target/
 .moon/cache/
 node_modules/
 tui/node_modules/

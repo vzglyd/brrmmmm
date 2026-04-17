@@ -10,8 +10,9 @@
   },
   "homepage": "https://github.com/vzglyd/brrmmmm#readme",
   "type": "module",
+  "private": true,
   "bin": {
-    "brrmmmm": "./dist/index.js"
+    "brrmmmm-tui": "./dist/index.js"
   },
   "scripts": {
     "build": "tsc",
