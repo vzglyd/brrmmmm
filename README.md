@@ -4,6 +4,48 @@ Standalone sidecar runner for VZGLYD sidecar WASM modules.
 
 Loads any `wasm32-wasip1` sidecar, provides the host ABI it expects, and delivers the data payload to stdout.
 
+## 30-second demo
+
+![Terminal demo](demos/terminal.gif)
+
+```bash
+# Install
+cargo install --git https://github.com/vzglyd/brrmmmm
+
+# Build the demo weather sidecar (no API key required)
+git clone https://github.com/vzglyd/brrmmmm && cd brrmmmm
+rustup target add wasm32-wasip1
+cargo build --manifest-path sidecars/demo-weather/Cargo.toml \
+  --target wasm32-wasip1 --release
+WASM=sidecars/demo-weather/target/wasm32-wasip1/release/demo_weather_sidecar.wasm
+
+# Validate, inspect, fetch, watch
+brrmmmm validate $WASM
+brrmmmm inspect $WASM
+brrmmmm run $WASM --once
+brrmmmm $WASM
+```
+
+`brrmmmm run --once` prints:
+
+```json
+{"ok":true,"location":"Berlin","temperature_c":14.2,"condition":"partly cloudy","wind_speed_ms":3.1,"is_day":true}
+```
+
+## Install
+
+```bash
+cargo install --git https://github.com/vzglyd/brrmmmm
+```
+
+Requires Rust stable. Verify with `brrmmmm --version`.
+
+To also build sidecars (including the demo), you need the `wasm32-wasip1` target:
+
+```bash
+rustup target add wasm32-wasip1
+```
+
 ## Usage
 
 ```bash
@@ -67,6 +109,18 @@ brrmmmm sidecar.wasm
 Application code should consume `published_output`. `raw_source_payload` and `normalized_payload` are debugging artifacts for developers and TUI frontends.
 
 See `docs/frontend-protocol.md` for the stable NDJSON/stdin frontend protocol and `docs/release-checklist.md` for the public-release gate.
+
+## Why WASM sidecars?
+
+**Why not containers?** Cold-start time, memory overhead, and orchestration complexity are all wrong for this use case. A WASM sidecar loads in under 5ms and consumes under 10MB at peak; a Docker container for the same job would be 10–100× heavier.
+
+**Why not a native plugin (.so / .dylib)?** Native plugins break ABI across OS versions, compiler versions, and architectures. A WASM binary compiles once and runs identically on Linux x86_64, macOS ARM, and embedded targets.
+
+**Why ~2MB? That seems large for "just a WASM."** Each sidecar bundles its own DNS resolver, TLS stack, and HTTP parser — so it has zero runtime dependencies beyond WASI sockets. The host doesn't need a TLS library, a JSON parser, or API-specific knowledge. The 2MB is a one-time cost that buys complete isolation.
+
+**Why not just have the host make HTTP calls?** The host would then need to know the API endpoint, authentication scheme, response schema, and parsing logic for every sidecar. That coupling defeats the purpose: the sidecar author owns everything about the data source; the host author owns everything about the runtime environment.
+
+**Is the ABI stable?** `vzglyd_sidecar_abi_version()` returns the ABI version the sidecar was compiled against. brrmmmm refuses to load mismatched versions. New ABI features are additive.
 
 ## Architecture
 

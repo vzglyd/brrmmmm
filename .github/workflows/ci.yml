@@ -1,0 +1,46 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: '1.94.0'
+          targets: wasm32-wasip1
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24.11.1'
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-
+
+      - name: Cache Moon outputs
+        uses: actions/cache@v4
+        with:
+          path: .moon/cache
+          key: ${{ runner.os }}-moon-${{ hashFiles('**/*.toml', '**/*.yml', '**/*.json', 'src/**', 'tui/src/**', 'fixtures/**') }}
+          restore-keys: ${{ runner.os }}-moon-
+
+      - name: Install TUI deps
+        run: npm ci --prefix tui
+
+      - name: Run core:ci
+        run: npx --package @moonrepo/cli@2.2.1 moon run core:ci

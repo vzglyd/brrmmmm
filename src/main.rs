@@ -1,7 +1,7 @@
 use std::io::{BufRead, Write};
 
 use anyhow::{Context, Result};
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 
 mod abi;
 mod controller;
@@ -12,13 +12,33 @@ mod persistence;
 use controller::{SidecarController, inspect_wasm_contract, validate_inspection};
 use events::{EnvVarStatus, Event, EventSink, now_ts};
 
+#[derive(ValueEnum, Clone, Default, PartialEq)]
+enum OutputFormat {
+    #[default]
+    Text,
+    Json,
+    Table,
+}
+
 #[derive(Parser)]
 #[command(
     name = "brrmmmm",
-    about = "Standalone sidecar runner for VZGLYD sidecar WASM modules\n\nOpenAPI describes the endpoint. brrmmmm describes the behavior.",
+    about = "Standalone sidecar runner for VZGLYD sidecar WASM modules",
+    after_help = "\
+EXAMPLES:
+  brrmmmm validate sidecar.wasm
+  brrmmmm validate sidecar.wasm --output table
+  brrmmmm inspect  sidecar.wasm --output table
+  brrmmmm run      sidecar.wasm --once
+  brrmmmm run      sidecar.wasm --once --output json
+  brrmmmm          sidecar.wasm              # launches TUI",
     version
 )]
 struct Cli {
+    /// Output format: text (default), json, or table
+    #[arg(long, global = true, value_enum, default_value_t = OutputFormat::Text)]
+    output: OutputFormat,
+
     #[command(subcommand)]
     command: Commands,
 }
@@ -76,8 +96,75 @@ enum Commands {
     },
 }
 
+fn find_tui_script() -> Option<std::path::PathBuf> {
+    if let Ok(val) = std::env::var("BRRMMMM_TUI") {
+        let p = std::path::PathBuf::from(val);
+        if p.exists() {
+            return Some(p);
+        }
+    }
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            // Packaged install: tui/ lives next to the binary
+            let p = dir.join("tui/dist/index.js");
+            if p.exists() {
+                return Some(p);
+            }
+            // Dev layout: target/release/brrmmmm → ../../tui/dist/index.js
+            let p = dir.join("../../tui/dist/index.js");
+            if p.exists() {
+                return Some(p);
+            }
+        }
+    }
+    None
+}
+
+fn launch_tui(args: &[String]) -> ! {
+    let Some(tui) = find_tui_script() else {
+        eprintln!(
+            "[brrmmmm] TUI not found. Build it with: npm --prefix tui run build\n\
+             [brrmmmm] Or set BRRMMMM_TUI=/path/to/tui/dist/index.js"
+        );
+        std::process::exit(1);
+    };
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        let err = std::process::Command::new("node")
+            .arg(&tui)
+            .args(args)
+            .exec();
+        eprintln!("[brrmmmm] failed to exec node: {err}");
+        std::process::exit(1);
+    }
+
+    #[cfg(not(unix))]
+    {
+        let status = std::process::Command::new("node")
+            .arg(&tui)
+            .args(args)
+            .status()
+            .unwrap_or_else(|e| {
+                eprintln!("[brrmmmm] failed to launch node: {e}");
+                std::process::exit(1);
+            });
+        std::process::exit(status.code().unwrap_or(1));
+    }
+}
+
 fn main() -> Result<()> {
     env_logger::init();
+
+    let raw: Vec<String> = std::env::args().skip(1).collect();
+    if let Some(first) = raw.first() {
+        let known = ["run", "inspect", "validate"];
+        if first.ends_with(".wasm") && !known.contains(&first.as_str()) {
+            launch_tui(&raw);
+        }
+    }
+
     let cli = Cli::parse();
 
     match cli.command {
@@ -101,9 +188,10 @@ fn main() -> Result<()> {
             log_channel,
             events,
             verbose,
+            cli.output,
         ),
-        Commands::Inspect { wasm_path } => cmd_inspect(&wasm_path),
-        Commands::Validate { wasm_path } => cmd_validate(&wasm_path),
+        Commands::Inspect { wasm_path } => cmd_inspect(&wasm_path, cli.output),
+        Commands::Validate { wasm_path } => cmd_validate(&wasm_path, cli.output),
     }
 }
 
@@ -141,6 +229,31 @@ fn parse_params_bytes(
         .context("serialize sidecar params")
 }
 
+fn format_poll_strategy(poll: &abi::PollStrategy) -> String {
+    match poll {
+        abi::PollStrategy::FixedInterval { interval_secs } => {
+            format!("fixed_interval {interval_secs}s")
+        }
+        abi::PollStrategy::ExponentialBackoff { base_secs, max_secs } => {
+            format!("exponential_backoff base={base_secs}s max={max_secs}s")
+        }
+        abi::PollStrategy::Jittered { base_secs, jitter_secs } => {
+            format!("jittered base={base_secs}s jitter={jitter_secs}s")
+        }
+    }
+}
+
+fn print_table(rows: &[(&str, String)]) {
+    let key_w = rows.iter().map(|(k, _)| k.len()).max().unwrap_or(0);
+    let val_w = rows.iter().map(|(_, v)| v.len()).max().unwrap_or(0).min(60);
+    let sep = "─".repeat(key_w + 2 + val_w);
+    println!("{:<key_w$}  {}", "Field", "Value");
+    println!("{sep}");
+    for (k, v) in rows {
+        println!("{:<key_w$}  {}", k, v);
+    }
+}
+
 fn cmd_run(
     wasm_path: &str,
     once: bool,
@@ -151,6 +264,7 @@ fn cmd_run(
     log_channel: bool,
     events_mode: bool,
     _verbose: bool,
+    output: OutputFormat,
 ) -> Result<()> {
     let env_vars = parse_env_vars(env);
     let params_bytes = parse_params_bytes(params_json, params_file)?;
@@ -190,14 +304,45 @@ fn cmd_run(
         loop {
             if let Some(data) = controller.poll_output() {
                 if !events_mode {
-                    std::io::stdout().write_all(&data)?;
-                    std::io::stdout().write_all(b"\n")?;
-                }
-                if !events_mode {
-                    eprintln!(
-                        "[brrmmmm] payload received ({} bytes), stopping",
-                        data.len()
-                    );
+                    match output {
+                        OutputFormat::Json => {
+                            match serde_json::from_slice::<serde_json::Value>(&data) {
+                                Ok(v) => println!("{}", serde_json::to_string_pretty(&v).unwrap()),
+                                Err(_) => {
+                                    eprintln!("[brrmmmm] payload is not valid JSON, emitting raw");
+                                    std::io::stdout().write_all(&data)?;
+                                    std::io::stdout().write_all(b"\n")?;
+                                }
+                            }
+                        }
+                        OutputFormat::Table => {
+                            match serde_json::from_slice::<serde_json::Value>(&data) {
+                                Ok(serde_json::Value::Object(map)) => {
+                                    let rows: Vec<(&str, String)> = map
+                                        .iter()
+                                        .map(|(k, v)| {
+                                            let s = match v {
+                                                serde_json::Value::String(s) => s.clone(),
+                                                other => other.to_string(),
+                                            };
+                                            (k.as_str(), s)
+                                        })
+                                        .collect();
+                                    print_table(&rows);
+                                }
+                                _ => {
+                                    eprintln!("[brrmmmm] payload is not a JSON object, emitting raw");
+                                    std::io::stdout().write_all(&data)?;
+                                    std::io::stdout().write_all(b"\n")?;
+                                }
+                            }
+                        }
+                        OutputFormat::Text => {
+                            std::io::stdout().write_all(&data)?;
+                            std::io::stdout().write_all(b"\n")?;
+                        }
+                    }
+                    eprintln!("[brrmmmm] payload received ({} bytes), stopping", data.len());
                 }
                 controller.stop();
                 return Ok(());
@@ -299,39 +444,148 @@ fn cmd_run(
     }
 }
 
-fn cmd_inspect(wasm_path: &str) -> Result<()> {
-    eprintln!("[brrmmmm] inspecting {wasm_path}");
-
+fn cmd_inspect(wasm_path: &str, output: OutputFormat) -> Result<()> {
     let inspection = inspect_wasm_contract(wasm_path)?;
-    println!("{}", serde_json::to_string_pretty(&inspection).unwrap());
+
+    match output {
+        OutputFormat::Json => {
+            println!("{}", serde_json::to_string_pretty(&inspection).unwrap());
+        }
+        OutputFormat::Text => {
+            eprintln!("[brrmmmm] inspecting {wasm_path}");
+            let d = inspection.describe.as_ref();
+            println!(
+                "logical_id:     {}",
+                d.map(|d| d.logical_id.as_str()).unwrap_or("-")
+            );
+            println!(
+                "name:           {}",
+                d.map(|d| d.name.as_str()).unwrap_or("-")
+            );
+            println!("abi_version:    {}", inspection.abi_version);
+            println!("size_bytes:     {}", inspection.wasm_size_bytes);
+            println!(
+                "entrypoint:     {}",
+                inspection.entrypoint.as_deref().unwrap_or("-")
+            );
+            if let Some(d) = d {
+                if let Some(poll) = &d.poll_strategy {
+                    println!("poll_strategy:  {}", format_poll_strategy(poll));
+                }
+                println!("artifacts:      {}", d.artifact_types.join(", "));
+                if !d.optional_env_vars.is_empty() {
+                    let names: Vec<&str> = d
+                        .optional_env_vars
+                        .iter()
+                        .map(|e| e.name.as_str())
+                        .collect();
+                    println!("optional_env:   {}", names.join(", "));
+                }
+            }
+        }
+        OutputFormat::Table => {
+            let d = inspection.describe.as_ref();
+            let mut rows: Vec<(&str, String)> = vec![
+                (
+                    "logical_id",
+                    d.map(|d| d.logical_id.clone()).unwrap_or_default(),
+                ),
+                ("name", d.map(|d| d.name.clone()).unwrap_or_default()),
+                ("abi_version", inspection.abi_version.to_string()),
+                ("size_bytes", inspection.wasm_size_bytes.to_string()),
+                (
+                    "entrypoint",
+                    inspection.entrypoint.clone().unwrap_or_default(),
+                ),
+            ];
+            if let Some(d) = d {
+                if let Some(poll) = &d.poll_strategy {
+                    rows.push(("poll_strategy", format_poll_strategy(poll)));
+                }
+                rows.push(("artifacts", d.artifact_types.join(", ")));
+                if !d.optional_env_vars.is_empty() {
+                    let names: Vec<&str> = d
+                        .optional_env_vars
+                        .iter()
+                        .map(|e| e.name.as_str())
+                        .collect();
+                    rows.push(("optional_env", names.join(", ")));
+                }
+            }
+            print_table(&rows);
+        }
+    }
     Ok(())
 }
 
-fn cmd_validate(wasm_path: &str) -> Result<()> {
-    eprintln!("[brrmmmm] validating {wasm_path}");
-
+fn cmd_validate(wasm_path: &str, output: OutputFormat) -> Result<()> {
     let inspection = inspect_wasm_contract(wasm_path)
         .with_context(|| format!("WASM module failed to compile/validate: {wasm_path}"))?;
     validate_inspection(&inspection)?;
 
-    eprintln!("[brrmmmm] ✓ WASM module validates successfully");
-    eprintln!(
-        "[brrmmmm]   entry: {}",
-        inspection.entrypoint.as_deref().unwrap_or("unknown")
-    );
-    eprintln!("[brrmmmm]   ABI: v{}", inspection.abi_version);
-    eprintln!("[brrmmmm]   size: {} bytes", inspection.wasm_size_bytes);
-    if let Some(describe) = &inspection.describe {
-        eprintln!(
-            "[brrmmmm]   contract: {} ({})",
-            describe.name, describe.logical_id
-        );
-        if !describe.run_modes.is_empty() {
-            eprintln!("[brrmmmm]   modes: {}", describe.run_modes.join(", "));
+    match output {
+        OutputFormat::Text => {
+            eprintln!("[brrmmmm] validating {wasm_path}");
+            eprintln!("[brrmmmm] ✓ WASM module validates successfully");
+            eprintln!(
+                "[brrmmmm]   entry: {}",
+                inspection.entrypoint.as_deref().unwrap_or("unknown")
+            );
+            eprintln!("[brrmmmm]   ABI: v{}", inspection.abi_version);
+            eprintln!("[brrmmmm]   size: {} bytes", inspection.wasm_size_bytes);
+            if let Some(describe) = &inspection.describe {
+                eprintln!(
+                    "[brrmmmm]   contract: {} ({})",
+                    describe.name, describe.logical_id
+                );
+                if !describe.run_modes.is_empty() {
+                    eprintln!("[brrmmmm]   modes: {}", describe.run_modes.join(", "));
+                }
+            }
+            if !inspection.brrmmmm_exports.is_empty() {
+                eprintln!(
+                    "[brrmmmm]   exports: {}",
+                    inspection.brrmmmm_exports.join(", ")
+                );
+            }
         }
-    }
-    if !inspection.brrmmmm_exports.is_empty() {
-        eprintln!("[brrmmmm]   exports: {}", inspection.brrmmmm_exports.join(", "));
+        OutputFormat::Json => {
+            let d = inspection.describe.as_ref();
+            let obj = serde_json::json!({
+                "valid": true,
+                "abi_version": inspection.abi_version,
+                "size_bytes": inspection.wasm_size_bytes,
+                "entrypoint": inspection.entrypoint,
+                "name": d.map(|d| &d.name),
+                "logical_id": d.map(|d| &d.logical_id),
+                "modes": d.map(|d| &d.run_modes),
+                "exports": inspection.brrmmmm_exports,
+            });
+            println!("{}", serde_json::to_string_pretty(&obj).unwrap());
+        }
+        OutputFormat::Table => {
+            let d = inspection.describe.as_ref();
+            let mut rows: Vec<(&str, String)> = vec![
+                ("valid", "✓".to_string()),
+                ("abi_version", inspection.abi_version.to_string()),
+                ("size_bytes", inspection.wasm_size_bytes.to_string()),
+                (
+                    "entrypoint",
+                    inspection.entrypoint.clone().unwrap_or_default(),
+                ),
+            ];
+            if let Some(d) = d {
+                rows.push(("name", d.name.clone()));
+                rows.push(("logical_id", d.logical_id.clone()));
+                if !d.run_modes.is_empty() {
+                    rows.push(("modes", d.run_modes.join(", ")));
+                }
+            }
+            if !inspection.brrmmmm_exports.is_empty() {
+                rows.push(("exports", inspection.brrmmmm_exports.join(", ")));
+            }
+            print_table(&rows);
+        }
     }
 
     Ok(())

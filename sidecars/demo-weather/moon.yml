@@ -1,0 +1,25 @@
+$schema: '../../.moon/cache/schemas/project.json'
+
+language: 'rust'
+
+project:
+  title: 'demo weather sidecar'
+  description: 'Fetches current weather from Open-Meteo. No API key required. Demonstrates the brrmmmm host ABI.'
+
+tasks:
+  target:
+    command: 'rustup target add wasm32-wasip1'
+
+  build:
+    command: 'cargo build'
+    args:
+      - '--target'
+      - 'wasm32-wasip1'
+      - '--release'
+    deps:
+      - 'target'
+    inputs:
+      - 'Cargo.toml'
+      - 'src/**/*'
+    outputs:
+      - 'target/wasm32-wasip1/release/demo_weather_sidecar.wasm'
