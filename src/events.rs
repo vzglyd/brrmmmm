@@ -62,16 +62,11 @@ pub enum Event {
         describe: SidecarDescribe,
     },
     /// Emitted once at startup to record which env vars are present.
-    EnvSnapshot {
-        ts: String,
-        vars: Vec<EnvVarStatus>,
-    },
+    EnvSnapshot { ts: String, vars: Vec<EnvVarStatus> },
     /// Emitted when the sidecar's phase changes.
-    Phase {
-        ts: String,
-        phase: SidecarPhase,
-    },
+    Phase { ts: String, phase: SidecarPhase },
     /// Forwarded from a v2 sidecar's take_events() ring buffer.
+    #[allow(dead_code)]
     GuestEventFwd {
         ts: String,
         guest_ts_ms: u64,
@@ -117,15 +112,9 @@ pub enum Event {
         wake_at: String,
     },
     /// Emitted when the sidecar produces a log_info message.
-    Log {
-        ts: String,
-        message: String,
-    },
+    Log { ts: String, message: String },
     /// Emitted when the sidecar's WASM execution terminates.
-    SidecarExit {
-        ts: String,
-        reason: String,
-    },
+    SidecarExit { ts: String, reason: String },
 }
 
 // ── Env var status ───────────────────────────────────────────────────

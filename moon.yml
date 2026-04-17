@@ -1,0 +1,74 @@
+$schema: './.moon/cache/schemas/project.json'
+
+language: 'rust'
+
+project:
+  title: 'brrmmmm core'
+  description: 'Rust host runtime and CLI for VZGLYD sidecar WASM modules.'
+
+tasks:
+  check:
+    command: 'cargo check'
+    inputs:
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'src/**/*'
+      - 'tests/**/*'
+      - 'fixtures/deterministic-sidecar/**/*'
+
+  test:
+    command: 'cargo test'
+    deps:
+      - 'fixture-sidecar:target'
+    inputs:
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'src/**/*'
+      - 'tests/**/*'
+      - 'fixtures/deterministic-sidecar/**/*'
+
+  build:
+    command: 'cargo build'
+    args:
+      - '--release'
+    inputs:
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'src/**/*'
+    outputs:
+      - 'target/release/brrmmmm'
+
+  package:
+    command: 'cargo package'
+    args:
+      - '--allow-dirty'
+    deps:
+      - 'build'
+    inputs:
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'src/**/*'
+      - 'README.md'
+
+  ci:
+    command: 'cargo metadata'
+    args:
+      - '--no-deps'
+      - '--format-version'
+      - '1'
+    deps:
+      - 'check'
+      - 'test'
+      - 'tui:build'
+      - 'fixture-sidecar:build'
+    options:
+      runDepsInParallel: false
+
+  release-dry-run:
+    command: 'cargo package'
+    args:
+      - '--allow-dirty'
+    deps:
+      - 'ci'
+    options:
+      runDepsInParallel: false

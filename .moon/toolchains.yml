@@ -1,0 +1,13 @@
+$schema: './cache/schemas/toolchains.json'
+
+rust:
+  version: '1.94.0'
+
+javascript:
+  packageManager: 'npm'
+  inferTasksFromScripts: true
+
+node:
+  version: '24.11.1'
+
+npm: {}

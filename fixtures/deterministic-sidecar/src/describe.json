@@ -1,0 +1,43 @@
+{
+  "schema_version": 1,
+  "logical_id": "brrmmmm.fixture.deterministic",
+  "name": "Deterministic Fixture Sidecar",
+  "description": "A stable sidecar used to prove brrmmmm contract and output behavior.",
+  "abi_version": 2,
+  "run_modes": ["managed_polling", "interactive"],
+  "state_persistence": "host_persisted",
+  "required_env_vars": [],
+  "optional_env_vars": [
+    {
+      "name": "FIXTURE_LABEL",
+      "description": "Optional label used by fixture consumers."
+    }
+  ],
+  "params": {
+    "fields": [
+      {
+        "key": "label",
+        "type": "string",
+        "required": false,
+        "label": "Label",
+        "help": "A human-readable label for fixture output.",
+        "default": "fixture",
+        "options": []
+      }
+    ]
+  },
+  "capabilities_needed": [],
+  "poll_strategy": {
+    "kind": "fixed_interval",
+    "interval_secs": 60
+  },
+  "cooldown_policy": {
+    "authority": "host_persisted",
+    "min_interval_ms": 60000
+  },
+  "artifact_types": [
+    "raw_source_payload",
+    "normalized_payload",
+    "published_output"
+  ]
+}

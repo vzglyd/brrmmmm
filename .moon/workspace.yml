@@ -1,0 +1,6 @@
+$schema: './cache/schemas/workspace.json'
+
+projects:
+  core: '.'
+  tui: 'tui'
+  fixture-sidecar: 'fixtures/deterministic-sidecar'

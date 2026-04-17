@@ -41,8 +41,8 @@ const AMBER = "#FFB300";
 
 export function Header({ wasmPath, abiVersion, describe }: Props) {
   const name = describe?.name ?? wasmPath.split("/").pop() ?? wasmPath;
-  const desc = describe?.description ?? "v1 sidecar (no manifest)";
-  const modes = describe?.run_modes?.join(", ") ?? "legacy";
+  const desc = describe?.description ?? "waiting for sidecar manifest";
+  const modes = describe?.run_modes?.join(", ") ?? "starting";
 
   return (
     <Box

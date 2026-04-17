@@ -2,6 +2,7 @@ import React from "react";
 import { Box, Text } from "ink";
 import { type PollStrategy, type SidecarPhase } from "../types.js";
 import { useCountdown } from "../hooks/useCountdown.js";
+import { formatDuration, formatLocalTime } from "../format.js";
 
 interface Props {
   phase: SidecarPhase;
@@ -17,11 +18,11 @@ function strategyLabel(s?: PollStrategy): string {
   if (!s) return "unknown";
   switch (s.kind) {
     case "fixed_interval":
-      return `every ${s.interval_secs}s`;
+      return `every ${formatDuration(s.interval_secs * 1000)}`;
     case "exponential_backoff":
-      return `backoff ${s.base_secs}s–${s.max_secs}s`;
+      return `backoff ${formatDuration(s.base_secs * 1000)}-${formatDuration(s.max_secs * 1000)}`;
     case "jittered":
-      return `jittered ±${s.jitter_secs}s @ ${s.base_secs}s`;
+      return `jittered +/-${formatDuration(s.jitter_secs * 1000)} @ ${formatDuration(s.base_secs * 1000)}`;
   }
 }
 
@@ -54,7 +55,7 @@ export function PollStatus({
   persistenceAuthority,
 }: Props) {
   const countdown = useCountdown(sleepUntilMs);
-  const isSleeping = sleepUntilMs !== null && countdown !== "" && countdown !== "00:00";
+  const isSleeping = sleepUntilMs !== null && countdown !== "" && countdown !== "0s";
 
   return (
     <Box borderStyle="single" flexDirection="column" paddingX={1} flexGrow={1}>
@@ -88,7 +89,7 @@ export function PollStatus({
       {lastSuccessAt && (
         <Box flexDirection="row" gap={1}>
           <Text dimColor>last success:</Text>
-          <Text>{lastSuccessAt.slice(11, 19)}</Text>
+          <Text>{formatLocalTime(lastSuccessAt)}</Text>
         </Box>
       )}
 
@@ -97,7 +98,7 @@ export function PollStatus({
           <Text dimColor>failures:</Text>
           <Text color="red">{consecutiveFailures}</Text>
           {backoffMs !== null && (
-            <Text dimColor> (backoff {Math.round(backoffMs / 1000)}s)</Text>
+            <Text dimColor> (backoff {formatDuration(backoffMs)})</Text>
           )}
         </Box>
       )}

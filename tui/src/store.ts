@@ -3,6 +3,7 @@ import {
   type MergedEnvVar,
   type TuiState,
 } from "./types.js";
+import { formatLocalTime } from "./format.js";
 
 // ── Initial state ────────────────────────────────────────────────────
 
@@ -21,6 +22,7 @@ export function initialState(wasmPath: string): TuiState {
       backoffMs: null,
     },
     lastRequest: null,
+    requests: [],
     artifacts: { raw: null, normalized: null, published: null },
     cycleCount: 0,
     logs: [],
@@ -102,23 +104,25 @@ export function reducer(state: TuiState, event: BrrEvent): TuiState {
     }
 
     case "request_start":
+      const previousRequest = state.requests[state.requests.length - 1];
+      const request = {
+        sequence: previousRequest ? previousRequest.sequence + 1 : 1,
+        kind: event.kind,
+        host: event.host,
+        path: event.path,
+        request_id: event.request_id,
+        pending: true,
+      };
       return {
         ...state,
         polling: { ...state.polling, phase: "fetching" },
-        lastRequest: {
-          kind: event.kind,
-          host: event.host,
-          path: event.path,
-          request_id: event.request_id,
-          pending: true,
-        },
+        lastRequest: request,
+        requests: [...state.requests, request].slice(-8),
       };
 
     case "request_done": {
-      const req = state.lastRequest;
-      return {
-        ...state,
-        lastRequest: req
+      const updateRequest = (req: typeof state.requests[number]) =>
+        req.request_id === event.request_id
           ? {
               ...req,
               status_code: event.status_code,
@@ -126,12 +130,23 @@ export function reducer(state: TuiState, event: BrrEvent): TuiState {
               response_size_bytes: event.response_size_bytes,
               pending: false,
             }
-          : null,
+          : req;
+      const requests = state.requests.map(updateRequest);
+      const req = state.lastRequest ? updateRequest(state.lastRequest) : null;
+      return {
+        ...state,
+        lastRequest: req,
+        requests,
       };
     }
 
     case "request_error": {
-      const req = state.lastRequest;
+      const updateRequest = (req: typeof state.requests[number]) =>
+        req.request_id === event.request_id
+          ? { ...req, error: event.message, pending: false }
+          : req;
+      const requests = state.requests.map(updateRequest);
+      const req = state.lastRequest ? updateRequest(state.lastRequest) : null;
       return {
         ...state,
         polling: {
@@ -139,9 +154,8 @@ export function reducer(state: TuiState, event: BrrEvent): TuiState {
           phase: "failed",
           consecutiveFailures: state.polling.consecutiveFailures + 1,
         },
-        lastRequest: req
-          ? { ...req, error: event.message, pending: false }
-          : null,
+        lastRequest: req,
+        requests,
       };
     }
 
@@ -159,7 +173,7 @@ export function reducer(state: TuiState, event: BrrEvent): TuiState {
     }
 
     case "log": {
-      const logs = [...state.logs, `${event.ts.slice(11, 19)} ${event.message}`];
+      const logs = [...state.logs, `${formatLocalTime(event.ts)} ${event.message}`];
       return { ...state, logs: logs.slice(-50) };
     }
 

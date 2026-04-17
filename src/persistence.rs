@@ -49,6 +49,7 @@ fn state_path(hash: &str) -> Option<PathBuf> {
 
 /// Load persisted runtime state for a WASM module identified by `wasm_hash`.
 /// Returns `None` if no state file exists or if deserialization fails.
+#[allow(dead_code)]
 pub fn load(wasm_hash: &str) -> Option<SidecarRuntimeState> {
     let path = state_path(wasm_hash)?;
     let data = std::fs::read(&path).ok()?;
@@ -70,6 +71,7 @@ pub fn save(wasm_hash: &str, state: &SidecarRuntimeState) {
 }
 
 /// Remove persisted state for a WASM module.
+#[allow(dead_code)]
 pub fn clear(wasm_hash: &str) {
     if let Some(path) = state_path(wasm_hash) {
         let _ = std::fs::remove_file(path);

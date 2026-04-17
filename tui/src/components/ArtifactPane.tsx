@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef } from "react";
 import { Box, Text, useInput, measureElement, type DOMElement } from "ink";
 import { type ArtifactView } from "../types.js";
+import { formatBytes, formatLocalTime } from "../format.js";
 
 interface Props {
   title: string;
@@ -131,11 +132,9 @@ export function ArtifactPane({ title, artifact, isFocused }: Props) {
         <>
           {/* Meta row */}
           <Text dimColor>
-            {artifact.size_bytes < 1024
-              ? `${artifact.size_bytes}B`
-              : `${(artifact.size_bytes / 1024).toFixed(1)}KB`}
-            {" — "}
-            {new Date(artifact.received_at_ms).toISOString().slice(11, 19)}
+            {formatBytes(artifact.size_bytes)}
+            {" - "}
+            {formatLocalTime(artifact.received_at_ms)}
           </Text>
 
           {/* Content + scrollbar */}

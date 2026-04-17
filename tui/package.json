@@ -2,6 +2,13 @@
   "name": "brrmmmm-tui",
   "version": "0.1.0",
   "description": "Terminal UI for brrmmmm sidecar runner — behavior under constraint, made visible.",
+  "license": "MIT OR Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/vzglyd/brrmmmm.git",
+    "directory": "tui"
+  },
+  "homepage": "https://github.com/vzglyd/brrmmmm#readme",
   "type": "module",
   "bin": {
     "brrmmmm": "./dist/index.js"

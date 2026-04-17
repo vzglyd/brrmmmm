@@ -1,0 +1,26 @@
+$schema: '../../.moon/cache/schemas/project.json'
+
+language: 'rust'
+
+project:
+  title: 'deterministic sidecar fixture'
+  description: 'Minimal WASI sidecar used by brrmmmm integration tests.'
+
+tasks:
+  target:
+    command: 'rustup target add wasm32-wasip1 --toolchain 1.94.0-x86_64-unknown-linux-gnu'
+
+  build:
+    command: 'cargo build'
+    args:
+      - '--target'
+      - 'wasm32-wasip1'
+      - '--release'
+    deps:
+      - 'target'
+    inputs:
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'src/**/*'
+    outputs:
+      - 'target/wasm32-wasip1/release/deterministic_sidecar.wasm'

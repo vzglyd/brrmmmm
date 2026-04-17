@@ -59,6 +59,48 @@ pub struct EnvVarSpec {
     pub description: String,
 }
 
+// ── Runtime parameter specification ─────────────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct SidecarParamsSchema {
+    #[serde(default)]
+    pub fields: Vec<SidecarParamField>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SidecarParamField {
+    pub key: String,
+    #[serde(rename = "type")]
+    pub kind: SidecarParamType,
+    #[serde(default)]
+    pub required: bool,
+    #[serde(default)]
+    pub label: Option<String>,
+    #[serde(default)]
+    pub help: Option<String>,
+    #[serde(default)]
+    pub default: Option<serde_json::Value>,
+    #[serde(default)]
+    pub options: Vec<SidecarParamOption>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SidecarParamOption {
+    pub value: serde_json::Value,
+    #[serde(default)]
+    pub label: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SidecarParamType {
+    String,
+    Integer,
+    Number,
+    Boolean,
+    Json,
+}
+
 // ── Describe blob (v2 sidecar export) ───────────────────────────────
 
 /// Full self-description emitted by a v2 sidecar.
@@ -82,6 +124,8 @@ pub struct SidecarDescribe {
     #[serde(default)]
     pub optional_env_vars: Vec<EnvVarSpec>,
     #[serde(default)]
+    pub params: Option<SidecarParamsSchema>,
+    #[serde(default)]
     pub capabilities_needed: Vec<String>,
     pub poll_strategy: Option<PollStrategy>,
     pub cooldown_policy: Option<CooldownPolicy>,
@@ -100,6 +144,7 @@ pub struct ArtifactMeta {
 
 // ── Guest-emitted event (from take_events ring buffer) ───────────────
 
+#[allow(dead_code)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GuestEvent {
     pub ts_ms: u64,

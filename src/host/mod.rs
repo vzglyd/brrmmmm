@@ -9,6 +9,7 @@ use std::sync::{Arc, Mutex};
 pub struct Artifact {
     pub kind: String,
     pub data: Vec<u8>,
+    #[allow(dead_code)]
     pub received_at_ms: u64,
 }
 
@@ -50,14 +51,18 @@ pub struct HostState {
 
     /// Whether to print channel pushes to stderr (--log-channel flag).
     pub log_channel: bool,
+
+    /// Current JSON params made available to the sidecar through `params_len`/`params_read`.
+    pub params_bytes: Arc<Mutex<Option<Vec<u8>>>>,
 }
 
 impl HostState {
-    pub fn new(log_channel: bool) -> Self {
+    pub fn new(log_channel: bool, params_bytes: Arc<Mutex<Option<Vec<u8>>>>) -> Self {
         Self {
             artifact_store: Arc::new(Mutex::new(ArtifactStore::default())),
             pending_response: Arc::new(Mutex::new(None)),
             log_channel,
+            params_bytes,
         }
     }
 }

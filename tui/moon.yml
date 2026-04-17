@@ -1,0 +1,23 @@
+$schema: '../.moon/cache/schemas/project.json'
+
+language: 'typescript'
+
+project:
+  title: 'brrmmmm Ink TUI'
+  description: 'TypeScript Ink frontend for the brrmmmm event protocol.'
+
+tasks:
+  build:
+    command: 'npm run build'
+    inputs:
+      - 'package.json'
+      - 'package-lock.json'
+      - 'tsconfig.json'
+      - 'src/**/*'
+    outputs:
+      - 'dist'
+
+  check:
+    deps:
+      - 'build'
+    command: 'npm run build'

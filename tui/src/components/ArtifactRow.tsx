@@ -1,5 +1,5 @@
-import React, { useState } from "react";
-import { Box, useInput } from "ink";
+import React from "react";
+import { Box } from "ink";
 import { type TuiState } from "../types.js";
 import { ArtifactPane } from "./ArtifactPane.js";
 import { PipeAnimation } from "./PipeAnimation.js";
@@ -7,17 +7,10 @@ import { PipeAnimation } from "./PipeAnimation.js";
 interface Props {
   artifacts: TuiState["artifacts"];
   cycleCount: number;
+  focusedPane: "raw" | "output" | null;
 }
 
-export function ArtifactRow({ artifacts, cycleCount }: Props) {
-  const [focusedPane, setFocusedPane] = useState<"raw" | "output">("output");
-
-  useInput((_input, key) => {
-    if (key.tab) {
-      setFocusedPane((p) => (p === "raw" ? "output" : "raw"));
-    }
-  });
-
+export function ArtifactRow({ artifacts, cycleCount, focusedPane }: Props) {
   return (
     <Box flexDirection="row" flexGrow={1}>
       <Box width="38%">

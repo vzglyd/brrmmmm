@@ -18,6 +18,27 @@ export interface EnvVarSpec {
   description: string;
 }
 
+export type SidecarParamType = "string" | "integer" | "number" | "boolean" | "json";
+
+export interface SidecarParamOption {
+  value: unknown;
+  label?: string;
+}
+
+export interface SidecarParamField {
+  key: string;
+  type: SidecarParamType;
+  required: boolean;
+  label?: string;
+  help?: string;
+  default?: unknown;
+  options: SidecarParamOption[];
+}
+
+export interface SidecarParamsSchema {
+  fields: SidecarParamField[];
+}
+
 export type PersistenceAuthority = "volatile" | "host_persisted" | "vendor_backed";
 
 export type PollStrategy =
@@ -35,6 +56,7 @@ export interface SidecarDescribe {
   state_persistence: PersistenceAuthority;
   required_env_vars: EnvVarSpec[];
   optional_env_vars: EnvVarSpec[];
+  params?: SidecarParamsSchema | null;
   capabilities_needed: string[];
   poll_strategy?: PollStrategy;
   cooldown_policy?: { authority: PersistenceAuthority; min_interval_ms: number };
@@ -149,6 +171,7 @@ export interface ArtifactView {
 }
 
 export interface LastRequestView {
+  sequence: number;
   kind: string;
   host: string;
   path?: string;
@@ -175,6 +198,7 @@ export interface TuiState {
     backoffMs: number | null;
   };
   lastRequest: LastRequestView | null;
+  requests: LastRequestView[];
   artifacts: {
     raw: ArtifactView | null;
     normalized: ArtifactView | null;

@@ -63,6 +63,7 @@ pub enum ErrorKind {
 // ── Wire encoding/decoding ─────────────────────────────────────────
 
 #[derive(Debug, Serialize)]
+#[allow(dead_code)]
 struct VersionedRequest<'a> {
     wire_version: u8,
     #[serde(flatten)]
@@ -70,12 +71,14 @@ struct VersionedRequest<'a> {
 }
 
 #[derive(Debug, Deserialize)]
+#[allow(dead_code)]
 struct VersionedResponse {
     wire_version: u8,
     #[serde(flatten)]
     payload: HostResponse,
 }
 
+#[allow(dead_code)]
 pub fn encode_request(req: &HostRequest) -> Vec<u8> {
     let wrapper = VersionedRequest {
         wire_version: WIRE_VERSION,
@@ -84,6 +87,7 @@ pub fn encode_request(req: &HostRequest) -> Vec<u8> {
     serde_json::to_vec(&wrapper).expect("serialize host request")
 }
 
+#[allow(dead_code)]
 pub fn decode_response(bytes: &[u8]) -> Result<HostResponse, String> {
     let wrapper: VersionedResponse =
         serde_json::from_slice(bytes).map_err(|e| format!("decode response: {e}"))?;

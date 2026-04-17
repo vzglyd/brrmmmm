@@ -18,9 +18,55 @@ brrmmmm run lastfm-sidecar.wasm --once \
   --env LASTFM_API_KEY=xxx \
   --env LASTFM_USERNAME=rodger
 
+# Pass sidecar params through vzglyd_configure before running
+brrmmmm run weather-sidecar.wasm --once \
+  --params-json '{"api_key":"xxx","location":"Daylesford, VIC"}'
+
+# Or read those params from a JSON file
+brrmmmm run weather-sidecar.wasm --once --params-file sidecar-params.json
+
 # Validate a WASM module loads and resolves imports
 brrmmmm validate afl-sidecar.wasm
 ```
+
+## Finish-line workflow
+
+`brrmmmm` has two public surfaces:
+
+- the Rust CLI/runtime, which is the canonical sidecar host
+- the Ink TUI, which is a frontend over the CLI's `--events` protocol
+
+For day-to-day development:
+
+```bash
+cargo test
+npm --prefix tui run build
+```
+
+With Moonrepo installed, the same cross-ecosystem gate is:
+
+```bash
+moon run core:ci
+```
+
+Without a global Moon install:
+
+```bash
+npx --package @moonrepo/cli@2.2.1 moon run core:ci
+```
+
+The core acceptance path is:
+
+```bash
+brrmmmm validate sidecar.wasm
+brrmmmm inspect sidecar.wasm
+brrmmmm run sidecar.wasm --once > payload.json
+brrmmmm sidecar.wasm
+```
+
+Application code should consume `published_output`. `raw_source_payload` and `normalized_payload` are debugging artifacts for developers and TUI frontends.
+
+See `docs/frontend-protocol.md` for the stable NDJSON/stdin frontend protocol and `docs/release-checklist.md` for the public-release gate.
 
 ## Architecture
 

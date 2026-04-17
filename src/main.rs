@@ -9,7 +9,7 @@ mod events;
 mod host;
 mod persistence;
 
-use controller::SidecarController;
+use controller::{SidecarController, inspect_wasm_contract, validate_inspection};
 use events::{EnvVarStatus, Event, EventSink, now_ts};
 
 #[derive(Parser)]
@@ -41,6 +41,14 @@ enum Commands {
         /// Set environment variable (KEY=VALUE)
         #[arg(long, value_name = "KEY=VALUE")]
         env: Vec<String>,
+
+        /// JSON object passed to the sidecar configure buffer
+        #[arg(long, conflicts_with = "params_file")]
+        params_json: Option<String>,
+
+        /// Path to a JSON file passed to the sidecar configure buffer
+        #[arg(long, value_name = "PATH")]
+        params_file: Option<String>,
 
         /// Log channel pushes to stderr
         #[arg(long)]
@@ -78,10 +86,22 @@ fn main() -> Result<()> {
             once,
             interval,
             env,
+            params_json,
+            params_file,
             log_channel,
             events,
             verbose,
-        } => cmd_run(&wasm_path, once, interval, &env, log_channel, events, verbose),
+        } => cmd_run(
+            &wasm_path,
+            once,
+            interval,
+            &env,
+            params_json.as_deref(),
+            params_file.as_deref(),
+            log_channel,
+            events,
+            verbose,
+        ),
         Commands::Inspect { wasm_path } => cmd_inspect(&wasm_path),
         Commands::Validate { wasm_path } => cmd_validate(&wasm_path),
     }
@@ -89,8 +109,36 @@ fn main() -> Result<()> {
 
 fn parse_env_vars(raw: &[String]) -> Vec<(String, String)> {
     raw.iter()
-        .filter_map(|s| s.split_once('=').map(|(k, v)| (k.to_string(), v.to_string())))
+        .filter_map(|s| {
+            s.split_once('=')
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+        })
         .collect()
+}
+
+fn parse_params_bytes(
+    params_json: Option<&str>,
+    params_file: Option<&str>,
+) -> Result<Option<Vec<u8>>> {
+    let raw = if let Some(raw) = params_json {
+        Some(raw.to_string())
+    } else if let Some(path) = params_file {
+        Some(std::fs::read_to_string(path).with_context(|| format!("read params file: {path}"))?)
+    } else {
+        None
+    };
+    let Some(raw) = raw else {
+        return Ok(None);
+    };
+
+    let value: serde_json::Value =
+        serde_json::from_str(&raw).context("sidecar params must be valid JSON")?;
+    if !value.is_object() {
+        anyhow::bail!("sidecar params must be a JSON object");
+    }
+    serde_json::to_vec(&value)
+        .map(Some)
+        .context("serialize sidecar params")
 }
 
 fn cmd_run(
@@ -98,11 +146,14 @@ fn cmd_run(
     once: bool,
     interval: u64,
     env: &[String],
+    params_json: Option<&str>,
+    params_file: Option<&str>,
     log_channel: bool,
     events_mode: bool,
     _verbose: bool,
 ) -> Result<()> {
     let env_vars = parse_env_vars(env);
+    let params_bytes = parse_params_bytes(params_json, params_file)?;
 
     let sink = if events_mode {
         EventSink::for_stdout()
@@ -124,18 +175,24 @@ fn cmd_run(
             eprintln!("[brrmmmm] starting sidecar, waiting for first channel_push...");
         }
 
-        let controller =
-            SidecarController::new(wasm_path, env_vars, log_channel, sink.clone())
-                .with_context(|| format!("failed to load sidecar: {wasm_path}"))?;
+        let controller = SidecarController::new(
+            wasm_path,
+            env_vars,
+            params_bytes.clone(),
+            log_channel,
+            sink.clone(),
+        )
+        .with_context(|| format!("failed to load sidecar: {wasm_path}"))?;
 
-        let timeout =
-            std::time::Duration::from_secs(std::cmp::max(interval * 2, 30));
+        let timeout = std::time::Duration::from_secs(std::cmp::max(interval * 2, 30));
         let start = std::time::Instant::now();
 
         loop {
             if let Some(data) = controller.poll_output() {
-                std::io::stdout().write_all(&data)?;
-                std::io::stdout().write_all(b"\n")?;
+                if !events_mode {
+                    std::io::stdout().write_all(&data)?;
+                    std::io::stdout().write_all(b"\n")?;
+                }
                 if !events_mode {
                     eprintln!(
                         "[brrmmmm] payload received ({} bytes), stopping",
@@ -161,30 +218,58 @@ fn cmd_run(
         }
     } else {
         if !events_mode {
-            eprintln!(
-                "[brrmmmm] running {wasm_path} in daemon mode (interval: {interval}s)"
-            );
+            eprintln!("[brrmmmm] running {wasm_path} in daemon mode (interval: {interval}s)");
             eprintln!("[brrmmmm] sidecar controls polling; Ctrl+C to stop");
         }
 
         // Compute WASM hash for state persistence.
-        let wasm_bytes = std::fs::read(wasm_path)
-            .with_context(|| format!("read WASM file: {wasm_path}"))?;
+        let wasm_bytes =
+            std::fs::read(wasm_path).with_context(|| format!("read WASM file: {wasm_path}"))?;
         let wasm_hash = persistence::wasm_identity(&wasm_bytes);
         drop(wasm_bytes);
 
         let controller =
-            SidecarController::new(wasm_path, env_vars, log_channel, sink)
+            SidecarController::new(wasm_path, env_vars, params_bytes, log_channel, sink.clone())
                 .with_context(|| format!("failed to load sidecar: {wasm_path}"))?;
 
-        // In events mode, listen on stdin for TUI commands ("force\n" = skip next sleep).
+        // In events mode, listen on stdin for TUI commands:
+        //   force
+        //   params_json {"key":"value"}
         if events_mode {
             let flag = controller.force_refresh_flag();
+            let params_handle = controller.params_handle();
+            let command_sink = sink.clone();
             std::thread::spawn(move || {
                 let stdin = std::io::stdin();
                 for line in stdin.lock().lines().map_while(Result::ok) {
-                    if line.trim() == "force" {
+                    let trimmed = line.trim();
+                    if trimmed == "force" {
                         flag.store(true, std::sync::atomic::Ordering::Relaxed);
+                    } else if let Some(raw) = trimmed.strip_prefix("params_json ") {
+                        match serde_json::from_str::<serde_json::Value>(raw) {
+                            Ok(value) if value.is_object() => match serde_json::to_vec(&value) {
+                                Ok(bytes) => {
+                                    *params_handle.lock().unwrap() = Some(bytes);
+                                    flag.store(true, std::sync::atomic::Ordering::Relaxed);
+                                    events::diag(
+                                        &command_sink,
+                                        "[brrmmmm] updated sidecar params and requested refresh",
+                                    );
+                                }
+                                Err(error) => events::diag(
+                                    &command_sink,
+                                    &format!("[brrmmmm] failed to encode params_json: {error}"),
+                                ),
+                            },
+                            Ok(_) => events::diag(
+                                &command_sink,
+                                "[brrmmmm] params_json command must contain a JSON object",
+                            ),
+                            Err(error) => events::diag(
+                                &command_sink,
+                                &format!("[brrmmmm] invalid params_json command: {error}"),
+                            ),
+                        }
                     }
                 }
             });
@@ -217,90 +302,36 @@ fn cmd_run(
 fn cmd_inspect(wasm_path: &str) -> Result<()> {
     eprintln!("[brrmmmm] inspecting {wasm_path}");
 
-    let wasm_bytes = std::fs::read(wasm_path)
-        .with_context(|| format!("read WASM file: {wasm_path}"))?;
-
-    let engine = wasmtime::Engine::default();
-    let module = wasmtime::Module::from_binary(&engine, &wasm_bytes)
-        .context("WASM module failed to compile")?;
-
-    // Detect ABI version.
-    let abi_version = if module
-        .exports()
-        .any(|e| e.name() == "vzglyd_sidecar_abi_version")
-    {
-        abi::ABI_VERSION_V2
-    } else {
-        abi::ABI_VERSION_V1
-    };
-
-    // Collect exports relevant to brrmmmm.
-    let brrmmmm_exports: Vec<_> = module
-        .exports()
-        .filter(|e| {
-            let n = e.name();
-            n.starts_with("vzglyd_") || n == "_start" || n == "main"
-        })
-        .map(|e| e.name().to_string())
-        .collect();
-
-    let contract = serde_json::json!({
-        "wasm_path": wasm_path,
-        "wasm_size_bytes": wasm_bytes.len(),
-        "abi_version": abi_version,
-        "brrmmmm_exports": brrmmmm_exports,
-        "note": if abi_version == abi::ABI_VERSION_V2 {
-            "v2 sidecar: describe() blob available after instantiation (Sprint 2)"
-        } else {
-            "v1 sidecar: no self-description; behavior inferred from poll_loop"
-        }
-    });
-
-    println!("{}", serde_json::to_string_pretty(&contract).unwrap());
+    let inspection = inspect_wasm_contract(wasm_path)?;
+    println!("{}", serde_json::to_string_pretty(&inspection).unwrap());
     Ok(())
 }
 
 fn cmd_validate(wasm_path: &str) -> Result<()> {
     eprintln!("[brrmmmm] validating {wasm_path}");
 
-    let wasm_bytes = std::fs::read(wasm_path)
-        .with_context(|| format!("read WASM file: {wasm_path}"))?;
-
-    let engine = wasmtime::Engine::default();
-    let module = wasmtime::Module::from_binary(&engine, &wasm_bytes)
-        .context("WASM module failed to compile/validate")?;
-
-    let has_start = module.get_export("_start").is_some();
-    let has_main = module.get_export("main").is_some();
-
-    if !has_start && !has_main {
-        eprintln!("[brrmmmm] WARNING: no _start or main export found");
-    }
+    let inspection = inspect_wasm_contract(wasm_path)
+        .with_context(|| format!("WASM module failed to compile/validate: {wasm_path}"))?;
+    validate_inspection(&inspection)?;
 
     eprintln!("[brrmmmm] ✓ WASM module validates successfully");
     eprintln!(
         "[brrmmmm]   entry: {}",
-        if has_start { "_start" } else { "main" }
+        inspection.entrypoint.as_deref().unwrap_or("unknown")
     );
-    eprintln!("[brrmmmm]   size: {} bytes", wasm_bytes.len());
-
-    let exports: Vec<_> = module
-        .exports()
-        .filter_map(|e| {
-            if e.name().starts_with('_')
-                || e.name() == "main"
-                || e.name().contains("fetch")
-                || e.name().starts_with("vzglyd_")
-            {
-                Some(e.name())
-            } else {
-                None
-            }
-        })
-        .collect();
-
-    if !exports.is_empty() {
-        eprintln!("[brrmmmm]   exports: {}", exports.join(", "));
+    eprintln!("[brrmmmm]   ABI: v{}", inspection.abi_version);
+    eprintln!("[brrmmmm]   size: {} bytes", inspection.wasm_size_bytes);
+    if let Some(describe) = &inspection.describe {
+        eprintln!(
+            "[brrmmmm]   contract: {} ({})",
+            describe.name, describe.logical_id
+        );
+        if !describe.run_modes.is_empty() {
+            eprintln!("[brrmmmm]   modes: {}", describe.run_modes.join(", "));
+        }
+    }
+    if !inspection.brrmmmm_exports.is_empty() {
+        eprintln!("[brrmmmm]   exports: {}", inspection.brrmmmm_exports.join(", "));
     }
 
     Ok(())

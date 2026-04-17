@@ -3,6 +3,11 @@ name = "brrmmmm"
 version = "0.1.0"
 edition = "2024"
 description = "Standalone sidecar runner CLI for VZGLYD sidecar WASM modules"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/vzglyd/brrmmmm"
+homepage = "https://github.com/vzglyd/brrmmmm"
+documentation = "https://docs.rs/brrmmmm"
+readme = "README.md"
 
 [[bin]]
 name = "brrmmmm"

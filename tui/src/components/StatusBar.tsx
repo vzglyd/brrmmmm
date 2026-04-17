@@ -4,12 +4,18 @@ import { Box, Text } from "ink";
 interface Props {
   isRunning: boolean;
   error: string | null;
+  focusPane: string;
+  isHelpOpen: boolean;
 }
 
-export function StatusBar({ isRunning, error }: Props) {
+export function StatusBar({ isRunning, error, focusPane, isHelpOpen }: Props) {
   return (
     <Box borderStyle="single" borderColor="gray" paddingX={1} justifyContent="space-between">
-      <Text dimColor>q quit  •  f force refresh  •  Tab switch pane  •  ↑↓ PgUp/PgDn scroll  •  Ctrl+C stop sidecar</Text>
+      <Text dimColor>
+        {isHelpOpen
+          ? "help | Up/Down/PgUp/PgDn scroll | h/?/Esc close | Ctrl+C quit"
+          : `focus: ${focusPane} | Tab focus | ? help | type params | f refresh outside params | q quit`}
+      </Text>
       {error ? (
         <Text color="red">{error}</Text>
       ) : !isRunning ? (
