@@ -7,9 +7,13 @@ use crate::host::host_request::{Header, HostRequest, HostResponse};
 // ── Mutex helpers ────────────────────────────────────────────────────
 
 pub(super) fn lock_runtime<'a, T>(mutex: &'a Mutex<T>, name: &str) -> MutexGuard<'a, T> {
-    mutex
-        .lock()
-        .unwrap_or_else(|_| panic!("{name} mutex poisoned"))
+    match mutex.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => {
+            eprintln!("[brrmmmm] recovering poisoned {name} mutex");
+            poisoned.into_inner()
+        }
+    }
 }
 
 // ── Runtime state helpers ────────────────────────────────────────────

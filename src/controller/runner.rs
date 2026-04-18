@@ -9,7 +9,7 @@ use crate::host::{ArtifactStore, HostState};
 
 use super::host_imports::register_vzglyd_host_on_linker;
 use super::inspection::read_static_describe;
-use super::io::update_failure_state;
+use super::io::{lock_runtime, update_failure_state};
 
 // ── WASM instance runner ─────────────────────────────────────────────
 
@@ -102,7 +102,7 @@ pub(super) fn run_wasm_instance(
                     ts: now_ts(),
                     describe: describe.clone(),
                 });
-                runtime_state.lock().expect("mutex poisoned").describe = Some(describe);
+                lock_runtime(&runtime_state, "runtime_state").describe = Some(describe);
             }
             Ok(None) => diag(
                 &event_sink,

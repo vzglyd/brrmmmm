@@ -20,6 +20,7 @@ use crate::abi::{ABI_VERSION_V2, ActiveMode, SidecarRuntimeState};
 use crate::events::EventSink;
 use crate::host::ArtifactStore;
 
+use io::lock_runtime;
 use runner::{WasmRunConfig, WasmRunContext, run_wasm_instance};
 
 // ── SidecarController ────────────────────────────────────────────────
@@ -64,7 +65,7 @@ impl SidecarController {
 
         // Update mode in runtime state.
         {
-            let mut state = runtime_state.lock().expect("mutex poisoned");
+            let mut state = lock_runtime(&runtime_state, "runtime_state");
             state.mode = match abi_version {
                 ABI_VERSION_V2 => ActiveMode::ManagedPolling,
                 _ => ActiveMode::V1Legacy,
@@ -117,14 +118,12 @@ impl SidecarController {
 
     /// Return a snapshot of the current runtime state.
     pub fn snapshot(&self) -> SidecarRuntimeState {
-        self.runtime_state.lock().expect("mutex poisoned").clone()
+        lock_runtime(&self.runtime_state, "runtime_state").clone()
     }
 
     /// Poll for the latest published_output artifact, consuming it.
     pub fn poll_output(&self) -> Option<Vec<u8>> {
-        self.artifact_store
-            .lock()
-            .expect("mutex poisoned")
+        lock_runtime(&self.artifact_store, "artifact_store")
             .take_published()
             .map(|a| a.data)
     }

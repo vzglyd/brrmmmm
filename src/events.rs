@@ -1,5 +1,5 @@
 use std::io::Write;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::Serialize;
@@ -168,11 +168,11 @@ impl EventSink {
     }
 
     pub fn is_enabled(&self) -> bool {
-        self.inner.lock().unwrap().enabled
+        lock_sink(&self.inner).enabled
     }
 
     pub fn emit(&self, event: Event) {
-        if !self.inner.lock().unwrap().enabled {
+        if !lock_sink(&self.inner).enabled {
             return;
         }
         if let Ok(json) = serde_json::to_string(&event) {
@@ -181,6 +181,16 @@ impl EventSink {
             let _ = handle.write_all(json.as_bytes());
             let _ = handle.write_all(b"\n");
             let _ = handle.flush();
+        }
+    }
+}
+
+fn lock_sink<'a>(inner: &'a Mutex<EventSinkInner>) -> MutexGuard<'a, EventSinkInner> {
+    match inner.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => {
+            eprintln!("[brrmmmm] recovering poisoned event sink mutex");
+            poisoned.into_inner()
         }
     }
 }

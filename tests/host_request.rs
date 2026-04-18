@@ -9,7 +9,7 @@ fn encode_https_get_includes_wire_version_and_kind() {
         path: "/api/data".to_string(),
         headers: vec![],
     };
-    let bytes = encode_request(&req);
+    let bytes = encode_request(&req).unwrap();
     let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
     assert_eq!(json["wire_version"], WIRE_VERSION as u64);
     assert_eq!(json["kind"], "https_get");
@@ -24,7 +24,7 @@ fn encode_tcp_connect_includes_correct_fields() {
         port: 5432,
         timeout_ms: 3000,
     };
-    let bytes = encode_request(&req);
+    let bytes = encode_request(&req).unwrap();
     let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
     assert_eq!(json["wire_version"], WIRE_VERSION as u64);
     assert_eq!(json["kind"], "tcp_connect");
@@ -117,7 +117,7 @@ fn https_get_headers_survive_encode() {
             },
         ],
     };
-    let bytes = encode_request(&req);
+    let bytes = encode_request(&req).unwrap();
     let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
     let headers = json["headers"].as_array().unwrap();
     assert_eq!(headers.len(), 2);

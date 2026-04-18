@@ -78,12 +78,12 @@ struct VersionedResponse {
     payload: HostResponse,
 }
 
-pub fn encode_request(req: &HostRequest) -> Vec<u8> {
+pub fn encode_request(req: &HostRequest) -> Result<Vec<u8>, String> {
     let wrapper = VersionedRequest {
         wire_version: WIRE_VERSION,
         payload: req,
     };
-    serde_json::to_vec(&wrapper).expect("serialize host request")
+    serde_json::to_vec(&wrapper).map_err(|e| format!("encode request: {e}"))
 }
 
 pub fn decode_response(bytes: &[u8]) -> Result<HostResponse, String> {
