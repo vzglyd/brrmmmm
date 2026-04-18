@@ -2,7 +2,10 @@ use anyhow::{Context, Result};
 
 pub fn parse_env_vars(raw: &[String]) -> Vec<(String, String)> {
     raw.iter()
-        .filter_map(|s| s.split_once('=').map(|(k, v)| (k.to_string(), v.to_string())))
+        .filter_map(|s| {
+            s.split_once('=')
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+        })
         .collect()
 }
 
@@ -25,5 +28,7 @@ pub fn parse_params_bytes(
     if !value.is_object() {
         anyhow::bail!("sidecar params must be a JSON object");
     }
-    serde_json::to_vec(&value).map(Some).context("serialize sidecar params")
+    serde_json::to_vec(&value)
+        .map(Some)
+        .context("serialize sidecar params")
 }

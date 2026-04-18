@@ -7,6 +7,30 @@ project:
   description: 'Rust host runtime and CLI for VZGLYD sidecar WASM modules.'
 
 tasks:
+  fmt:
+    command: 'cargo fmt'
+    args:
+      - '--check'
+    inputs:
+      - 'src/**/*'
+      - 'tests/**/*'
+
+  clippy:
+    command: 'cargo clippy'
+    args:
+      - '--all-targets'
+      - '--'
+      - '-D'
+      - 'warnings'
+    deps:
+      - 'fixture-sidecar:target'
+    inputs:
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'src/**/*'
+      - 'tests/**/*'
+      - 'fixtures/deterministic-sidecar/**/*'
+
   check:
     command: 'cargo check'
     inputs:
@@ -57,9 +81,11 @@ tasks:
       - '--format-version'
       - '1'
     deps:
+      - 'fmt'
+      - 'clippy'
       - 'check'
       - 'test'
-      - 'tui:build'
+      - 'tui:check'
       - 'fixture-sidecar:build'
     options:
       runDepsInParallel: false

@@ -16,8 +16,14 @@ fn wasm_identity_is_deterministic() {
 fn wasm_identity_output_is_16_lowercase_hex_chars() {
     let result = wasm_identity(b"hello");
     assert_eq!(result.len(), 16);
-    assert!(result.chars().all(|c| c.is_ascii_hexdigit()), "non-hex chars in: {result}");
-    assert!(result.chars().all(|c| !c.is_ascii_uppercase()), "uppercase chars in: {result}");
+    assert!(
+        result.chars().all(|c| c.is_ascii_hexdigit()),
+        "non-hex chars in: {result}"
+    );
+    assert!(
+        result.chars().all(|c| !c.is_ascii_uppercase()),
+        "uppercase chars in: {result}"
+    );
 }
 
 #[test]

@@ -1,0 +1,48 @@
+mod artifacts;
+mod network;
+mod params;
+mod sleep;
+mod tracing;
+
+use std::sync::{
+    Arc, Mutex,
+    atomic::{AtomicBool, AtomicU64},
+};
+
+use anyhow::Result;
+use wasmtime::Linker;
+
+use crate::abi::SidecarRuntimeState;
+use crate::events::EventSink;
+use crate::host::HostState;
+
+pub(super) fn register_vzglyd_host_on_linker(
+    linker: &mut Linker<wasmtime_wasi::preview1::WasiP1Ctx>,
+    host_state: HostState,
+    event_sink: EventSink,
+    runtime_state: Arc<Mutex<SidecarRuntimeState>>,
+    stop_signal: Arc<AtomicBool>,
+    force_refresh: Arc<AtomicBool>,
+) -> Result<()> {
+    let shared = Arc::new(Mutex::new(host_state));
+    let request_counter = Arc::new(AtomicU64::new(0));
+
+    artifacts::register(
+        linker,
+        shared.clone(),
+        event_sink.clone(),
+        runtime_state.clone(),
+    )?;
+    params::register(linker, shared.clone(), event_sink.clone())?;
+    sleep::register(
+        linker,
+        event_sink.clone(),
+        runtime_state.clone(),
+        stop_signal,
+        force_refresh,
+    )?;
+    network::register(linker, shared, event_sink, runtime_state, request_counter)?;
+    tracing::register(linker)?;
+
+    Ok(())
+}

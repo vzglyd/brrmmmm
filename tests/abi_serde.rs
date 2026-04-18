@@ -40,7 +40,11 @@ fn persistence_authority_roundtrips_all_variants() {
 
 #[test]
 fn active_mode_roundtrips_all_variants() {
-    for mode in [ActiveMode::V1Legacy, ActiveMode::ManagedPolling, ActiveMode::Interactive] {
+    for mode in [
+        ActiveMode::V1Legacy,
+        ActiveMode::ManagedPolling,
+        ActiveMode::Interactive,
+    ] {
         let json = roundtrip(&mode);
         let decoded: ActiveMode = serde_json::from_str(&json).unwrap();
         assert_eq!(decoded, mode);
@@ -56,7 +60,10 @@ fn poll_strategy_fixed_interval_roundtrip() {
 
 #[test]
 fn poll_strategy_exponential_backoff_roundtrip() {
-    let strategy = PollStrategy::ExponentialBackoff { base_secs: 5, max_secs: 300 };
+    let strategy = PollStrategy::ExponentialBackoff {
+        base_secs: 5,
+        max_secs: 300,
+    };
     let json = roundtrip(&strategy);
     assert!(json.contains("5"));
     assert!(json.contains("300"));
@@ -64,7 +71,10 @@ fn poll_strategy_exponential_backoff_roundtrip() {
 
 #[test]
 fn poll_strategy_jittered_roundtrip() {
-    let strategy = PollStrategy::Jittered { base_secs: 60, jitter_secs: 10 };
+    let strategy = PollStrategy::Jittered {
+        base_secs: 60,
+        jitter_secs: 10,
+    };
     let json = roundtrip(&strategy);
     assert!(json.contains("60"));
     assert!(json.contains("10"));
@@ -78,20 +88,28 @@ fn poll_strategy_display_fixed_interval() {
 
 #[test]
 fn poll_strategy_display_exponential_backoff() {
-    let strategy = PollStrategy::ExponentialBackoff { base_secs: 5, max_secs: 300 };
+    let strategy = PollStrategy::ExponentialBackoff {
+        base_secs: 5,
+        max_secs: 300,
+    };
     assert_eq!(strategy.to_string(), "exponential_backoff base=5s max=300s");
 }
 
 #[test]
 fn poll_strategy_display_jittered() {
-    let strategy = PollStrategy::Jittered { base_secs: 60, jitter_secs: 10 };
+    let strategy = PollStrategy::Jittered {
+        base_secs: 60,
+        jitter_secs: 10,
+    };
     assert_eq!(strategy.to_string(), "jittered base=60s jitter=10s");
 }
 
 #[test]
 fn cooldown_policy_roundtrip() {
-    let policy =
-        CooldownPolicy { authority: PersistenceAuthority::HostPersisted, min_interval_ms: 5000 };
+    let policy = CooldownPolicy {
+        authority: PersistenceAuthority::HostPersisted,
+        min_interval_ms: 5000,
+    };
     let json = roundtrip(&policy);
     let decoded: CooldownPolicy = serde_json::from_str(&json).unwrap();
     assert_eq!(decoded.min_interval_ms, 5000);

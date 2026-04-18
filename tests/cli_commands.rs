@@ -30,7 +30,10 @@ fn fixture_wasm() -> PathBuf {
             .env("CARGO_TARGET_DIR", &target_dir)
             .status()
             .expect("failed to build deterministic sidecar fixture");
-        assert!(status.success(), "deterministic sidecar fixture build failed");
+        assert!(
+            status.success(),
+            "deterministic sidecar fixture build failed"
+        );
         target_dir.join("wasm32-wasip1/release/deterministic_sidecar.wasm")
     })
     .clone()

@@ -1,4 +1,4 @@
-use brrmmmm::events::{ms_to_iso8601, EnvVarStatus};
+use brrmmmm::events::{EnvVarStatus, ms_to_iso8601};
 
 #[test]
 fn ms_to_iso8601_unix_epoch() {
@@ -15,7 +15,10 @@ fn ms_to_iso8601_known_date() {
 fn ms_to_iso8601_preserves_milliseconds() {
     // 1123 ms = 1.123s after epoch
     let result = ms_to_iso8601(1123);
-    assert!(result.ends_with(".123Z"), "expected .123Z suffix, got: {result}");
+    assert!(
+        result.ends_with(".123Z"),
+        "expected .123Z suffix, got: {result}"
+    );
 }
 
 #[test]

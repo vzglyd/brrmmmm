@@ -1,7 +1,8 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { Box, Text, useInput } from "ink";
 import { type LastRequestView, type ArtifactView, type SidecarDescribe } from "../types.js";
-import { formatBytes, formatDuration, formatLocalTime } from "../format.js";
+import { formatBytes, formatLocalTime } from "../format.js";
+import { buildVScrollbar, clip, formatPollStrategy, formatRequestStatus } from "../utils/requestPanel.js";
 
 interface Props {
   request: LastRequestView | null;
@@ -21,23 +22,6 @@ const AMBER = "#FFB300";
 interface PipelineRow {
   key: string;
   node: React.ReactNode;
-}
-
-function buildVScrollbar(
-  scrollTop: number,
-  totalLines: number,
-  visibleLines: number,
-): string[] {
-  if (totalLines <= visibleLines || visibleLines <= 0) {
-    return Array(visibleLines).fill(" ");
-  }
-  const thumbSize = Math.max(1, Math.round((visibleLines / totalLines) * visibleLines));
-  const maxThumbTop = visibleLines - thumbSize;
-  const thumbTop = Math.round((scrollTop / (totalLines - visibleLines)) * maxThumbTop);
-
-  return Array.from({ length: visibleLines }, (_, i) =>
-    i >= thumbTop && i < thumbTop + thumbSize ? "█" : "░",
-  );
 }
 
 export function RequestPanel({ request, requests, artifacts, describe, isFocused, height }: Props) {
@@ -109,7 +93,7 @@ export function RequestPanel({ request, requests, artifacts, describe, isFocused
         key: "artifact:published",
         node: (
           <Text wrap="truncate">
-            <Text color={AMBER} bold>publish_output</Text>
+            <Text color={AMBER} bold>published_output</Text>
             <Text dimColor>
               {" "}({formatBytes(artifacts.published.size_bytes)}) - {formatLocalTime(artifacts.published.received_at_ms)}
             </Text>
@@ -184,29 +168,3 @@ export function RequestPanel({ request, requests, artifacts, describe, isFocused
   );
 }
 
-function formatPollStrategy(describe: SidecarDescribe): string {
-  const strategy = describe.poll_strategy;
-  if (!strategy) return "freshness unspecified";
-  switch (strategy.kind) {
-    case "fixed_interval":
-      return `fresh every ${formatDuration(strategy.interval_secs * 1000)}`;
-    case "exponential_backoff":
-      return `backoff ${formatDuration(strategy.base_secs * 1000)}-${formatDuration(strategy.max_secs * 1000)}`;
-    case "jittered":
-      return `fresh every ${formatDuration(strategy.base_secs * 1000)} + jitter`;
-  }
-}
-
-function formatRequestStatus(item: LastRequestView): string {
-  if (item.pending) return "pending";
-  if (item.error) return `ERR ${item.error}`;
-  const elapsed = item.elapsed_ms !== undefined ? ` ${item.elapsed_ms}ms` : "";
-  const size = item.response_size_bytes ? ` ${formatBytes(item.response_size_bytes)}` : "";
-  return `${item.status_code ?? "?"}${elapsed}${size}`;
-}
-
-function clip(value: string, maxLength: number): string {
-  if (value.length <= maxLength) return value;
-  if (maxLength <= 3) return value.slice(0, maxLength);
-  return `${value.slice(0, maxLength - 3)}...`;
-}

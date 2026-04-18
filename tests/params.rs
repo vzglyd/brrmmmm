@@ -66,8 +66,8 @@ fn parse_params_bytes_rejects_invalid_json() {
 
 #[test]
 fn parse_params_bytes_reads_from_file() {
-    let path = std::env::temp_dir()
-        .join(format!("brrmmmm_params_test_{}.json", std::process::id()));
+    let path =
+        std::env::temp_dir().join(format!("brrmmmm_params_test_{}.json", std::process::id()));
     std::fs::write(&path, r#"{"from":"file"}"#).unwrap();
     let result = parse_params_bytes(None, path.to_str()).unwrap();
     std::fs::remove_file(&path).ok();

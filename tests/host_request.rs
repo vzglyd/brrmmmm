@@ -1,5 +1,5 @@
 use brrmmmm::host::host_request::{
-    decode_response, encode_request, ErrorKind, Header, HostRequest, HostResponse, WIRE_VERSION,
+    ErrorKind, Header, HostRequest, HostResponse, WIRE_VERSION, decode_response, encode_request,
 };
 
 #[test]
@@ -44,7 +44,11 @@ fn decode_http_response_succeeds() {
     let bytes = serde_json::to_vec(&json).unwrap();
     let response = decode_response(&bytes).unwrap();
     match response {
-        HostResponse::Http { status_code, headers, body } => {
+        HostResponse::Http {
+            status_code,
+            headers,
+            body,
+        } => {
             assert_eq!(status_code, 200);
             assert_eq!(headers.len(), 1);
             assert_eq!(headers[0].name, "content-type");
@@ -86,7 +90,10 @@ fn decode_error_response_preserves_kind_and_message() {
     let bytes = serde_json::to_vec(&json).unwrap();
     let response = decode_response(&bytes).unwrap();
     match response {
-        HostResponse::Error { error_kind, message } => {
+        HostResponse::Error {
+            error_kind,
+            message,
+        } => {
             assert_eq!(error_kind, ErrorKind::Timeout);
             assert_eq!(message, "connection timed out");
         }
@@ -100,8 +107,14 @@ fn https_get_headers_survive_encode() {
         host: "api.example.com".to_string(),
         path: "/v1/data".to_string(),
         headers: vec![
-            Header { name: "Authorization".to_string(), value: "Bearer token123".to_string() },
-            Header { name: "Accept".to_string(), value: "application/json".to_string() },
+            Header {
+                name: "Authorization".to_string(),
+                value: "Bearer token123".to_string(),
+            },
+            Header {
+                name: "Accept".to_string(),
+                value: "application/json".to_string(),
+            },
         ],
     };
     let bytes = encode_request(&req);

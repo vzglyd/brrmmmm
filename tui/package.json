@@ -17,7 +17,8 @@
   "scripts": {
     "build": "tsc",
     "dev": "tsx src/index.tsx",
-    "start": "node dist/index.js"
+    "start": "node dist/index.js",
+    "test": "vitest run"
   },
   "dependencies": {
     "ink": "^5.2.1",
@@ -27,6 +28,7 @@
     "@types/node": "^20.17.57",
     "@types/react": "^18.3.23",
     "tsx": "^4.19.4",
-    "typescript": "^5.8.3"
+    "typescript": "^5.8.3",
+    "vitest": "^4.1.4"
   }
 }

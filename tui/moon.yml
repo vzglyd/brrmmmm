@@ -17,7 +17,17 @@ tasks:
     outputs:
       - 'dist'
 
+  test:
+    deps:
+      - 'build'
+    command: 'npm test'
+    inputs:
+      - 'src/**/*'
+      - 'package.json'
+      - 'package-lock.json'
+
   check:
     deps:
       - 'build'
+      - 'test'
     command: 'npm run build'
