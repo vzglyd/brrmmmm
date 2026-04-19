@@ -14,7 +14,7 @@ extern "C" {
 
 #[no_mangle]
 pub extern "C" fn vzglyd_sidecar_abi_version() -> u32 {
-    2
+    1
 }
 
 #[no_mangle]

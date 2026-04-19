@@ -11,7 +11,7 @@ pub(crate) enum OutputFormat {
 #[derive(Parser)]
 #[command(
     name = "brrmmmm",
-    about = "Standalone sidecar runner for VZGLYD sidecar WASM modules",
+    about = "Synchronous acquisition runtime for portable WASM sidecars",
     after_help = "\
 EXAMPLES:
   brrmmmm validate sidecar.wasm
@@ -39,13 +39,9 @@ pub(crate) enum Commands {
         /// Path to the sidecar .wasm file
         wasm_path: String,
 
-        /// Run a single fetch iteration and exit
+        /// Run a single acquisition and exit (default behaviour)
         #[arg(long)]
         once: bool,
-
-        /// Poll interval in seconds (default: 60)
-        #[arg(long, default_value_t = 60)]
-        interval: u64,
 
         /// Set environment variable (KEY=VALUE)
         #[arg(long, value_name = "KEY=VALUE")]

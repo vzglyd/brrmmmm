@@ -1,3 +1,4 @@
+pub mod browser_request;
 pub mod host_request;
 
 use std::sync::{Arc, Mutex};
@@ -13,10 +14,9 @@ pub struct Artifact {
     pub received_at_ms: u64,
 }
 
-/// Named artifact store replacing the old `channel_data` field.
+/// Named artifact store for sidecar outputs.
 ///
-/// v1 sidecars write to `published_output` via `channel_push`.
-/// v2 sidecars use `artifact_publish` with an explicit kind.
+/// Sidecars write `published_output` via `channel_push` or `artifact_publish` with an explicit kind.
 #[derive(Debug, Default)]
 pub struct ArtifactStore {
     pub raw_source: Option<Artifact>,
@@ -49,6 +49,9 @@ pub struct HostState {
     /// Pending response from a network_request, to be read by network_response_read.
     pub pending_response: Arc<Mutex<Option<Vec<u8>>>>,
 
+    /// Pending response from a browser_action, to be read by browser_response_read.
+    pub pending_browser_response: Arc<Mutex<Option<Vec<u8>>>>,
+
     /// Whether to print channel pushes to stderr (--log-channel flag).
     pub log_channel: bool,
 
@@ -61,6 +64,7 @@ impl HostState {
         Self {
             artifact_store: Arc::new(Mutex::new(ArtifactStore::default())),
             pending_response: Arc::new(Mutex::new(None)),
+            pending_browser_response: Arc::new(Mutex::new(None)),
             log_channel,
             params_bytes,
         }

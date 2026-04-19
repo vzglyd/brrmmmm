@@ -3,9 +3,7 @@ mod inspection;
 mod io;
 mod runner;
 
-pub use inspection::{
-    SidecarInspection, detect_abi_version, inspect_wasm_contract, validate_inspection,
-};
+pub use inspection::{SidecarInspection, inspect_wasm_contract, validate_inspection};
 
 use std::sync::{
     Arc, Mutex,
@@ -16,7 +14,7 @@ use std::thread;
 use anyhow::{Context, Result};
 use wasmtime::{Engine, Module};
 
-use crate::abi::{ABI_VERSION_V2, ActiveMode, SidecarRuntimeState};
+use crate::abi::{ABI_VERSION_V1, ActiveMode, SidecarRuntimeState};
 use crate::events::EventSink;
 use crate::host::ArtifactStore;
 
@@ -60,16 +58,8 @@ impl SidecarController {
         let module = Module::from_binary(&engine, &wasm_bytes)
             .with_context(|| format!("compile WASM module: {wasm_path}"))?;
 
-        // Detect ABI version by checking for the v2 export.
-        let abi_version = detect_abi_version(&module);
-
-        // Update mode in runtime state.
         {
-            let mut state = lock_runtime(&runtime_state, "runtime_state");
-            state.mode = match abi_version {
-                ABI_VERSION_V2 => ActiveMode::ManagedPolling,
-                _ => ActiveMode::V1Legacy,
-            };
+            lock_runtime(&runtime_state, "runtime_state").mode = ActiveMode::ManagedPolling;
         }
 
         // Build shared stores.
@@ -89,7 +79,7 @@ impl SidecarController {
                 env_vars,
                 params_bytes,
                 log_channel,
-                abi_version,
+                abi_version: ABI_VERSION_V1,
                 wasm_size_bytes: wasm_bytes.len(),
             };
             let context = WasmRunContext {

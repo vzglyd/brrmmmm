@@ -1,7 +1,6 @@
 use serde::{Deserialize, Serialize};
 
 pub const ABI_VERSION_V1: u32 = 1;
-pub const ABI_VERSION_V2: u32 = 2;
 
 // ── Sidecar lifecycle phase ──────────────────────────────────────────
 
@@ -101,9 +100,9 @@ pub enum SidecarParamType {
     Json,
 }
 
-// ── Describe blob (v2 sidecar export) ───────────────────────────────
+// ── Describe blob (sidecar export) ──────────────────────────────────
 
-/// Full self-description emitted by a v2 sidecar.
+/// Full self-description emitted by a sidecar at startup.
 ///
 /// This is the core of the brrmmmm behavioral contract: OpenAPI describes
 /// the endpoint; this describes the behavior.
@@ -181,7 +180,6 @@ pub struct GuestEvent {
 #[serde(rename_all = "snake_case")]
 pub enum ActiveMode {
     #[default]
-    V1Legacy,
     ManagedPolling,
     Interactive,
 }
@@ -204,6 +202,6 @@ pub struct SidecarRuntimeState {
     pub last_raw_artifact: Option<ArtifactMeta>,
     pub last_output_artifact: Option<ArtifactMeta>,
     pub last_error: Option<String>,
-    /// Populated once describe() has been called (v2 only).
+    /// Populated once describe() has been called.
     pub describe: Option<SidecarDescribe>,
 }

@@ -56,7 +56,7 @@ pub enum Event {
         wasm_size_bytes: usize,
         abi_version: u32,
     },
-    /// Emitted when a v2 sidecar's describe() blob is received.
+    /// Emitted when a sidecar's describe() blob is received.
     Describe {
         ts: String,
         describe: SidecarDescribe,
@@ -65,7 +65,7 @@ pub enum Event {
     EnvSnapshot { ts: String, vars: Vec<EnvVarStatus> },
     /// Emitted when the sidecar's phase changes.
     Phase { ts: String, phase: SidecarPhase },
-    /// Forwarded from a v2 sidecar's take_events() ring buffer.
+    /// Forwarded from a sidecar's take_events() ring buffer.
     #[allow(dead_code)]
     GuestEventFwd {
         ts: String,
@@ -115,6 +115,21 @@ pub enum Event {
     Log { ts: String, message: String },
     /// Emitted when the sidecar's WASM execution terminates.
     SidecarExit { ts: String, reason: String },
+    /// Emitted when a browser_action starts.
+    BrowserAction {
+        ts: String,
+        action: String,
+        /// Loggable detail (selector or URL); never includes secret values.
+        detail: String,
+    },
+    /// Emitted when a browser_action completes.
+    BrowserActionDone {
+        ts: String,
+        action: String,
+        elapsed_ms: u64,
+        ok: bool,
+        error: Option<String>,
+    },
 }
 
 // ── Env var status ───────────────────────────────────────────────────

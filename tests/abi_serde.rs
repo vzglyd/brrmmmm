@@ -40,11 +40,7 @@ fn persistence_authority_roundtrips_all_variants() {
 
 #[test]
 fn active_mode_roundtrips_all_variants() {
-    for mode in [
-        ActiveMode::V1Legacy,
-        ActiveMode::ManagedPolling,
-        ActiveMode::Interactive,
-    ] {
+    for mode in [ActiveMode::ManagedPolling, ActiveMode::Interactive] {
         let json = roundtrip(&mode);
         let decoded: ActiveMode = serde_json::from_str(&json).unwrap();
         assert_eq!(decoded, mode);

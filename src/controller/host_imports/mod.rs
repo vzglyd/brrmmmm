@@ -1,4 +1,5 @@
 mod artifacts;
+mod browser;
 mod network;
 mod params;
 mod sleep;
@@ -41,7 +42,14 @@ pub(super) fn register_vzglyd_host_on_linker(
         stop_signal,
         force_refresh,
     )?;
-    network::register(linker, shared, event_sink, runtime_state, request_counter)?;
+    network::register(
+        linker,
+        shared.clone(),
+        event_sink.clone(),
+        runtime_state,
+        request_counter,
+    )?;
+    browser::register(linker, shared, event_sink)?;
     tracing::register(linker)?;
 
     Ok(())

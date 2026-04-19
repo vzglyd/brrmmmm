@@ -75,7 +75,7 @@ fn inspect_prints_real_contract_json() {
         String::from_utf8_lossy(&output.stderr)
     );
     let json: Value = serde_json::from_slice(&output.stdout).expect("inspect stdout is JSON");
-    assert_eq!(json["abi_version"], 2);
+    assert_eq!(json["abi_version"], 1);
     assert_eq!(
         json["describe"]["logical_id"],
         "brrmmmm.fixture.deterministic"
@@ -87,7 +87,7 @@ fn inspect_prints_real_contract_json() {
 #[test]
 fn run_once_prints_only_published_payload() {
     let wasm = fixture_wasm();
-    let output = run_brr(&["run", wasm.to_str().unwrap(), "--once", "--interval", "1"]);
+    let output = run_brr(&["run", wasm.to_str().unwrap(), "--once"]);
 
     assert!(
         output.status.success(),
@@ -104,14 +104,7 @@ fn run_once_prints_only_published_payload() {
 #[test]
 fn events_mode_outputs_ndjson_without_payload_leakage() {
     let wasm = fixture_wasm();
-    let output = run_brr(&[
-        "run",
-        wasm.to_str().unwrap(),
-        "--once",
-        "--events",
-        "--interval",
-        "1",
-    ]);
+    let output = run_brr(&["run", wasm.to_str().unwrap(), "--once", "--events"]);
 
     assert!(
         output.status.success(),

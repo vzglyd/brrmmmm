@@ -3,7 +3,7 @@ use std::sync::{Arc, Mutex, atomic::AtomicBool};
 use anyhow::{Context, Result};
 use wasmtime::{Engine, Linker, Module, Store};
 
-use crate::abi::{ABI_VERSION_V2, SidecarRuntimeState};
+use crate::abi::SidecarRuntimeState;
 use crate::events::{Event, EventSink, diag, now_ts};
 use crate::host::{ArtifactStore, HostState};
 
@@ -94,37 +94,27 @@ pub(super) fn run_wasm_instance(
         abi_version,
     });
 
-    // For v2: read the static describe blob if available and update runtime_state.
-    if abi_version == ABI_VERSION_V2 {
-        match call_describe(&instance, &mut store) {
-            Ok(Some(describe)) => {
-                event_sink.emit(Event::Describe {
-                    ts: now_ts(),
-                    describe: describe.clone(),
-                });
-                lock_runtime(&runtime_state, "runtime_state").describe = Some(describe);
-            }
-            Ok(None) => diag(
-                &event_sink,
-                "[brrmmmm] v2 sidecar is missing static describe exports",
-            ),
-            Err(error) => {
-                update_failure_state(&runtime_state, &error.to_string());
-                return Err(error);
-            }
+    match call_describe(&instance, &mut store) {
+        Ok(Some(describe)) => {
+            event_sink.emit(Event::Describe {
+                ts: now_ts(),
+                describe: describe.clone(),
+            });
+            lock_runtime(&runtime_state, "runtime_state").describe = Some(describe);
+        }
+        Ok(None) => diag(
+            &event_sink,
+            "[brrmmmm] sidecar is missing static describe exports",
+        ),
+        Err(error) => {
+            update_failure_state(&runtime_state, &error.to_string());
+            return Err(error);
         }
     }
 
     diag(&event_sink, "[brrmmmm] starting sidecar...");
 
-    // Find and call the entry point.
-    // v2: prefer vzglyd_sidecar_start, then _start/main
-    // v1: _start or main
-    let entry_name = if abi_version == ABI_VERSION_V2 {
-        find_entry_v2(&instance, &mut store)
-    } else {
-        find_entry_v1(&instance, &mut store)
-    };
+    let entry_name = find_entry(&instance, &mut store);
 
     let entry_name = entry_name.context("WASM module has no recognised entry point")?;
     let entry = instance
@@ -154,7 +144,7 @@ pub(super) fn run_wasm_instance(
 
 // ── Entry point resolution ───────────────────────────────────────────
 
-fn find_entry_v2(
+fn find_entry(
     instance: &wasmtime::Instance,
     store: &mut Store<wasmtime_wasi::preview1::WasiP1Ctx>,
 ) -> Option<String> {
@@ -166,19 +156,7 @@ fn find_entry_v2(
     None
 }
 
-fn find_entry_v1(
-    instance: &wasmtime::Instance,
-    store: &mut Store<wasmtime_wasi::preview1::WasiP1Ctx>,
-) -> Option<String> {
-    for name in &["_start", "main"] {
-        if instance.get_func(&mut *store, name).is_some() {
-            return Some(name.to_string());
-        }
-    }
-    None
-}
-
-// ── v2 describe() call ───────────────────────────────────────────────
+// ── describe() call ──────────────────────────────────────────────────
 
 fn call_describe(
     instance: &wasmtime::Instance,

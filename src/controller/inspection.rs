@@ -4,9 +4,7 @@ use anyhow::{Context, Result};
 use serde::Serialize;
 use wasmtime::{Engine, Linker, Module, Store};
 
-use crate::abi::{
-    ABI_VERSION_V1, ABI_VERSION_V2, ActiveMode, SidecarDescribe, SidecarRuntimeState,
-};
+use crate::abi::{ABI_VERSION_V1, ActiveMode, SidecarDescribe, SidecarRuntimeState};
 use crate::events::EventSink;
 use crate::host::HostState;
 
@@ -26,19 +24,6 @@ pub struct SidecarInspection {
     pub diagnostics: Vec<String>,
 }
 
-// ── ABI version detection ────────────────────────────────────────────
-
-pub fn detect_abi_version(module: &Module) -> u32 {
-    let has_v2 = module
-        .exports()
-        .any(|e| e.name() == "vzglyd_sidecar_abi_version");
-    if has_v2 {
-        ABI_VERSION_V2
-    } else {
-        ABI_VERSION_V1
-    }
-}
-
 pub fn inspect_wasm_contract(wasm_path: &str) -> Result<SidecarInspection> {
     let wasm_bytes =
         std::fs::read(wasm_path).with_context(|| format!("read WASM file: {wasm_path}"))?;
@@ -46,46 +31,42 @@ pub fn inspect_wasm_contract(wasm_path: &str) -> Result<SidecarInspection> {
     let engine = Engine::default();
     let module = Module::from_binary(&engine, &wasm_bytes)
         .with_context(|| format!("compile WASM module: {wasm_path}"))?;
-    let abi_version = detect_abi_version(&module);
-    let active_mode = match abi_version {
-        ABI_VERSION_V2 => ActiveMode::ManagedPolling,
-        _ => ActiveMode::V1Legacy,
-    };
-    let entrypoint = find_entry_export(&module, abi_version);
+
+    let has_abi_export = module
+        .exports()
+        .any(|e| e.name() == "vzglyd_sidecar_abi_version");
+    if !has_abi_export {
+        anyhow::bail!(
+            "WASM module does not export vzglyd_sidecar_abi_version; supported ABI version is {ABI_VERSION_V1}"
+        );
+    }
+
+    let (mut store, instance) = instantiate_for_inspection(&engine, &module)?;
+    let exported_abi = call_exported_abi_version(&instance, &mut store)?;
+    if exported_abi != ABI_VERSION_V1 {
+        anyhow::bail!(
+            "unsupported sidecar ABI version {exported_abi}; supported ABI version is {ABI_VERSION_V1}"
+        );
+    }
+
+    let entrypoint = find_entry_export(&module);
     let brrmmmm_exports = brrmmmm_exports(&module);
     let mut diagnostics = Vec::new();
 
-    let describe = if abi_version == ABI_VERSION_V2 {
-        let (mut store, instance) = instantiate_for_inspection(&engine, &module)?;
-        let exported_abi = call_exported_abi_version(&instance, &mut store)?;
-        if exported_abi != ABI_VERSION_V2 {
-            anyhow::bail!(
-                "unsupported sidecar ABI version {exported_abi}; supported ABI versions are {ABI_VERSION_V1} and {ABI_VERSION_V2}"
-            );
+    let describe = match read_static_describe(&instance, &mut store)? {
+        Some(describe) => Some(describe),
+        None => {
+            diagnostics
+                .push("sidecar is missing vzglyd_sidecar_describe_ptr/len exports".to_string());
+            None
         }
-
-        match read_static_describe(&instance, &mut store)? {
-            Some(describe) => Some(describe),
-            None => {
-                diagnostics.push(
-                    "v2 sidecar is missing vzglyd_sidecar_describe_ptr/len exports".to_string(),
-                );
-                None
-            }
-        }
-    } else {
-        diagnostics.push(
-            "v1 sidecar has no static self-description; behavior is inferred at runtime"
-                .to_string(),
-        );
-        None
     };
 
     Ok(SidecarInspection {
         wasm_path: wasm_path.to_string(),
         wasm_size_bytes: wasm_bytes.len(),
-        abi_version,
-        active_mode,
+        abi_version: ABI_VERSION_V1,
+        active_mode: ActiveMode::ManagedPolling,
         entrypoint,
         brrmmmm_exports,
         describe,
@@ -98,13 +79,11 @@ pub fn validate_inspection(inspection: &SidecarInspection) -> Result<()> {
         anyhow::bail!("WASM module has no recognised entry point");
     }
 
-    if inspection.abi_version == ABI_VERSION_V2 {
-        let describe = inspection
-            .describe
-            .as_ref()
-            .context("v2 sidecar must export a valid static describe contract")?;
-        validate_describe_contract(describe)?;
-    }
+    let describe = inspection
+        .describe
+        .as_ref()
+        .context("sidecar must export a valid static describe contract")?;
+    validate_describe_contract(describe)?;
 
     Ok(())
 }
@@ -119,15 +98,15 @@ fn validate_describe_contract(describe: &SidecarDescribe) -> Result<()> {
     if describe.name.trim().is_empty() {
         anyhow::bail!("describe.name is required");
     }
-    if describe.abi_version != 0 && describe.abi_version != ABI_VERSION_V2 {
+    if describe.abi_version != 0 && describe.abi_version != ABI_VERSION_V1 {
         anyhow::bail!(
-            "describe.abi_version must be {ABI_VERSION_V2} when present, got {}",
+            "describe.abi_version must be {ABI_VERSION_V1} when present, got {}",
             describe.abi_version
         );
     }
     for mode in &describe.run_modes {
         match mode.as_str() {
-            "v1_legacy" | "managed_polling" | "interactive" => {}
+            "managed_polling" | "interactive" => {}
             _ => anyhow::bail!("unknown run mode in describe.run_modes: {mode}"),
         }
     }
@@ -176,7 +155,7 @@ fn call_exported_abi_version(
 ) -> Result<u32> {
     let abi_fn = instance
         .get_typed_func::<(), u32>(&mut *store, "vzglyd_sidecar_abi_version")
-        .context("v2 sidecar must export callable vzglyd_sidecar_abi_version() -> u32")?;
+        .context("sidecar must export callable vzglyd_sidecar_abi_version() -> u32")?;
     abi_fn
         .call(store, ())
         .context("call vzglyd_sidecar_abi_version")
@@ -229,13 +208,8 @@ fn brrmmmm_exports(module: &Module) -> Vec<String> {
         .collect()
 }
 
-fn find_entry_export(module: &Module, abi_version: u32) -> Option<String> {
-    let names: &[&str] = if abi_version == ABI_VERSION_V2 {
-        &["vzglyd_sidecar_start", "_start", "main"]
-    } else {
-        &["_start", "main"]
-    };
-    names
+fn find_entry_export(module: &Module) -> Option<String> {
+    ["vzglyd_sidecar_start", "_start", "main"]
         .iter()
         .find(|name| module.get_export(name).is_some())
         .map(|name| (*name).to_string())

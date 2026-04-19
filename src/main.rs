@@ -23,8 +23,7 @@ fn main() -> Result<()> {
     match cli.command {
         Commands::Run {
             wasm_path,
-            once,
-            interval,
+            once: _,
             env,
             params_json,
             params_file,
@@ -33,8 +32,6 @@ fn main() -> Result<()> {
             verbose,
         } => cmd::cmd_run(cmd::RunOptions {
             wasm_path: &wasm_path,
-            once,
-            interval,
             env: &env,
             params_json: params_json.as_deref(),
             params_file: params_file.as_deref(),
