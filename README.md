@@ -263,6 +263,11 @@ The runtime exposes the `vzglyd_host` module to every sidecar:
 | `ai_request` | `fn(ptr: i32, len: i32) -> i32` | Submit a host-mediated AI request |
 | `ai_response_len` | `fn() -> i32` | Query size of the pending AI response |
 | `ai_response_read` | `fn(ptr: i32, len: i32) -> i32` | Read the AI response into sidecar memory |
+| `kv_get` | `fn(key_ptr: i32, key_len: i32) -> i32` | Load a host-persisted byte value |
+| `kv_set` | `fn(key_ptr: i32, key_len: i32, value_ptr: i32, value_len: i32) -> i32` | Store a host-persisted byte value |
+| `kv_delete` | `fn(key_ptr: i32, key_len: i32) -> i32` | Delete a host-persisted byte value |
+| `kv_response_len` | `fn() -> i32` | Query size of the pending KV response |
+| `kv_response_read` | `fn(ptr: i32, len: i32) -> i32` | Read the KV response into sidecar memory |
 | `trace_span_start` | `fn(...) -> i32` | Start a distributed tracing span |
 | `trace_span_end` | `fn(...) -> i32` | End a tracing span |
 | `trace_event` | `fn(ptr: i32, len: i32) -> i32` | Emit an instant trace event |
@@ -313,6 +318,16 @@ The imports are `ai_request`, `ai_response_len`, and `ai_response_read`. Set
 ```sh
 ANTHROPIC_API_KEY=... brrmmmm run demos/captcha_solver.wasm --once
 ```
+
+**`kv_*` — host-persisted sidecar state (implemented)**
+Sidecars store opaque bytes by UTF-8 key and retrieve them on later runs of the same
+WASM binary. This is intended for session continuity such as cookies, CSRF tokens, or
+last successful cursors. Declare `"state_persistence": "host_persisted"` and
+`"capabilities_needed": ["kv"]`.
+
+State is keyed by the WASM binary identity and stored under
+`~/.local/share/brrmmmm/state` by default. Set `BRRMMMM_STATE_DIR` to override that
+directory for tests or isolated runners.
 
 **`acquisition_timeout_secs` in describe (implemented)**
 Sidecars declare their expected acquisition budget. brrmmmm enforces it. The default

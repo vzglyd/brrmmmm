@@ -11,6 +11,8 @@
 
 use std::path::PathBuf;
 
+use anyhow::Context;
+
 use crate::abi::SidecarRuntimeState;
 
 // ── Hashing ──────────────────────────────────────────────────────────
@@ -30,6 +32,9 @@ pub fn wasm_identity(data: &[u8]) -> String {
 // ── Storage path ──────────────────────────────────────────────────────
 
 fn state_dir() -> Option<PathBuf> {
+    if let Some(path) = std::env::var_os("BRRMMMM_STATE_DIR") {
+        return Some(PathBuf::from(path));
+    }
     let home = std::env::var_os("HOME")?;
     let mut path = PathBuf::from(home);
     path.push(".local");
@@ -57,17 +62,16 @@ pub fn load(wasm_hash: &str) -> Option<SidecarRuntimeState> {
 }
 
 /// Persist runtime state for a WASM module identified by `wasm_hash`.
-/// Silently ignores errors (persistence is best-effort).
-pub fn save(wasm_hash: &str, state: &SidecarRuntimeState) {
-    let Some(path) = state_path(wasm_hash) else {
-        return;
-    };
+pub fn save(wasm_hash: &str, state: &SidecarRuntimeState) -> anyhow::Result<()> {
+    let path = state_path(wasm_hash).context("resolve brrmmmm state path")?;
     if let Some(dir) = path.parent() {
-        let _ = std::fs::create_dir_all(dir);
+        std::fs::create_dir_all(dir)
+            .with_context(|| format!("create brrmmmm state directory: {}", dir.display()))?;
     }
-    if let Ok(json) = serde_json::to_vec_pretty(state) {
-        let _ = std::fs::write(&path, json);
-    }
+    let json = serde_json::to_vec_pretty(state).context("serialize brrmmmm runtime state")?;
+    std::fs::write(&path, json)
+        .with_context(|| format!("write brrmmmm state file: {}", path.display()))?;
+    Ok(())
 }
 
 /// Remove persisted state for a WASM module.

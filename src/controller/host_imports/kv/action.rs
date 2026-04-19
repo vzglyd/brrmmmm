@@ -1,0 +1,363 @@
+use std::sync::{Arc, Mutex};
+
+use anyhow::Result;
+use wasmtime::Linker;
+
+use crate::abi::{PersistenceAuthority, SidecarRuntimeState};
+use crate::events::{Event, EventSink, diag, now_ts};
+use crate::host::HostState;
+use crate::persistence;
+
+use super::super::super::io::{lock_runtime, read_memory_from_caller};
+use super::state::{clear_pending_kv_response, store_pending_kv_response};
+
+type PersistFn = fn(&str, &SidecarRuntimeState) -> anyhow::Result<()>;
+
+pub(super) fn register(
+    linker: &mut Linker<wasmtime_wasi::preview1::WasiP1Ctx>,
+    shared: Arc<Mutex<HostState>>,
+    event_sink: EventSink,
+    runtime_state: Arc<Mutex<SidecarRuntimeState>>,
+    wasm_hash: Option<String>,
+) -> Result<()> {
+    // kv_get(key_ptr, key_len) -> i32
+    {
+        let shared = shared.clone();
+        let event_sink = event_sink.clone();
+        let runtime_state = runtime_state.clone();
+        linker.func_wrap(
+            "vzglyd_host",
+            "kv_get",
+            move |mut caller: wasmtime::Caller<'_, wasmtime_wasi::preview1::WasiP1Ctx>,
+                  ptr: i32,
+                  len: i32|
+                  -> i32 {
+                let key = match read_key(&mut caller, ptr, len, &event_sink, "kv_get") {
+                    Ok(key) => key,
+                    Err(status) => return status,
+                };
+
+                let value = {
+                    let state = lock_runtime(&runtime_state, "runtime_state");
+                    state.kv.get(&key).cloned()
+                };
+
+                event_sink.emit(Event::KvGet {
+                    ts: now_ts(),
+                    key,
+                    found: value.is_some(),
+                });
+
+                if let Some(data) = value {
+                    store_pending_kv_response(&shared, data);
+                    0
+                } else {
+                    clear_pending_kv_response(&shared);
+                    -1
+                }
+            },
+        )?;
+    }
+
+    // kv_set(key_ptr, key_len, value_ptr, value_len) -> i32
+    {
+        let shared = shared.clone();
+        let event_sink = event_sink.clone();
+        let runtime_state = runtime_state.clone();
+        let wasm_hash = wasm_hash.clone();
+        linker.func_wrap(
+            "vzglyd_host",
+            "kv_set",
+            move |mut caller: wasmtime::Caller<'_, wasmtime_wasi::preview1::WasiP1Ctx>,
+                  key_ptr: i32,
+                  key_len: i32,
+                  val_ptr: i32,
+                  val_len: i32|
+                  -> i32 {
+                let key = match read_key(&mut caller, key_ptr, key_len, &event_sink, "kv_set") {
+                    Ok(key) => key,
+                    Err(status) => return status,
+                };
+
+                let val_bytes = match read_memory_from_caller(&mut caller, val_ptr, val_len) {
+                    Ok(b) => b,
+                    Err(e) => {
+                        diag(
+                            &event_sink,
+                            &format!("[brrmmmm] kv_set value memory error: {e}"),
+                        );
+                        return -1;
+                    }
+                };
+
+                event_sink.emit(Event::KvSet {
+                    ts: now_ts(),
+                    key: key.clone(),
+                    value_len: val_bytes.len(),
+                });
+
+                clear_pending_kv_response(&shared);
+                if let Err(error) = set_value(
+                    &runtime_state,
+                    key,
+                    val_bytes,
+                    wasm_hash.as_deref(),
+                    persistence::save,
+                ) {
+                    diag(&event_sink, &format!("[brrmmmm] kv_set failed: {error}"));
+                    return -1;
+                }
+                0
+            },
+        )?;
+    }
+
+    // kv_delete(key_ptr, key_len) -> i32
+    {
+        let shared = shared.clone();
+        let event_sink = event_sink.clone();
+        let runtime_state = runtime_state.clone();
+        let wasm_hash = wasm_hash.clone();
+        linker.func_wrap(
+            "vzglyd_host",
+            "kv_delete",
+            move |mut caller: wasmtime::Caller<'_, wasmtime_wasi::preview1::WasiP1Ctx>,
+                  ptr: i32,
+                  len: i32|
+                  -> i32 {
+                let key = match read_key(&mut caller, ptr, len, &event_sink, "kv_delete") {
+                    Ok(key) => key,
+                    Err(status) => return status,
+                };
+
+                event_sink.emit(Event::KvDelete {
+                    ts: now_ts(),
+                    key: key.clone(),
+                });
+
+                clear_pending_kv_response(&shared);
+                if let Err(error) = delete_value(
+                    &runtime_state,
+                    &key,
+                    wasm_hash.as_deref(),
+                    persistence::save,
+                ) {
+                    diag(&event_sink, &format!("[brrmmmm] kv_delete failed: {error}"));
+                    return -1;
+                }
+                0
+            },
+        )?;
+    }
+
+    Ok(())
+}
+
+fn read_key(
+    caller: &mut wasmtime::Caller<'_, wasmtime_wasi::preview1::WasiP1Ctx>,
+    ptr: i32,
+    len: i32,
+    event_sink: &EventSink,
+    action: &str,
+) -> std::result::Result<String, i32> {
+    let key_bytes = match read_memory_from_caller(caller, ptr, len) {
+        Ok(bytes) => bytes,
+        Err(error) => {
+            diag(
+                event_sink,
+                &format!("[brrmmmm] {action} key memory error: {error}"),
+            );
+            return Err(-1);
+        }
+    };
+    String::from_utf8(key_bytes).map_err(|error| {
+        diag(
+            event_sink,
+            &format!("[brrmmmm] {action} key is not valid UTF-8: {error}"),
+        );
+        -1
+    })
+}
+
+fn set_value(
+    runtime_state: &Arc<Mutex<SidecarRuntimeState>>,
+    key: String,
+    value: Vec<u8>,
+    wasm_hash: Option<&str>,
+    persist: PersistFn,
+) -> std::result::Result<(), String> {
+    let mut state = lock_runtime(runtime_state, "runtime_state");
+    let previous = state.kv.insert(key.clone(), value);
+    if let Err(error) = persist_if_host_persisted(&state, wasm_hash, persist) {
+        restore_value(&mut state, key, previous);
+        return Err(error);
+    }
+    Ok(())
+}
+
+fn delete_value(
+    runtime_state: &Arc<Mutex<SidecarRuntimeState>>,
+    key: &str,
+    wasm_hash: Option<&str>,
+    persist: PersistFn,
+) -> std::result::Result<(), String> {
+    let mut state = lock_runtime(runtime_state, "runtime_state");
+    let previous = state.kv.remove(key);
+    if previous.is_none() {
+        return Ok(());
+    }
+    if let Err(error) = persist_if_host_persisted(&state, wasm_hash, persist) {
+        restore_value(&mut state, key.to_string(), previous);
+        return Err(error);
+    }
+    Ok(())
+}
+
+fn restore_value(state: &mut SidecarRuntimeState, key: String, previous: Option<Vec<u8>>) {
+    if let Some(previous) = previous {
+        state.kv.insert(key, previous);
+    } else {
+        state.kv.remove(&key);
+    }
+}
+
+fn persist_if_host_persisted(
+    state: &SidecarRuntimeState,
+    wasm_hash: Option<&str>,
+    persist: PersistFn,
+) -> std::result::Result<(), String> {
+    let should_persist = state
+        .describe
+        .as_ref()
+        .map(|describe| describe.state_persistence == PersistenceAuthority::HostPersisted)
+        .unwrap_or(false);
+    if !should_persist {
+        return Ok(());
+    }
+    let wasm_hash =
+        wasm_hash.ok_or_else(|| "host-persisted KV state has no WASM identity".to_string())?;
+    persist(wasm_hash, state).map_err(|error| format!("{error:#}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::abi::SidecarDescribe;
+
+    fn persisted_state() -> Arc<Mutex<SidecarRuntimeState>> {
+        let mut state = SidecarRuntimeState::default();
+        state.describe = Some(SidecarDescribe {
+            schema_version: 1,
+            logical_id: "brrmmmm.test.kv".to_string(),
+            name: "KV Test".to_string(),
+            description: "KV test".to_string(),
+            abi_version: 1,
+            run_modes: vec!["managed_polling".to_string()],
+            state_persistence: PersistenceAuthority::HostPersisted,
+            required_env_vars: vec![],
+            optional_env_vars: vec![],
+            params: None,
+            capabilities_needed: vec!["kv".to_string()],
+            poll_strategy: None,
+            cooldown_policy: None,
+            artifact_types: vec!["published_output".to_string()],
+            acquisition_timeout_secs: None,
+        });
+        Arc::new(Mutex::new(state))
+    }
+
+    fn persist_ok(_wasm_hash: &str, _state: &SidecarRuntimeState) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    fn persist_err(_wasm_hash: &str, _state: &SidecarRuntimeState) -> anyhow::Result<()> {
+        anyhow::bail!("state directory is not writable")
+    }
+
+    #[test]
+    fn set_value_rolls_back_new_key_when_persistence_fails() {
+        let state = persisted_state();
+
+        let result = set_value(
+            &state,
+            "token".to_string(),
+            b"secret".to_vec(),
+            Some("wasm-hash"),
+            persist_err,
+        );
+
+        assert!(result.unwrap_err().contains("not writable"));
+        assert!(
+            !lock_runtime(&state, "runtime_state")
+                .kv
+                .contains_key("token")
+        );
+    }
+
+    #[test]
+    fn set_value_restores_previous_value_when_persistence_fails() {
+        let state = persisted_state();
+        lock_runtime(&state, "runtime_state")
+            .kv
+            .insert("token".to_string(), b"old".to_vec());
+
+        let result = set_value(
+            &state,
+            "token".to_string(),
+            b"new".to_vec(),
+            Some("wasm-hash"),
+            persist_err,
+        );
+
+        assert!(result.is_err());
+        assert_eq!(
+            lock_runtime(&state, "runtime_state").kv.get("token"),
+            Some(&b"old".to_vec())
+        );
+    }
+
+    #[test]
+    fn delete_value_restores_deleted_value_when_persistence_fails() {
+        let state = persisted_state();
+        lock_runtime(&state, "runtime_state")
+            .kv
+            .insert("token".to_string(), b"secret".to_vec());
+
+        let result = delete_value(&state, "token", Some("wasm-hash"), persist_err);
+
+        assert!(result.is_err());
+        assert_eq!(
+            lock_runtime(&state, "runtime_state").kv.get("token"),
+            Some(&b"secret".to_vec())
+        );
+    }
+
+    #[test]
+    fn delete_value_missing_key_does_not_require_persistence() {
+        let state = persisted_state();
+
+        let result = delete_value(&state, "missing", Some("wasm-hash"), persist_err);
+
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn host_persisted_set_requires_wasm_identity() {
+        let state = persisted_state();
+
+        let result = set_value(
+            &state,
+            "token".to_string(),
+            b"secret".to_vec(),
+            None,
+            persist_ok,
+        );
+
+        assert!(result.unwrap_err().contains("no WASM identity"));
+        assert!(
+            !lock_runtime(&state, "runtime_state")
+                .kv
+                .contains_key("token")
+        );
+    }
+}

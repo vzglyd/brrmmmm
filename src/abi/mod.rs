@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 
 pub const ABI_VERSION_V1: u32 = 1;
 
@@ -206,4 +207,7 @@ pub struct SidecarRuntimeState {
     pub last_error: Option<String>,
     /// Populated once describe() has been called.
     pub describe: Option<SidecarDescribe>,
+    /// Persistent key-value storage for session state.
+    #[serde(default)]
+    pub kv: HashMap<String, Vec<u8>>,
 }

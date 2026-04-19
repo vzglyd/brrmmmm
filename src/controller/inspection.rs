@@ -144,6 +144,7 @@ fn instantiate_for_inspection(
         runtime_state,
         Arc::new(AtomicBool::new(false)),
         Arc::new(AtomicBool::new(false)),
+        None,
     )?;
 
     let instance = linker

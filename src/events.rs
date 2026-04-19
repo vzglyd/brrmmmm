@@ -144,6 +144,20 @@ pub enum Event {
         ok: bool,
         error: Option<String>,
     },
+    /// Emitted when a kv_get is called.
+    KvGet {
+        ts: String,
+        key: String,
+        found: bool,
+    },
+    /// Emitted when a kv_set is called.
+    KvSet {
+        ts: String,
+        key: String,
+        value_len: usize,
+    },
+    /// Emitted when a kv_delete is called.
+    KvDelete { ts: String, key: String },
 }
 
 // ── Env var status ───────────────────────────────────────────────────

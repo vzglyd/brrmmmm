@@ -17,6 +17,7 @@ use wasmtime::{Engine, Module};
 use crate::abi::{ABI_VERSION_V1, ActiveMode, SidecarRuntimeState};
 use crate::events::EventSink;
 use crate::host::ArtifactStore;
+use crate::persistence;
 
 use io::lock_runtime;
 use runner::{WasmRunConfig, WasmRunContext, run_wasm_instance};
@@ -51,7 +52,9 @@ impl SidecarController {
         let wasm_bytes =
             std::fs::read(wasm_path).with_context(|| format!("read WASM file: {wasm_path}"))?;
 
-        let runtime_state = Arc::new(Mutex::new(SidecarRuntimeState::default()));
+        let wasm_hash = persistence::wasm_identity(&wasm_bytes);
+        let runtime_state = persistence::load(&wasm_hash).unwrap_or_default();
+        let runtime_state = Arc::new(Mutex::new(runtime_state));
         let stop_signal = Arc::new(AtomicBool::new(false));
 
         let engine = Engine::default();
@@ -81,6 +84,7 @@ impl SidecarController {
                 log_channel,
                 abi_version: ABI_VERSION_V1,
                 wasm_size_bytes: wasm_bytes.len(),
+                wasm_hash,
             };
             let context = WasmRunContext {
                 artifact_store: artifact_store_clone,

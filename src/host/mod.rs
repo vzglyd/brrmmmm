@@ -56,6 +56,9 @@ pub struct HostState {
     /// Pending response from an ai_request, to be read by ai_response_read.
     pub pending_ai_response: Arc<Mutex<Option<Vec<u8>>>>,
 
+    /// Pending value from a kv_get, to be read by kv_response_read.
+    pub pending_kv_response: Arc<Mutex<Option<Vec<u8>>>>,
+
     /// Whether to print channel pushes to stderr (--log-channel flag).
     pub log_channel: bool,
 
@@ -70,6 +73,7 @@ impl HostState {
             pending_response: Arc::new(Mutex::new(None)),
             pending_browser_response: Arc::new(Mutex::new(None)),
             pending_ai_response: Arc::new(Mutex::new(None)),
+            pending_kv_response: Arc::new(Mutex::new(None)),
             log_channel,
             params_bytes,
         }

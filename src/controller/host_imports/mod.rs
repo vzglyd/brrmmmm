@@ -1,6 +1,7 @@
 mod ai;
 mod artifacts;
 mod browser;
+mod kv;
 mod network;
 mod params;
 mod sleep;
@@ -25,6 +26,7 @@ pub(super) fn register_vzglyd_host_on_linker(
     runtime_state: Arc<Mutex<SidecarRuntimeState>>,
     stop_signal: Arc<AtomicBool>,
     force_refresh: Arc<AtomicBool>,
+    wasm_hash: Option<String>,
 ) -> Result<()> {
     let shared = Arc::new(Mutex::new(host_state));
     let request_counter = Arc::new(AtomicU64::new(0));
@@ -47,11 +49,12 @@ pub(super) fn register_vzglyd_host_on_linker(
         linker,
         shared.clone(),
         event_sink.clone(),
-        runtime_state,
+        runtime_state.clone(),
         request_counter,
     )?;
     browser::register(linker, shared.clone(), event_sink.clone())?;
-    ai::register(linker, shared, event_sink)?;
+    ai::register(linker, shared.clone(), event_sink.clone())?;
+    kv::register(linker, shared.clone(), event_sink, runtime_state, wasm_hash)?;
     tracing::register(linker)?;
 
     Ok(())

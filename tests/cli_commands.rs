@@ -42,6 +42,10 @@ fn fixture_wasm() -> PathBuf {
 fn run_brr(args: &[&str]) -> std::process::Output {
     Command::new(bin())
         .args(args)
+        .env(
+            "BRRMMMM_STATE_DIR",
+            repo_root().join("target/test-state/cli-commands"),
+        )
         .output()
         .expect("failed to run brrmmmm")
 }

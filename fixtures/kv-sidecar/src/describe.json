@@ -1,0 +1,26 @@
+{
+  "schema_version": 1,
+  "logical_id": "brrmmmm.fixture.kv",
+  "name": "KV Fixture Sidecar",
+  "description": "Exercises the host key-value imports and leaves one persisted value behind.",
+  "abi_version": 1,
+  "run_modes": ["managed_polling"],
+  "state_persistence": "host_persisted",
+  "required_env_vars": [],
+  "optional_env_vars": [],
+  "params": {
+    "fields": []
+  },
+  "capabilities_needed": ["kv"],
+  "poll_strategy": {
+    "kind": "fixed_interval",
+    "interval_secs": 60
+  },
+  "cooldown_policy": {
+    "authority": "host_persisted",
+    "min_interval_ms": 60000
+  },
+  "artifact_types": [
+    "published_output"
+  ]
+}

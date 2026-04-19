@@ -8,9 +8,10 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use wasmtime::{Engine, Linker, Module, Store};
 
-use crate::abi::SidecarRuntimeState;
+use crate::abi::{PersistenceAuthority, SidecarRuntimeState};
 use crate::events::{Event, EventSink, diag, now_ts};
 use crate::host::{ArtifactStore, HostState};
+use crate::persistence;
 
 use super::host_imports::register_vzglyd_host_on_linker;
 use super::inspection::read_static_describe;
@@ -25,6 +26,7 @@ pub(super) struct WasmRunConfig {
     pub(super) log_channel: bool,
     pub(super) abi_version: u32,
     pub(super) wasm_size_bytes: usize,
+    pub(super) wasm_hash: String,
 }
 
 pub(super) struct WasmRunContext {
@@ -49,6 +51,7 @@ pub(super) fn run_wasm_instance(
         log_channel,
         abi_version,
         wasm_size_bytes,
+        wasm_hash,
     } = config;
     let WasmRunContext {
         artifact_store,
@@ -83,6 +86,7 @@ pub(super) fn run_wasm_instance(
         runtime_state.clone(),
         stop_signal.clone(),
         force_refresh,
+        Some(wasm_hash.clone()),
     )?;
 
     let instance = linker
@@ -94,7 +98,7 @@ pub(super) fn run_wasm_instance(
     // Emit Started event (before calling the entry point).
     event_sink.emit(Event::Started {
         ts: now_ts(),
-        wasm_path,
+        wasm_path: wasm_path.clone(),
         wasm_size_bytes,
         abi_version,
     });
@@ -160,6 +164,25 @@ pub(super) fn run_wasm_instance(
         ts: now_ts(),
         reason: reason.to_string(),
     });
+
+    // Save persisted state if the sidecar requests it.
+    {
+        let state = lock_runtime(&runtime_state, "runtime_state");
+        let should_persist = state
+            .describe
+            .as_ref()
+            .map(|d| d.state_persistence == PersistenceAuthority::HostPersisted)
+            .unwrap_or(false);
+
+        if should_persist {
+            if let Err(error) = persistence::save(&wasm_hash, &state) {
+                diag(
+                    &event_sink,
+                    &format!("[brrmmmm] failed to persist runtime state: {error:#}"),
+                );
+            }
+        }
+    }
 
     call_result
         .map(|_| ())
