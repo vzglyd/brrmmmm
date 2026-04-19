@@ -1,3 +1,4 @@
+mod ai;
 mod artifacts;
 mod browser;
 mod network;
@@ -49,7 +50,8 @@ pub(super) fn register_vzglyd_host_on_linker(
         runtime_state,
         request_counter,
     )?;
-    browser::register(linker, shared, event_sink)?;
+    browser::register(linker, shared.clone(), event_sink.clone())?;
+    ai::register(linker, shared, event_sink)?;
     tracing::register(linker)?;
 
     Ok(())

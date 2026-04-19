@@ -68,6 +68,7 @@ pub enum BrowserAction {
     EvaluateJson {
         expression: String,
     },
+    Screenshot,
 }
 
 impl BrowserAction {
@@ -84,6 +85,7 @@ impl BrowserAction {
             Self::GetText { .. } => "get_text",
             Self::GetHtml { .. } => "get_html",
             Self::EvaluateJson { .. } => "evaluate_json",
+            Self::Screenshot => "screenshot",
         }
     }
 
@@ -120,6 +122,7 @@ impl BrowserAction {
             Self::EvaluateJson { expression } => {
                 format!("expression_len={}", expression.len())
             }
+            Self::Screenshot => String::new(),
         }
     }
 }
@@ -156,6 +159,11 @@ pub enum BrowserActionResponse {
         wire_version: u32,
         ok: bool,
         value: Value,
+    },
+    OkScreenshot {
+        wire_version: u32,
+        ok: bool,
+        png_b64: String,
     },
     Err {
         wire_version: u32,
@@ -214,6 +222,14 @@ impl BrowserActionResponse {
         }
     }
 
+    pub fn ok_screenshot(png_b64: String) -> Self {
+        Self::OkScreenshot {
+            wire_version: WIRE_VERSION,
+            ok: true,
+            png_b64,
+        }
+    }
+
     pub fn err(error: impl Into<String>, message: impl Into<String>) -> Self {
         Self::Err {
             wire_version: WIRE_VERSION,
@@ -232,6 +248,7 @@ impl BrowserActionResponse {
                 | Self::OkText { .. }
                 | Self::OkHtml { .. }
                 | Self::OkJson { .. }
+                | Self::OkScreenshot { .. }
         )
     }
 }

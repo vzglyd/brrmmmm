@@ -130,6 +130,8 @@ pub struct SidecarDescribe {
     pub cooldown_policy: Option<CooldownPolicy>,
     #[serde(default)]
     pub artifact_types: Vec<String>,
+    #[serde(default)]
+    pub acquisition_timeout_secs: Option<u32>,
 }
 
 impl std::fmt::Display for PollStrategy {

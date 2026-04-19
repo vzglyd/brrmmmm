@@ -1,5 +1,5 @@
 use brrmmmm::abi::{
-    ActiveMode, CooldownPolicy, PersistenceAuthority, PollStrategy, SidecarPhase,
+    ActiveMode, CooldownPolicy, PersistenceAuthority, PollStrategy, SidecarDescribe, SidecarPhase,
     SidecarRuntimeState,
 };
 
@@ -119,4 +119,54 @@ fn sidecar_runtime_state_default_roundtrip() {
     let decoded: SidecarRuntimeState = serde_json::from_str(&json).unwrap();
     let json2 = serde_json::to_string(&decoded).unwrap();
     assert_eq!(json, json2);
+}
+
+#[test]
+fn sidecar_describe_acquisition_timeout_defaults_to_none() {
+    let describe: SidecarDescribe = serde_json::from_value(serde_json::json!({
+        "schema_version": 1,
+        "logical_id": "brrmmmm.test",
+        "name": "Test Sidecar",
+        "description": "Test sidecar",
+        "abi_version": 1,
+        "run_modes": ["managed_polling"],
+        "state_persistence": "volatile",
+        "required_env_vars": [],
+        "optional_env_vars": [],
+        "params": {"fields": []},
+        "capabilities_needed": [],
+        "poll_strategy": null,
+        "cooldown_policy": null,
+        "artifact_types": ["published_output"]
+    }))
+    .unwrap();
+
+    assert_eq!(describe.acquisition_timeout_secs, None);
+}
+
+#[test]
+fn sidecar_describe_acquisition_timeout_roundtrips() {
+    let describe: SidecarDescribe = serde_json::from_value(serde_json::json!({
+        "schema_version": 1,
+        "logical_id": "brrmmmm.test",
+        "name": "Test Sidecar",
+        "description": "Test sidecar",
+        "abi_version": 1,
+        "run_modes": ["managed_polling"],
+        "state_persistence": "volatile",
+        "required_env_vars": [],
+        "optional_env_vars": [],
+        "params": {"fields": []},
+        "capabilities_needed": ["browser", "ai"],
+        "acquisition_timeout_secs": 90,
+        "poll_strategy": null,
+        "cooldown_policy": null,
+        "artifact_types": ["published_output"]
+    }))
+    .unwrap();
+
+    let json = roundtrip(&describe);
+    let decoded: SidecarDescribe = serde_json::from_str(&json).unwrap();
+
+    assert_eq!(decoded.acquisition_timeout_secs, Some(90));
 }

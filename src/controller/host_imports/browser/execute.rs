@@ -1,5 +1,6 @@
 use chromiumoxide::Browser;
 use chromiumoxide::browser::BrowserConfig;
+use chromiumoxide::cdp::browser_protocol::page::CaptureScreenshotParams;
 use futures::StreamExt as _;
 use tokio::runtime::Runtime;
 
@@ -252,6 +253,17 @@ async fn run_action(
                 Err(e) => BrowserActionResponse::err("evaluate_json_failed", e),
             }
         }
+        BrowserAction::Screenshot => {
+            let page = match current_page(browser, active_page).await {
+                Ok(p) => p,
+                Err(e) => return BrowserActionResponse::err("no_page", e),
+            };
+            let params = CaptureScreenshotParams::builder().build();
+            match page.screenshot(params).await {
+                Ok(bytes) => BrowserActionResponse::ok_screenshot(base64_encode(&bytes)),
+                Err(e) => BrowserActionResponse::err("screenshot_failed", e.to_string()),
+            }
+        }
     }
 }
 
@@ -399,6 +411,29 @@ fn glob_rec(p: &[char], t: &[char], pi: usize, ti: usize) -> bool {
     false
 }
 
+fn base64_encode(bytes: &[u8]) -> String {
+    const CHARS: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity((bytes.len() + 2) / 3 * 4);
+    for chunk in bytes.chunks(3) {
+        let b0 = chunk[0];
+        let b1 = if chunk.len() > 1 { chunk[1] } else { 0 };
+        let b2 = if chunk.len() > 2 { chunk[2] } else { 0 };
+        out.push(CHARS[(b0 >> 2) as usize] as char);
+        out.push(CHARS[((b0 & 3) << 4 | b1 >> 4) as usize] as char);
+        if chunk.len() > 1 {
+            out.push(CHARS[((b1 & 0xf) << 2 | b2 >> 6) as usize] as char);
+        } else {
+            out.push('=');
+        }
+        if chunk.len() > 2 {
+            out.push(CHARS[(b2 & 0x3f) as usize] as char);
+        } else {
+            out.push('=');
+        }
+    }
+    out
+}
+
 fn browser_headless_disabled() -> bool {
     std::env::var("BRRMMMM_BROWSER_HEADLESS")
         .map(|value| {
@@ -409,4 +444,18 @@ fn browser_headless_disabled() -> bool {
                 || value.eq_ignore_ascii_case("off")
         })
         .unwrap_or(false)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::base64_encode;
+
+    #[test]
+    fn base64_encoder_handles_padding() {
+        assert_eq!(base64_encode(b""), "");
+        assert_eq!(base64_encode(b"f"), "Zg==");
+        assert_eq!(base64_encode(b"fo"), "Zm8=");
+        assert_eq!(base64_encode(b"foo"), "Zm9v");
+        assert_eq!(base64_encode(b"foobar"), "Zm9vYmFy");
+    }
 }

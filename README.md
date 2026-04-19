@@ -257,6 +257,12 @@ The runtime exposes the `vzglyd_host` module to every sidecar:
 | `network_request` | `fn(ptr: i32, len: i32) -> i32` | Submit a host-mediated network request |
 | `network_response_len` | `fn() -> i32` | Query size of the pending response |
 | `network_response_read` | `fn(ptr: i32, len: i32) -> i32` | Read the response into sidecar memory |
+| `browser_action` | `fn(ptr: i32, len: i32) -> i32` | Submit a host-mediated browser action |
+| `browser_response_len` | `fn() -> i32` | Query size of the pending browser response |
+| `browser_response_read` | `fn(ptr: i32, len: i32) -> i32` | Read the browser response into sidecar memory |
+| `ai_request` | `fn(ptr: i32, len: i32) -> i32` | Submit a host-mediated AI request |
+| `ai_response_len` | `fn() -> i32` | Query size of the pending AI response |
+| `ai_response_read` | `fn(ptr: i32, len: i32) -> i32` | Read the AI response into sidecar memory |
 | `trace_span_start` | `fn(...) -> i32` | Start a distributed tracing span |
 | `trace_span_end` | `fn(...) -> i32` | End a tracing span |
 | `trace_event` | `fn(ptr: i32, len: i32) -> i32` | Emit an instant trace event |
@@ -273,17 +279,16 @@ Network requests use a JSON wire protocol:
 
 ---
 
-## Planned capabilities
+## Host capabilities
 
-The following host imports are designed and will be implemented to support the full
-remediation model:
+The following host imports support the full remediation model:
 
 **`browser_*` — browser automation (implemented)**
 brrmmmm uses existing browser automation tooling (headless Chrome via CDP) to execute
 browser sessions on behalf of sidecars — it is not a browser automation framework
 itself. Sidecars drive the session via a JSON action protocol (`navigate`, `fill`,
 `click`, `press`, `wait_for_selector`, `wait_for_url`, `current_url`, `get_cookies`,
-`get_text`, `get_html`, `evaluate_json`).
+`get_text`, `get_html`, `evaluate_json`, `screenshot`).
 Enables login form flows, OAuth consent screens, and page scraping.
 Declare `"capabilities_needed": ["browser"]`.
 
@@ -294,13 +299,22 @@ process to launch Chrome with a visible window:
 BRRMMMM_BROWSER_HEADLESS=false brrmmmm run demos/browser_login_fixture.wasm --once
 ```
 
-**`ai_*` — AI model invocation**
-Sidecars submit prompts (including images) to a host-managed language model. Enables
-CAPTCHA resolution, interpretation of unstructured page content, and other tasks that
-require visual or semantic understanding. The host owns the API key and model selection.
+**`ai_*` — AI model invocation (implemented)**
+Sidecars submit prompts and PNG screenshots to a host-managed Anthropic Messages API
+client. Enables CAPTCHA resolution, interpretation of unstructured page content, and
+other tasks that require visual or semantic understanding. The host owns the API key
+and model selection.
 Declare `"capabilities_needed": ["ai"]`.
 
-**`acquisition_timeout_secs` in describe**
+The imports are `ai_request`, `ai_response_len`, and `ai_response_read`. Set
+`ANTHROPIC_API_KEY` on the brrmmmm process. By default brrmmmm uses
+`claude-haiku-4-5-20251001`; set `BRRMMMM_AI_MODEL` to override it.
+
+```sh
+ANTHROPIC_API_KEY=... brrmmmm run demos/captcha_solver.wasm --once
+```
+
+**`acquisition_timeout_secs` in describe (implemented)**
 Sidecars declare their expected acquisition budget. brrmmmm enforces it. The default
 is 30 seconds; a sidecar that drives a browser login flow may declare 120 seconds.
 
@@ -373,6 +387,8 @@ npx --package @moonrepo/cli@2.2.1 moon run core:ci
 
 - Rust stable
 - `wasm32-wasip1` target for building sidecars: `rustup target add wasm32-wasip1`
+- Chrome or Chromium for sidecars that declare the `browser` capability
+- `ANTHROPIC_API_KEY` for sidecars that declare the `ai` capability
 - Node.js 20+ for the TUI frontend
 
 ---

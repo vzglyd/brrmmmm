@@ -1,0 +1,27 @@
+{
+  "schema_version": 1,
+  "logical_id": "brrmmmm.fixture.captcha_solver",
+  "name": "CAPTCHA Solver Demo",
+  "description": "Screenshots a styled CAPTCHA challenge page and resolves the challenge text using AI vision. Requires Chrome/Chromium and ANTHROPIC_API_KEY on the host process.",
+  "abi_version": 1,
+  "run_modes": ["managed_polling"],
+  "state_persistence": "volatile",
+  "required_env_vars": [],
+  "optional_env_vars": [],
+  "params": {
+    "fields": []
+  },
+  "capabilities_needed": ["browser", "ai"],
+  "acquisition_timeout_secs": 60,
+  "poll_strategy": {
+    "kind": "fixed_interval",
+    "interval_secs": 300
+  },
+  "cooldown_policy": {
+    "authority": "volatile",
+    "min_interval_ms": 300000
+  },
+  "artifact_types": [
+    "published_output"
+  ]
+}

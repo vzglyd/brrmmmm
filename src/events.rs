@@ -130,6 +130,20 @@ pub enum Event {
         ok: bool,
         error: Option<String>,
     },
+    /// Emitted when an ai_request starts.
+    AiRequest {
+        ts: String,
+        action: String,
+        prompt_len: usize,
+    },
+    /// Emitted when an ai_request completes.
+    AiRequestDone {
+        ts: String,
+        action: String,
+        elapsed_ms: u64,
+        ok: bool,
+        error: Option<String>,
+    },
 }
 
 // ── Env var status ───────────────────────────────────────────────────

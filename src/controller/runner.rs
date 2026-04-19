@@ -1,4 +1,9 @@
-use std::sync::{Arc, Mutex, atomic::AtomicBool};
+use std::sync::{
+    Arc, Mutex,
+    atomic::{AtomicBool, Ordering},
+};
+use std::thread;
+use std::time::Duration;
 
 use anyhow::{Context, Result};
 use wasmtime::{Engine, Linker, Module, Store};
@@ -76,7 +81,7 @@ pub(super) fn run_wasm_instance(
         host_state,
         event_sink.clone(),
         runtime_state.clone(),
-        stop_signal,
+        stop_signal.clone(),
         force_refresh,
     )?;
 
@@ -96,11 +101,30 @@ pub(super) fn run_wasm_instance(
 
     match call_describe(&instance, &mut store) {
         Ok(Some(describe)) => {
+            let timeout_secs = describe
+                .acquisition_timeout_secs
+                .filter(|timeout_secs| *timeout_secs > 0)
+                .unwrap_or(30) as u64;
             event_sink.emit(Event::Describe {
                 ts: now_ts(),
                 describe: describe.clone(),
             });
             lock_runtime(&runtime_state, "runtime_state").describe = Some(describe);
+
+            let stop_for_timeout = Arc::clone(&stop_signal);
+            let event_sink_timeout = event_sink.clone();
+            thread::spawn(move || {
+                thread::sleep(Duration::from_secs(timeout_secs));
+                if !stop_for_timeout.load(Ordering::SeqCst) {
+                    stop_for_timeout.store(true, Ordering::SeqCst);
+                    diag(
+                        &event_sink_timeout,
+                        &format!(
+                            "[brrmmmm] acquisition budget of {timeout_secs}s expired; signalling stop"
+                        ),
+                    );
+                }
+            });
         }
         Ok(None) => diag(
             &event_sink,

@@ -111,6 +111,13 @@ impl SidecarController {
         lock_runtime(&self.runtime_state, "runtime_state").clone()
     }
 
+    /// Return the sidecar-declared acquisition budget once describe() has been read.
+    pub fn acquisition_timeout_secs(&self) -> Option<u32> {
+        self.snapshot()
+            .describe
+            .and_then(|describe| describe.acquisition_timeout_secs)
+    }
+
     /// Poll for the latest published_output artifact, consuming it.
     pub fn poll_output(&self) -> Option<Vec<u8>> {
         lock_runtime(&self.artifact_store, "artifact_store")

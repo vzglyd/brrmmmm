@@ -88,10 +88,17 @@ fn run_once(options: RunOnceOptions<'_>) -> Result<()> {
         SidecarController::new(wasm_path, env_vars, params_bytes.clone(), log_channel, sink)
             .with_context(|| format!("failed to load sidecar: {wasm_path}"))?;
 
-    let timeout = std::time::Duration::from_secs(30);
+    let mut timeout = std::time::Duration::from_secs(30);
     let start = std::time::Instant::now();
 
     loop {
+        if let Some(timeout_secs) = controller
+            .acquisition_timeout_secs()
+            .filter(|timeout_secs| *timeout_secs > 0)
+        {
+            timeout = std::time::Duration::from_secs(timeout_secs as u64);
+        }
+
         if let Some(data) = controller.poll_output() {
             if !events_mode {
                 write_payload(&data, output)?;

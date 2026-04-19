@@ -104,6 +104,9 @@ fn validate_describe_contract(describe: &SidecarDescribe) -> Result<()> {
             describe.abi_version
         );
     }
+    if describe.acquisition_timeout_secs == Some(0) {
+        anyhow::bail!("describe.acquisition_timeout_secs must be greater than zero when present");
+    }
     for mode in &describe.run_modes {
         match mode.as_str() {
             "managed_polling" | "interactive" => {}

@@ -1,3 +1,4 @@
+pub mod ai_request;
 pub mod browser_request;
 pub mod host_request;
 
@@ -52,6 +53,9 @@ pub struct HostState {
     /// Pending response from a browser_action, to be read by browser_response_read.
     pub pending_browser_response: Arc<Mutex<Option<Vec<u8>>>>,
 
+    /// Pending response from an ai_request, to be read by ai_response_read.
+    pub pending_ai_response: Arc<Mutex<Option<Vec<u8>>>>,
+
     /// Whether to print channel pushes to stderr (--log-channel flag).
     pub log_channel: bool,
 
@@ -65,6 +69,7 @@ impl HostState {
             artifact_store: Arc::new(Mutex::new(ArtifactStore::default())),
             pending_response: Arc::new(Mutex::new(None)),
             pending_browser_response: Arc::new(Mutex::new(None)),
+            pending_ai_response: Arc::new(Mutex::new(None)),
             log_channel,
             params_bytes,
         }
