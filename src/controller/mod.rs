@@ -21,6 +21,7 @@ use crate::host::ArtifactStore;
 use crate::identity;
 use crate::persistence;
 
+use io::RuntimePolicy;
 use io::lock_runtime;
 use runner::{WasmRunConfig, WasmRunContext, run_wasm_instance};
 
@@ -51,6 +52,17 @@ impl SidecarController {
         log_channel: bool,
         event_sink: EventSink,
     ) -> Result<Self> {
+        let policy = RuntimePolicy::default();
+        if let Some(params) = params_bytes.as_ref()
+            && params.len() > policy.max_params_bytes
+        {
+            anyhow::bail!(
+                "sidecar params are {} bytes, exceeding the configured limit of {} bytes",
+                params.len(),
+                policy.max_params_bytes
+            );
+        }
+
         let wasm_bytes =
             std::fs::read(wasm_path).with_context(|| format!("read WASM file: {wasm_path}"))?;
 
@@ -111,6 +123,7 @@ impl SidecarController {
                 wasm_hash,
                 module_hash,
                 attestation_identity,
+                policy,
             };
             let context = WasmRunContext {
                 artifact_store: artifact_store_clone,

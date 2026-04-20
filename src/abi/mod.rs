@@ -98,6 +98,9 @@ pub enum SidecarParamType {
     Integer,
     Number,
     Boolean,
+    /// Arbitrary JSON value. Host-side parsing of `Json`-typed param values MUST use
+    /// bounded input: validate byte length before deserializing to prevent stack/heap
+    /// exhaustion from deeply nested or oversized structures.
     Json,
 }
 
@@ -127,7 +130,9 @@ pub struct SidecarDescribe {
     pub params: Option<SidecarParamsSchema>,
     #[serde(default)]
     pub capabilities_needed: Vec<String>,
+    #[serde(default)]
     pub poll_strategy: Option<PollStrategy>,
+    #[serde(default)]
     pub cooldown_policy: Option<CooldownPolicy>,
     #[serde(default)]
     pub artifact_types: Vec<String>,
@@ -167,8 +172,7 @@ pub struct ArtifactMeta {
 }
 
 // ── Guest-emitted event (from take_events ring buffer) ───────────────
-
-#[allow(dead_code)]
+// Reserved — take_events host import not yet implemented.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GuestEvent {
     pub ts_ms: u64,

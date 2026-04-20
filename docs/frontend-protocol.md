@@ -51,7 +51,7 @@ Application code should consume `published_output`.
 
 | Mode | Developer expectation |
 |---|---|
-| `v1_legacy` | No reliable static manifest. Treat output as opaque JSON and validate in the consumer. |
+| `v1_legacy` | No reliable static manifest. Treat output as opaque JSON and validate in the consumer. **Frontend-inferred** — this state is detected by the absence of a static describe contract; sidecars do not declare it in `run_modes` (doing so would fail validation). |
 | `managed_polling` | Sidecar declares params, artifacts, polling, cooldown, and capabilities. Use `inspect` as the contract. |
 | `interactive` | Params can change while the sidecar is alive. Sidecars should read `params_len`/`params_read` each cycle. |
 

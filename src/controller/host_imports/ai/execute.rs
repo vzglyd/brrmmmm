@@ -9,7 +9,7 @@ pub(super) struct AiSession {
 }
 
 impl AiSession {
-    pub fn new() -> Self {
+    pub fn new() -> anyhow::Result<Self> {
         let api_key = std::env::var("ANTHROPIC_API_KEY").unwrap_or_default();
         let model = std::env::var("BRRMMMM_AI_MODEL")
             .ok()
@@ -17,13 +17,12 @@ impl AiSession {
             .unwrap_or_else(|| DEFAULT_ANTHROPIC_MODEL.to_string());
         let client = reqwest::blocking::Client::builder()
             .timeout(std::time::Duration::from_secs(60))
-            .build()
-            .expect("build reqwest client");
-        Self {
+            .build()?;
+        Ok(Self {
             client,
             model,
             api_key,
-        }
+        })
     }
 
     pub fn prepare_body(&self, action: &AiAction) -> Result<Vec<u8>, AiActionResponse> {

@@ -40,6 +40,12 @@ impl ArtifactStore {
         }
     }
 
+    pub fn clear(&mut self) {
+        self.raw_source = None;
+        self.normalized = None;
+        self.published_output = None;
+    }
+
     /// Take the published output (consumed once, like the old channel_data.take()).
     pub fn take_published(&mut self) -> Option<Artifact> {
         self.published_output.take()
@@ -160,6 +166,14 @@ impl HostState {
         self.identity_disclosure_visible = visible;
     }
 
+    pub fn clear_transient_runtime_outputs(&mut self) {
+        clear_mutex_option(&self.pending_response);
+        clear_mutex_option(&self.pending_browser_response);
+        clear_mutex_option(&self.pending_ai_response);
+        clear_mutex_option(&self.pending_kv_response);
+        lock_or_recover(&self.artifact_store, "artifact_store").clear();
+    }
+
     pub fn full_user_agent(&self, envelope: Option<&SignedEnvelope>) -> String {
         let base = self
             .user_agent
@@ -185,6 +199,20 @@ impl HostState {
             parts.push(envelope.user_agent_suffix.clone());
         }
         parts.join(" ")
+    }
+}
+
+fn clear_mutex_option<T>(mutex: &Mutex<Option<T>>) {
+    *lock_or_recover(mutex, "transient_response") = None;
+}
+
+fn lock_or_recover<'a, T>(mutex: &'a Mutex<T>, name: &str) -> std::sync::MutexGuard<'a, T> {
+    match mutex.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => {
+            eprintln!("[brrmmmm] recovering poisoned {name} mutex");
+            poisoned.into_inner()
+        }
     }
 }
 

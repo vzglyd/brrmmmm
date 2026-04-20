@@ -65,7 +65,12 @@ impl BrowserSession {
             self.last_applied_ua = current_ua.clone();
         }
 
-        let browser = self.browser.as_ref().unwrap();
+        let Some(browser) = self.browser.as_ref() else {
+            return BrowserActionResponse::err(
+                "browser_unavailable",
+                "browser session was not available after launch",
+            );
+        };
         let active_page = &mut self.active_page;
         let shared = self.shared.clone();
         let interception_started = &mut self.interception_started;
@@ -126,8 +131,9 @@ async fn run_action(
                         Some(page) => page,
                         None => match browser.new_page("about:blank").await {
                             Ok(page) => {
+                                let page_clone = page.clone();
                                 *active_page = Some(page);
-                                active_page.as_ref().cloned().unwrap()
+                                page_clone
                             }
                             Err(e) => {
                                 return BrowserActionResponse::err(

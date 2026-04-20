@@ -14,6 +14,13 @@ unsafe extern "C" {
     fn network_response_read(ptr: i32, len: i32) -> i32;
     fn artifact_publish(kind_ptr: i32, kind_len: i32, data_ptr: i32, data_len: i32) -> i32;
     fn log_info(ptr: i32, len: i32) -> i32;
+    fn params_len() -> i32;
+    fn params_read(ptr: i32, len: i32) -> i32;
+}
+
+#[derive(Deserialize)]
+struct WeatherParams {
+    location_name: Option<String>,
 }
 
 #[unsafe(no_mangle)]
@@ -35,7 +42,9 @@ pub extern "C" fn vzglyd_sidecar_describe_len() -> i32 {
 pub extern "C" fn vzglyd_sidecar_start() {
     let lat = env_var("LATITUDE").unwrap_or_else(|| DEFAULT_LAT.to_string());
     let lon = env_var("LONGITUDE").unwrap_or_else(|| DEFAULT_LON.to_string());
-    let location = env_var("LOCATION_NAME").unwrap_or_else(|| DEFAULT_LOCATION.to_string());
+    let location = params_location_name()
+        .or_else(|| env_var("LOCATION_NAME"))
+        .unwrap_or_else(|| DEFAULT_LOCATION.to_string());
 
     let path = format!(
         "/v1/forecast?latitude={lat}&longitude={lon}&current_weather=true&wind_speed_unit=ms"
@@ -171,6 +180,25 @@ fn log(msg: &str) {
 
 fn env_var(name: &str) -> Option<String> {
     std::env::var(name).ok()
+}
+
+fn params_location_name() -> Option<String> {
+    let len = unsafe { params_len() };
+    if len <= 0 {
+        return None;
+    }
+
+    let mut buf = vec![0u8; len as usize];
+    let read = unsafe { params_read(buf.as_mut_ptr() as i32, len) };
+    if read != len {
+        return None;
+    }
+
+    let params: WeatherParams = serde_json::from_slice(&buf).ok()?;
+    params
+        .location_name
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
 }
 
 fn weathercode_to_condition(code: u32) -> &'static str {

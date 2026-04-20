@@ -1,21 +1,23 @@
 use std::sync::{Arc, Mutex};
 
 use anyhow::Result;
-use wasmtime::Linker;
 
 use crate::abi::{PersistenceAuthority, SidecarRuntimeState};
+
+const KV_MAX_VALUE_BYTES: usize = 64 * 1024;
+const KV_MAX_TOTAL_BYTES: usize = 1024 * 1024;
 use crate::events::{Event, EventSink, diag, now_ts};
 use crate::host::HostState;
 use crate::mission_state::{self, CAP_KV};
 use crate::persistence;
 
-use super::super::super::io::{lock_runtime, read_memory_from_caller};
+use super::super::super::io::{WasmCaller, WasmLinker, lock_runtime, read_memory_from_caller};
 use super::state::{clear_pending_kv_response, store_pending_kv_response};
 
 type PersistFn = fn(&str, &SidecarRuntimeState) -> anyhow::Result<()>;
 
 pub(super) fn register(
-    linker: &mut Linker<wasmtime_wasi::preview1::WasiP1Ctx>,
+    linker: &mut WasmLinker,
     shared: Arc<Mutex<HostState>>,
     event_sink: EventSink,
     runtime_state: Arc<Mutex<SidecarRuntimeState>>,
@@ -29,10 +31,7 @@ pub(super) fn register(
         linker.func_wrap(
             "vzglyd_host",
             "kv_get",
-            move |mut caller: wasmtime::Caller<'_, wasmtime_wasi::preview1::WasiP1Ctx>,
-                  ptr: i32,
-                  len: i32|
-                  -> i32 {
+            move |mut caller: WasmCaller<'_>, ptr: i32, len: i32| -> i32 {
                 let key = match read_key(&mut caller, ptr, len, &event_sink, "kv_get") {
                     Ok(key) => key,
                     Err(status) => return status,
@@ -70,7 +69,7 @@ pub(super) fn register(
         linker.func_wrap(
             "vzglyd_host",
             "kv_set",
-            move |mut caller: wasmtime::Caller<'_, wasmtime_wasi::preview1::WasiP1Ctx>,
+            move |mut caller: WasmCaller<'_>,
                   key_ptr: i32,
                   key_len: i32,
                   val_ptr: i32,
@@ -124,10 +123,7 @@ pub(super) fn register(
         linker.func_wrap(
             "vzglyd_host",
             "kv_delete",
-            move |mut caller: wasmtime::Caller<'_, wasmtime_wasi::preview1::WasiP1Ctx>,
-                  ptr: i32,
-                  len: i32|
-                  -> i32 {
+            move |mut caller: WasmCaller<'_>, ptr: i32, len: i32| -> i32 {
                 let key = match read_key(&mut caller, ptr, len, &event_sink, "kv_delete") {
                     Ok(key) => key,
                     Err(status) => return status,
@@ -164,7 +160,7 @@ fn record_kv_activity(shared: &Arc<Mutex<HostState>>, operation: &str) {
 }
 
 fn read_key(
-    caller: &mut wasmtime::Caller<'_, wasmtime_wasi::preview1::WasiP1Ctx>,
+    caller: &mut WasmCaller<'_>,
     ptr: i32,
     len: i32,
     event_sink: &EventSink,
@@ -196,7 +192,29 @@ fn set_value(
     wasm_hash: Option<&str>,
     persist: PersistFn,
 ) -> std::result::Result<(), String> {
+    if value.len() > KV_MAX_VALUE_BYTES {
+        return Err(format!(
+            "kv_set value too large: {} bytes (max {} bytes per key)",
+            value.len(),
+            KV_MAX_VALUE_BYTES
+        ));
+    }
+
     let mut state = lock_runtime(runtime_state, "runtime_state");
+
+    let existing_total: usize = state
+        .kv
+        .iter()
+        .filter(|(k, _)| k.as_str() != key.as_str())
+        .map(|(_, v)| v.len())
+        .sum();
+    if existing_total + value.len() > KV_MAX_TOTAL_BYTES {
+        return Err(format!(
+            "kv_set would exceed total KV budget: {existing_total} + {} bytes (max {KV_MAX_TOTAL_BYTES} bytes total)",
+            value.len()
+        ));
+    }
+
     let previous = state.kv.insert(key.clone(), value);
     if let Err(error) = persist_if_host_persisted(&state, wasm_hash, persist) {
         restore_value(&mut state, key, previous);
@@ -349,6 +367,79 @@ mod tests {
         let result = delete_value(&state, "missing", Some("wasm-hash"), persist_err);
 
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn set_value_rejects_oversized_single_value() {
+        let state = persisted_state();
+        let oversized = vec![0u8; KV_MAX_VALUE_BYTES + 1];
+
+        let result = set_value(
+            &state,
+            "big".to_string(),
+            oversized,
+            Some("wasm-hash"),
+            persist_ok,
+        );
+
+        assert!(result.unwrap_err().contains("too large"));
+    }
+
+    #[test]
+    fn set_value_rejects_when_total_budget_exceeded() {
+        let state = persisted_state();
+        // Fill the map: 16 keys × KV_MAX_VALUE_BYTES = KV_MAX_TOTAL_BYTES exactly.
+        for i in 0..16usize {
+            set_value(
+                &state,
+                format!("key{i}"),
+                vec![0u8; KV_MAX_VALUE_BYTES],
+                Some("wasm-hash"),
+                persist_ok,
+            )
+            .unwrap_or_else(|e| panic!("key{i} should fit: {e}"));
+        }
+
+        // Any additional write (even 1 byte) must be rejected.
+        let result = set_value(
+            &state,
+            "overflow".to_string(),
+            vec![0u8; 1],
+            Some("wasm-hash"),
+            persist_ok,
+        );
+
+        assert!(result.unwrap_err().contains("total KV budget"));
+    }
+
+    #[test]
+    fn set_value_replacing_existing_key_does_not_double_count_old_bytes() {
+        let state = persisted_state();
+        // Fill the map to capacity (16 × KV_MAX_VALUE_BYTES = KV_MAX_TOTAL_BYTES).
+        for i in 0..16usize {
+            set_value(
+                &state,
+                format!("key{i}"),
+                vec![0u8; KV_MAX_VALUE_BYTES],
+                Some("wasm-hash"),
+                persist_ok,
+            )
+            .unwrap_or_else(|e| panic!("key{i} should fit: {e}"));
+        }
+
+        // Replace an existing key with a smaller value — this should not exceed the budget.
+        let result = set_value(
+            &state,
+            "key0".to_string(),
+            vec![1u8; 10],
+            Some("wasm-hash"),
+            persist_ok,
+        );
+
+        assert!(
+            result.is_ok(),
+            "replacing existing key should succeed: {result:?}"
+        );
     }
 
     #[test]

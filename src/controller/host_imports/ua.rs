@@ -1,16 +1,14 @@
 use std::sync::{Arc, Mutex};
 
 use anyhow::Result;
-use wasmtime::Linker;
 
 use crate::host::HostState;
 
-use super::super::io::{lock_runtime, read_memory_from_caller, write_memory_from_caller};
+use super::super::io::{
+    WasmCaller, WasmLinker, lock_runtime, read_memory_from_caller, write_memory_from_caller,
+};
 
-pub(super) fn register(
-    linker: &mut Linker<wasmtime_wasi::preview1::WasiP1Ctx>,
-    shared: Arc<Mutex<HostState>>,
-) -> Result<()> {
+pub(super) fn register(linker: &mut WasmLinker, shared: Arc<Mutex<HostState>>) -> Result<()> {
     let shared_len = shared.clone();
     let shared_get = shared.clone();
     let shared_set = shared.clone();
@@ -19,18 +17,13 @@ pub(super) fn register(
     linker.func_wrap(
         "vzglyd_host",
         "ua_get_len",
-        move |_caller: wasmtime::Caller<'_, wasmtime_wasi::preview1::WasiP1Ctx>| -> i32 {
-            user_agent_len(&shared_len)
-        },
+        move |_caller: WasmCaller<'_>| -> i32 { user_agent_len(&shared_len) },
     )?;
 
     linker.func_wrap(
         "vzglyd_host",
         "ua_get",
-        move |mut caller: wasmtime::Caller<'_, wasmtime_wasi::preview1::WasiP1Ctx>,
-              ptr: i32,
-              len: i32|
-              -> i32 {
+        move |mut caller: WasmCaller<'_>, ptr: i32, len: i32| -> i32 {
             let ua_bytes = current_user_agent_bytes(&shared_get);
             let to_write = &ua_bytes[..ua_bytes.len().min(len as usize)];
             match write_memory_from_caller(&mut caller, ptr, to_write) {
@@ -43,10 +36,7 @@ pub(super) fn register(
     linker.func_wrap(
         "vzglyd_host",
         "ua_set",
-        move |mut caller: wasmtime::Caller<'_, wasmtime_wasi::preview1::WasiP1Ctx>,
-              ptr: i32,
-              len: i32|
-              -> i32 {
+        move |mut caller: WasmCaller<'_>, ptr: i32, len: i32| -> i32 {
             let bytes = match read_memory_from_caller(&mut caller, ptr, len) {
                 Ok(b) => b,
                 Err(_) => return -1,

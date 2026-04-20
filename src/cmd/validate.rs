@@ -1,4 +1,5 @@
 use anyhow::{Context, Result};
+use std::path::Path;
 
 use brrmmmm::controller::{inspect_wasm_contract, validate_inspection};
 
@@ -6,14 +7,15 @@ use crate::cli::OutputFormat;
 
 use super::output::print_table;
 
-pub(crate) fn cmd_validate(wasm_path: &str, output: OutputFormat) -> Result<()> {
-    let inspection = inspect_wasm_contract(wasm_path)
-        .with_context(|| format!("WASM module failed to compile/validate: {wasm_path}"))?;
+pub(crate) fn cmd_validate(wasm_path: &Path, output: OutputFormat) -> Result<()> {
+    let wasm_str = wasm_path.to_string_lossy();
+    let inspection = inspect_wasm_contract(&wasm_str)
+        .with_context(|| format!("WASM module failed to compile/validate: {wasm_str}"))?;
     validate_inspection(&inspection)?;
 
     match output {
         OutputFormat::Text => {
-            eprintln!("[brrmmmm] validating {wasm_path}");
+            eprintln!("[brrmmmm] validating {wasm_str}");
             eprintln!("[brrmmmm] ✓ WASM module validates successfully");
             eprintln!(
                 "[brrmmmm]   entry: {}",

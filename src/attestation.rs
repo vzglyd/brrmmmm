@@ -489,11 +489,9 @@ fn required<'a>(
 #[allow(dead_code)]
 fn parse_array<const N: usize>(value: &str) -> Result<[u8; N], AttestationError> {
     let bytes = decode_base64url(value).map_err(AttestationError::MalformedField)?;
-    bytes
-        .try_into()
-        .map_err(|bytes: Vec<u8>| {
-            AttestationError::MalformedField(format!("expected {N} bytes, got {}", bytes.len()))
-        })
+    bytes.try_into().map_err(|bytes: Vec<u8>| {
+        AttestationError::MalformedField(format!("expected {N} bytes, got {}", bytes.len()))
+    })
 }
 
 #[cfg(test)]
@@ -607,7 +605,8 @@ mod tests {
 
     #[test]
     fn special_characters_in_path_are_handled() {
-        let binding = RequestBinding::new("GET", "example.com", "/search?q=hello+world&lang=en", None);
+        let binding =
+            RequestBinding::new("GET", "example.com", "/search?q=hello+world&lang=en", None);
         let key = key();
         let public_key = key.verifying_key().to_bytes();
         let fields = fields(public_key);

@@ -5,7 +5,6 @@ use std::sync::{
 use std::time::Instant;
 
 use anyhow::Result;
-use wasmtime::Linker;
 
 use crate::abi::{SidecarPhase, SidecarRuntimeState};
 use crate::attestation::RequestBinding;
@@ -15,14 +14,14 @@ use crate::host::host_request::{ErrorKind, HostRequest, HostResponse};
 use crate::mission_state::{self, CAP_NETWORK};
 
 use super::super::super::io::{
-    describe_request, encode_response_for_sidecar, execute_native_request, lock_runtime,
-    read_memory_from_caller, response_info, update_failure_state, update_phase_state,
+    WasmCaller, WasmLinker, describe_request, encode_response_for_sidecar, execute_native_request,
+    lock_runtime, read_memory_from_caller, response_info, update_failure_state, update_phase_state,
 };
 use super::publish::publish_raw_source_payload;
 use super::state::store_pending_response;
 
 pub(super) fn register(
-    linker: &mut Linker<wasmtime_wasi::preview1::WasiP1Ctx>,
+    linker: &mut WasmLinker,
     shared: Arc<Mutex<HostState>>,
     event_sink: EventSink,
     runtime_state: Arc<Mutex<SidecarRuntimeState>>,
@@ -31,10 +30,7 @@ pub(super) fn register(
     linker.func_wrap(
         "vzglyd_host",
         "network_request",
-        move |mut caller: wasmtime::Caller<'_, wasmtime_wasi::preview1::WasiP1Ctx>,
-              ptr: i32,
-              len: i32|
-              -> i32 {
+        move |mut caller: WasmCaller<'_>, ptr: i32, len: i32| -> i32 {
             let req_bytes = match read_memory_from_caller(&mut caller, ptr, len) {
                 Ok(bytes) => bytes,
                 Err(error) => {

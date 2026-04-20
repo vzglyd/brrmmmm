@@ -1,9 +1,99 @@
 use std::sync::{Arc, Mutex, MutexGuard};
 
+use wasmtime::{Caller, Engine, Linker, Store, StoreLimits, StoreLimitsBuilder};
+
 use crate::abi::{ArtifactMeta, SidecarPhase, SidecarRuntimeState};
 use crate::attestation;
-use crate::events::{Event, EventSink, now_ms, now_ts};
+use crate::events::{Event, EventSink, diag, now_ms, now_ts};
 use crate::host::host_request::{ErrorKind, Header, HostRequest, HostResponse};
+
+// ── WASM runtime policy and store types ──────────────────────────────
+
+pub(super) const EPOCH_TICKS_PER_SECOND: u64 = 10;
+
+#[derive(Debug, Clone)]
+pub(super) struct RuntimePolicy {
+    pub(super) init_timeout_secs: u64,
+    pub(super) default_acquisition_timeout_secs: u64,
+    pub(super) max_wasm_memory_bytes: usize,
+    pub(super) max_table_elements: usize,
+    pub(super) max_instances: usize,
+    pub(super) max_memories: usize,
+    pub(super) max_tables: usize,
+    pub(super) max_params_bytes: usize,
+    pub(super) max_describe_bytes: usize,
+    pub(super) legacy_configure_buffer: bool,
+}
+
+impl Default for RuntimePolicy {
+    fn default() -> Self {
+        Self {
+            init_timeout_secs: 60,
+            default_acquisition_timeout_secs: 30,
+            max_wasm_memory_bytes: 128 * 1024 * 1024,
+            max_table_elements: 1_000_000,
+            max_instances: 4,
+            max_memories: 4,
+            max_tables: 8,
+            max_params_bytes: 1024 * 1024,
+            max_describe_bytes: 1024 * 1024,
+            legacy_configure_buffer: false,
+        }
+    }
+}
+
+impl RuntimePolicy {
+    pub(super) fn epoch_ticks_for_secs(&self, secs: u64) -> u64 {
+        secs.saturating_mul(EPOCH_TICKS_PER_SECOND).max(1)
+    }
+
+    pub(super) fn init_deadline_ticks(&self) -> u64 {
+        self.epoch_ticks_for_secs(self.init_timeout_secs)
+    }
+
+    pub(super) fn acquisition_deadline_ticks(&self, timeout_secs: u64) -> u64 {
+        self.epoch_ticks_for_secs(timeout_secs)
+    }
+
+    fn store_limits(&self) -> StoreLimits {
+        StoreLimitsBuilder::new()
+            .memory_size(self.max_wasm_memory_bytes)
+            .table_elements(self.max_table_elements)
+            .instances(self.max_instances)
+            .memories(self.max_memories)
+            .tables(self.max_tables)
+            .trap_on_grow_failure(true)
+            .build()
+    }
+}
+
+pub(super) struct WasmStoreState {
+    pub(super) wasi: wasmtime_wasi::preview1::WasiP1Ctx,
+    limits: StoreLimits,
+}
+
+impl WasmStoreState {
+    fn new(wasi: wasmtime_wasi::preview1::WasiP1Ctx, policy: &RuntimePolicy) -> Self {
+        Self {
+            wasi,
+            limits: policy.store_limits(),
+        }
+    }
+}
+
+pub(super) type WasmCaller<'a> = Caller<'a, WasmStoreState>;
+pub(super) type WasmLinker = Linker<WasmStoreState>;
+pub(super) type WasmStore = Store<WasmStoreState>;
+
+pub(super) fn build_wasm_store(
+    engine: &Engine,
+    wasi: wasmtime_wasi::preview1::WasiP1Ctx,
+    policy: &RuntimePolicy,
+) -> WasmStore {
+    let mut store = Store::new(engine, WasmStoreState::new(wasi, policy));
+    store.limiter(|state| &mut state.limits);
+    store
+}
 
 // ── Mutex helpers ────────────────────────────────────────────────────
 
@@ -24,11 +114,46 @@ pub(super) fn update_phase_state(
     event_sink: &EventSink,
     phase: SidecarPhase,
 ) {
-    lock_runtime(runtime_state, "runtime_state").phase = phase.clone();
+    let previous = {
+        let mut state = lock_runtime(runtime_state, "runtime_state");
+        let prev = state.phase.clone();
+        state.phase = phase.clone();
+        prev
+    };
+    if !is_valid_phase_transition(&previous, &phase) {
+        diag(
+            event_sink,
+            &format!("[brrmmmm] unexpected phase transition {previous:?} → {phase:?}"),
+        );
+    }
     event_sink.emit(Event::Phase {
         ts: now_ts(),
         phase,
     });
+}
+
+fn is_valid_phase_transition(from: &SidecarPhase, to: &SidecarPhase) -> bool {
+    use SidecarPhase::*;
+    // Self-transitions are always valid (e.g. multiple artifact publishes in sequence).
+    if from == to {
+        return true;
+    }
+    // Any phase may transition to Failed or CoolingDown.
+    if matches!(to, Failed | CoolingDown) {
+        return true;
+    }
+    matches!(
+        (from, to),
+        (Idle, Fetching)
+            | (CoolingDown, Fetching)
+            | (CoolingDown, Idle)
+            | (Failed, Fetching)
+            | (Failed, Idle)
+            | (Fetching, Parsing)
+            | (Fetching, Publishing)
+            | (Parsing, Publishing)
+            | (Publishing, Idle)
+    )
 }
 
 pub(super) fn update_sleep_state(
@@ -101,7 +226,7 @@ pub(super) fn response_info(resp: &HostResponse) -> (Option<u16>, usize) {
 // ── Memory helpers ───────────────────────────────────────────────────
 
 pub(super) fn read_memory_from_caller(
-    caller: &mut wasmtime::Caller<'_, wasmtime_wasi::preview1::WasiP1Ctx>,
+    caller: &mut WasmCaller<'_>,
     ptr: i32,
     len: i32,
 ) -> anyhow::Result<Vec<u8>> {
@@ -118,7 +243,7 @@ pub(super) fn read_memory_from_caller(
 }
 
 pub(super) fn write_memory_from_caller(
-    caller: &mut wasmtime::Caller<'_, wasmtime_wasi::preview1::WasiP1Ctx>,
+    caller: &mut WasmCaller<'_>,
     ptr: i32,
     data: &[u8],
 ) -> anyhow::Result<()> {
@@ -246,7 +371,9 @@ pub(super) fn execute_native_request(
             let start = std::time::Instant::now();
             let timeout = std::time::Duration::from_millis(*timeout_ms as u64);
             let _stream = std::net::TcpStream::connect_timeout(
-                &addr.parse().map_err(|e| (ErrorKind::Io, format!("parse addr: {e}")))?,
+                &addr
+                    .parse()
+                    .map_err(|e| (ErrorKind::Io, format!("parse addr: {e}")))?,
                 timeout,
             )
             .map_err(|e| classify_io_error(&e, format!("connect: {e}")))?;

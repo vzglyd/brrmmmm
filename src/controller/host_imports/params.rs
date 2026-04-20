@@ -3,10 +3,12 @@ use std::sync::{Arc, Mutex};
 use crate::events::{Event, EventSink, diag, now_ts};
 use crate::host::HostState;
 
-use super::super::io::{lock_runtime, read_memory_from_caller, write_memory_from_caller};
+use super::super::io::{
+    WasmCaller, WasmLinker, lock_runtime, read_memory_from_caller, write_memory_from_caller,
+};
 
 pub(super) fn register(
-    linker: &mut wasmtime::Linker<wasmtime_wasi::preview1::WasiP1Ctx>,
+    linker: &mut WasmLinker,
     shared: Arc<Mutex<HostState>>,
     event_sink: EventSink,
 ) -> anyhow::Result<()> {
@@ -22,10 +24,7 @@ pub(super) fn register(
     linker.func_wrap(
         "vzglyd_host",
         "params_read",
-        move |mut caller: wasmtime::Caller<'_, wasmtime_wasi::preview1::WasiP1Ctx>,
-              ptr: i32,
-              len: i32|
-              -> i32 {
+        move |mut caller: WasmCaller<'_>, ptr: i32, len: i32| -> i32 {
             if ptr < 0 || len < 0 {
                 return -1;
             }
@@ -54,10 +53,7 @@ pub(super) fn register(
     linker.func_wrap(
         "vzglyd_host",
         "log_info",
-        move |mut caller: wasmtime::Caller<'_, wasmtime_wasi::preview1::WasiP1Ctx>,
-              ptr: i32,
-              len: i32|
-              -> i32 {
+        move |mut caller: WasmCaller<'_>, ptr: i32, len: i32| -> i32 {
             if let Ok(data) = read_memory_from_caller(&mut caller, ptr, len)
                 && let Ok(msg) = std::str::from_utf8(&data)
             {

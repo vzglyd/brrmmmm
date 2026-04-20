@@ -1,4 +1,5 @@
 use anyhow::Result;
+use std::path::Path;
 
 use brrmmmm::controller::inspect_wasm_contract;
 
@@ -6,15 +7,16 @@ use crate::cli::OutputFormat;
 
 use super::output::print_table;
 
-pub(crate) fn cmd_inspect(wasm_path: &str, output: OutputFormat) -> Result<()> {
-    let inspection = inspect_wasm_contract(wasm_path)?;
+pub(crate) fn cmd_inspect(wasm_path: &Path, output: OutputFormat) -> Result<()> {
+    let wasm_str = wasm_path.to_string_lossy();
+    let inspection = inspect_wasm_contract(&wasm_str)?;
 
     match output {
         OutputFormat::Json => {
             println!("{}", serde_json::to_string_pretty(&inspection)?);
         }
         OutputFormat::Text => {
-            eprintln!("[brrmmmm] inspecting {wasm_path}");
+            eprintln!("[brrmmmm] inspecting {wasm_str}");
             let describe = inspection.describe.as_ref();
             println!(
                 "logical_id:     {}",

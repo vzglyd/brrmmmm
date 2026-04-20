@@ -69,7 +69,7 @@ fn parse_params_bytes_reads_from_file() {
     let path =
         std::env::temp_dir().join(format!("brrmmmm_params_test_{}.json", std::process::id()));
     std::fs::write(&path, r#"{"from":"file"}"#).unwrap();
-    let result = parse_params_bytes(None, path.to_str()).unwrap();
+    let result = parse_params_bytes(None, Some(path.as_path())).unwrap();
     std::fs::remove_file(&path).ok();
     assert!(result.is_some());
     let value: serde_json::Value = serde_json::from_slice(&result.unwrap()).unwrap();
@@ -78,6 +78,11 @@ fn parse_params_bytes_reads_from_file() {
 
 #[test]
 fn parse_params_bytes_errors_on_missing_file() {
-    let result = parse_params_bytes(None, Some("/tmp/brrmmmm_nonexistent_xyz_abc_123.json"));
+    let result = parse_params_bytes(
+        None,
+        Some(std::path::Path::new(
+            "/tmp/brrmmmm_nonexistent_xyz_abc_123.json",
+        )),
+    );
     assert!(result.is_err());
 }

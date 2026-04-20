@@ -5,11 +5,12 @@ use crate::events::{Event, EventSink, diag, now_ms, now_ts};
 use crate::host::{Artifact, HostState};
 
 use super::super::io::{
-    lock_runtime, read_memory_from_caller, update_artifact_state, update_phase_state,
+    WasmCaller, WasmLinker, lock_runtime, read_memory_from_caller, update_artifact_state,
+    update_phase_state,
 };
 
 pub(super) fn register(
-    linker: &mut wasmtime::Linker<wasmtime_wasi::preview1::WasiP1Ctx>,
+    linker: &mut WasmLinker,
     shared: Arc<Mutex<HostState>>,
     event_sink: EventSink,
     runtime_state: Arc<Mutex<SidecarRuntimeState>>,
@@ -20,10 +21,7 @@ pub(super) fn register(
     linker.func_wrap(
         "vzglyd_host",
         "channel_push",
-        move |mut caller: wasmtime::Caller<'_, wasmtime_wasi::preview1::WasiP1Ctx>,
-              ptr: i32,
-              len: i32|
-              -> i32 {
+        move |mut caller: WasmCaller<'_>, ptr: i32, len: i32| -> i32 {
             let data = match read_memory_from_caller(&mut caller, ptr, len) {
                 Ok(d) => d,
                 Err(e) => {
@@ -80,16 +78,13 @@ pub(super) fn register(
     linker.func_wrap(
         "vzglyd_host",
         "channel_poll",
-        |_caller: wasmtime::Caller<'_, wasmtime_wasi::preview1::WasiP1Ctx>,
-         _ptr: i32,
-         _len: i32|
-         -> i32 { -1 },
+        |_caller: WasmCaller<'_>, _ptr: i32, _len: i32| -> i32 { -1 },
     )?;
 
     linker.func_wrap(
         "vzglyd_host",
         "channel_active",
-        |_caller: wasmtime::Caller<'_, wasmtime_wasi::preview1::WasiP1Ctx>| -> i32 { 1 },
+        |_caller: WasmCaller<'_>| -> i32 { 1 },
     )?;
 
     let s_artifact = shared.clone();
@@ -98,7 +93,7 @@ pub(super) fn register(
     linker.func_wrap(
         "vzglyd_host",
         "artifact_publish",
-        move |mut caller: wasmtime::Caller<'_, wasmtime_wasi::preview1::WasiP1Ctx>,
+        move |mut caller: WasmCaller<'_>,
               kind_ptr: i32,
               kind_len: i32,
               data_ptr: i32,
@@ -158,10 +153,7 @@ pub(super) fn register(
     linker.func_wrap(
         "vzglyd_host",
         "register_manifest",
-        move |mut caller: wasmtime::Caller<'_, wasmtime_wasi::preview1::WasiP1Ctx>,
-              ptr: i32,
-              len: i32|
-              -> i32 {
+        move |mut caller: WasmCaller<'_>, ptr: i32, len: i32| -> i32 {
             if let Ok(data) = read_memory_from_caller(&mut caller, ptr, len)
                 && let Ok(describe) = serde_json::from_slice::<SidecarDescribe>(&data)
             {

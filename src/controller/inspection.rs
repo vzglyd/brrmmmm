@@ -2,13 +2,14 @@ use std::sync::{Arc, Mutex, atomic::AtomicBool};
 
 use anyhow::{Context, Result};
 use serde::Serialize;
-use wasmtime::{Engine, Linker, Module, Store};
+use wasmtime::{Config, Engine, Module};
 
 use crate::abi::{ABI_VERSION_V1, ActiveMode, SidecarDescribe, SidecarRuntimeState};
 use crate::events::EventSink;
 use crate::host::HostState;
 
 use super::host_imports::register_vzglyd_host_on_linker;
+use super::io::{RuntimePolicy, WasmLinker, WasmStore, build_wasm_store};
 
 // ── Inspection ───────────────────────────────────────────────────────
 
@@ -28,7 +29,9 @@ pub fn inspect_wasm_contract(wasm_path: &str) -> Result<SidecarInspection> {
     let wasm_bytes =
         std::fs::read(wasm_path).with_context(|| format!("read WASM file: {wasm_path}"))?;
 
-    let engine = Engine::default();
+    let mut engine_config = Config::new();
+    engine_config.epoch_interruption(true);
+    let engine = Engine::new(&engine_config).context("create wasmtime engine")?;
     let module = Module::from_binary(&engine, &wasm_bytes)
         .with_context(|| format!("compile WASM module: {wasm_path}"))?;
 
@@ -53,7 +56,7 @@ pub fn inspect_wasm_contract(wasm_path: &str) -> Result<SidecarInspection> {
     let brrmmmm_exports = brrmmmm_exports(&module);
     let mut diagnostics = Vec::new();
 
-    let describe = match read_static_describe(&instance, &mut store)? {
+    let describe = match read_static_describe(&instance, &mut store, &RuntimePolicy::default())? {
         Some(describe) => Some(describe),
         None => {
             diagnostics
@@ -65,7 +68,7 @@ pub fn inspect_wasm_contract(wasm_path: &str) -> Result<SidecarInspection> {
     Ok(SidecarInspection {
         wasm_path: wasm_path.to_string(),
         wasm_size_bytes: wasm_bytes.len(),
-        abi_version: ABI_VERSION_V1,
+        abi_version: exported_abi,
         active_mode: ActiveMode::ManagedPolling,
         entrypoint,
         brrmmmm_exports,
@@ -98,6 +101,9 @@ fn validate_describe_contract(describe: &SidecarDescribe) -> Result<()> {
     if describe.name.trim().is_empty() {
         anyhow::bail!("describe.name is required");
     }
+    if describe.description.trim().is_empty() {
+        anyhow::bail!("describe.description is required");
+    }
     if describe.abi_version != 0 && describe.abi_version != ABI_VERSION_V1 {
         anyhow::bail!(
             "describe.abi_version must be {ABI_VERSION_V1} when present, got {}",
@@ -127,14 +133,14 @@ fn validate_describe_contract(describe: &SidecarDescribe) -> Result<()> {
 fn instantiate_for_inspection(
     engine: &Engine,
     module: &Module,
-) -> Result<(
-    Store<wasmtime_wasi::preview1::WasiP1Ctx>,
-    wasmtime::Instance,
-)> {
+) -> Result<(WasmStore, wasmtime::Instance)> {
+    let policy = RuntimePolicy::default();
     let wasi_p1 = wasmtime_wasi::WasiCtxBuilder::new().build_p1();
-    let mut store = Store::new(engine, wasi_p1);
-    let mut linker: Linker<wasmtime_wasi::preview1::WasiP1Ctx> = Linker::new(engine);
-    wasmtime_wasi::preview1::add_to_linker_sync(&mut linker, |ctx| ctx)?;
+    let mut store = build_wasm_store(engine, wasi_p1, &policy);
+    store.set_epoch_deadline(policy.init_deadline_ticks());
+    store.epoch_deadline_trap();
+    let mut linker = WasmLinker::new(engine);
+    wasmtime_wasi::preview1::add_to_linker_sync(&mut linker, |state| &mut state.wasi)?;
 
     let runtime_state = Arc::new(Mutex::new(SidecarRuntimeState::default()));
     let _shared_host_state = register_vzglyd_host_on_linker(
@@ -153,10 +159,7 @@ fn instantiate_for_inspection(
     Ok((store, instance))
 }
 
-fn call_exported_abi_version(
-    instance: &wasmtime::Instance,
-    store: &mut Store<wasmtime_wasi::preview1::WasiP1Ctx>,
-) -> Result<u32> {
+fn call_exported_abi_version(instance: &wasmtime::Instance, store: &mut WasmStore) -> Result<u32> {
     let abi_fn = instance
         .get_typed_func::<(), u32>(&mut *store, "vzglyd_sidecar_abi_version")
         .context("sidecar must export callable vzglyd_sidecar_abi_version() -> u32")?;
@@ -167,7 +170,8 @@ fn call_exported_abi_version(
 
 pub(super) fn read_static_describe(
     instance: &wasmtime::Instance,
-    store: &mut Store<wasmtime_wasi::preview1::WasiP1Ctx>,
+    store: &mut WasmStore,
+    policy: &RuntimePolicy,
 ) -> Result<Option<SidecarDescribe>> {
     let ptr_fn = instance
         .get_typed_func::<(), i32>(&mut *store, "vzglyd_sidecar_describe_ptr")
@@ -187,6 +191,12 @@ pub(super) fn read_static_describe(
         .context("call vzglyd_sidecar_describe_len")?;
     if ptr < 0 || len <= 0 {
         anyhow::bail!("invalid describe memory range: ptr={ptr}, len={len}");
+    }
+    if len as usize > policy.max_describe_bytes {
+        anyhow::bail!(
+            "sidecar describe is {len} bytes, exceeding the configured limit of {} bytes",
+            policy.max_describe_bytes
+        );
     }
 
     let memory = instance

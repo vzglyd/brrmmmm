@@ -226,7 +226,7 @@ brrmmmm run sidecar.wasm --once \
   --env LASTFM_API_KEY=xxx \
   --env LASTFM_USERNAME=rodger
 
-# Pass structured params to the sidecar's configure buffer
+# Pass structured params to a sidecar that imports params_len/params_read
 brrmmmm run sidecar.wasm --once \
   --params-json '{"location":"Daylesford, VIC"}'
 
@@ -337,6 +337,10 @@ The runtime exposes the `vzglyd_host` module to every sidecar:
 | `trace_span_start` | `fn(...) -> i32` | Start a distributed tracing span (stub — reserved) |
 | `trace_span_end` | `fn(...) -> i32` | End a tracing span (stub — reserved) |
 | `trace_event` | `fn(ptr: i32, len: i32) -> i32` | Emit an instant trace event (stub — reserved) |
+
+Runtime params are host-owned. A sidecar that accepts `--params-json` or
+`--params-file` must import `params_len` and `params_read`; the legacy raw
+`vzglyd_params_ptr`/`vzglyd_configure` buffer is not used by the production runner.
 
 Network requests use a JSON wire protocol:
 

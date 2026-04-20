@@ -2,7 +2,6 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use anyhow::Result;
-use wasmtime::Linker;
 
 use crate::attestation::{self, RequestBinding};
 use crate::events::{Event, EventSink, diag, now_ts};
@@ -13,10 +12,10 @@ use crate::mission_state::{self, CAP_AI};
 use super::execute::AiSession;
 use super::state::store_pending_response;
 
-use super::super::super::io::lock_runtime;
+use super::super::super::io::{WasmCaller, WasmLinker, lock_runtime};
 
 pub(super) fn register(
-    linker: &mut Linker<wasmtime_wasi::preview1::WasiP1Ctx>,
+    linker: &mut WasmLinker,
     shared: Arc<Mutex<HostState>>,
     event_sink: EventSink,
     session: Arc<Mutex<AiSession>>,
@@ -24,10 +23,7 @@ pub(super) fn register(
     linker.func_wrap(
         "vzglyd_host",
         "ai_request",
-        move |mut caller: wasmtime::Caller<'_, wasmtime_wasi::preview1::WasiP1Ctx>,
-              ptr: i32,
-              len: i32|
-              -> i32 {
+        move |mut caller: WasmCaller<'_>, ptr: i32, len: i32| -> i32 {
             use super::super::super::io::read_memory_from_caller;
 
             let bytes = match read_memory_from_caller(&mut caller, ptr, len) {

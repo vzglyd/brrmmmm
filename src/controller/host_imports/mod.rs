@@ -14,14 +14,15 @@ use std::sync::{
 };
 
 use anyhow::Result;
-use wasmtime::Linker;
 
 use crate::abi::SidecarRuntimeState;
 use crate::events::EventSink;
 use crate::host::HostState;
 
+use super::io::WasmLinker;
+
 pub(super) fn register_vzglyd_host_on_linker(
-    linker: &mut Linker<wasmtime_wasi::preview1::WasiP1Ctx>,
+    linker: &mut WasmLinker,
     host_state: HostState,
     event_sink: EventSink,
     runtime_state: Arc<Mutex<SidecarRuntimeState>>,

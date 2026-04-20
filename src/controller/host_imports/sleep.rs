@@ -8,10 +8,10 @@ use std::time::{Duration, Instant};
 use crate::abi::SidecarRuntimeState;
 use crate::events::{Event, EventSink, ms_to_iso8601, now_ms, now_ts};
 
-use super::super::io::update_sleep_state;
+use super::super::io::{WasmCaller, WasmLinker, update_sleep_state};
 
 pub(super) fn register(
-    linker: &mut wasmtime::Linker<wasmtime_wasi::preview1::WasiP1Ctx>,
+    linker: &mut WasmLinker,
     event_sink: EventSink,
     runtime_state: Arc<Mutex<SidecarRuntimeState>>,
     stop_signal: Arc<AtomicBool>,
@@ -24,9 +24,7 @@ pub(super) fn register(
     linker.func_wrap(
         "vzglyd_host",
         "sleep_ms",
-        move |_caller: wasmtime::Caller<'_, wasmtime_wasi::preview1::WasiP1Ctx>,
-              duration_ms: i64|
-              -> i32 {
+        move |_caller: WasmCaller<'_>, duration_ms: i64| -> i32 {
             if duration_ms <= 0 {
                 return 0;
             }
@@ -64,9 +62,7 @@ pub(super) fn register(
     linker.func_wrap(
         "vzglyd_host",
         "announce_sleep",
-        move |_caller: wasmtime::Caller<'_, wasmtime_wasi::preview1::WasiP1Ctx>,
-              duration_ms: i64|
-              -> i32 {
+        move |_caller: WasmCaller<'_>, duration_ms: i64| -> i32 {
             if force_refresh_sleep.swap(false, Ordering::Relaxed) {
                 return 1;
             }

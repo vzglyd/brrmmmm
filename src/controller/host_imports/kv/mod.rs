@@ -5,14 +5,15 @@ pub(super) mod state;
 use std::sync::{Arc, Mutex};
 
 use anyhow::Result;
-use wasmtime::Linker;
 
 use crate::abi::SidecarRuntimeState;
 use crate::events::EventSink;
 use crate::host::HostState;
 
+use super::super::io::WasmLinker;
+
 pub(super) fn register(
-    linker: &mut Linker<wasmtime_wasi::preview1::WasiP1Ctx>,
+    linker: &mut WasmLinker,
     shared: Arc<Mutex<HostState>>,
     event_sink: EventSink,
     runtime_state: Arc<Mutex<SidecarRuntimeState>>,

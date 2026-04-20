@@ -14,17 +14,7 @@
     }
   ],
   "params": {
-    "fields": [
-      {
-        "key": "label",
-        "type": "string",
-        "required": false,
-        "label": "Label",
-        "help": "A human-readable label for fixture output.",
-        "default": "fixture",
-        "options": []
-      }
-    ]
+    "fields": []
   },
   "capabilities_needed": [],
   "poll_strategy": {

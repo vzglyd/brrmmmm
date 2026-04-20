@@ -1,4 +1,5 @@
 use anyhow::{Context, Result};
+use std::path::Path;
 
 pub fn parse_env_vars(raw: &[String]) -> Vec<(String, String)> {
     raw.iter()
@@ -11,12 +12,15 @@ pub fn parse_env_vars(raw: &[String]) -> Vec<(String, String)> {
 
 pub fn parse_params_bytes(
     params_json: Option<&str>,
-    params_file: Option<&str>,
+    params_file: Option<&Path>,
 ) -> Result<Option<Vec<u8>>> {
     let raw = if let Some(raw) = params_json {
         Some(raw.to_string())
     } else if let Some(path) = params_file {
-        Some(std::fs::read_to_string(path).with_context(|| format!("read params file: {path}"))?)
+        Some(
+            std::fs::read_to_string(path)
+                .with_context(|| format!("read params file: {}", path.display()))?,
+        )
     } else {
         None
     };
