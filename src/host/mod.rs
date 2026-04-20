@@ -64,6 +64,10 @@ pub struct HostState {
 
     /// Current JSON params made available to the sidecar through `params_len`/`params_read`.
     pub params_bytes: Arc<Mutex<Option<Vec<u8>>>>,
+
+    /// Active User-Agent string for HTTP and browser requests. Sidecars may read and update
+    /// this via `ua_get_len`/`ua_get`/`ua_set`. Default: `brrmmmm/<version>`.
+    pub user_agent: Arc<Mutex<String>>,
 }
 
 impl HostState {
@@ -76,6 +80,10 @@ impl HostState {
             pending_kv_response: Arc::new(Mutex::new(None)),
             log_channel,
             params_bytes,
+            user_agent: Arc::new(Mutex::new(format!(
+                "brrmmmm/{}",
+                env!("CARGO_PKG_VERSION")
+            ))),
         }
     }
 }

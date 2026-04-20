@@ -1,5 +1,8 @@
+use std::sync::{Arc, Mutex};
+
 use chromiumoxide::Browser;
 use chromiumoxide::browser::BrowserConfig;
+use chromiumoxide::cdp::browser_protocol::network::SetUserAgentOverrideParams;
 use chromiumoxide::cdp::browser_protocol::page::CaptureScreenshotParams;
 use futures::StreamExt as _;
 use tokio::runtime::Runtime;
@@ -12,10 +15,12 @@ pub(super) struct BrowserSession {
     pub runtime: Runtime,
     pub browser: Option<Browser>,
     pub active_page: Option<chromiumoxide::Page>,
+    pub user_agent: Arc<Mutex<String>>,
+    pub last_applied_ua: String,
 }
 
 impl BrowserSession {
-    pub fn new() -> anyhow::Result<Self> {
+    pub fn new(user_agent: Arc<Mutex<String>>) -> anyhow::Result<Self> {
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .enable_all()
             .build()?;
@@ -23,6 +28,8 @@ impl BrowserSession {
             runtime,
             browser: None,
             active_page: None,
+            user_agent,
+            last_applied_ua: String::new(),
         })
     }
 
@@ -32,6 +39,20 @@ impl BrowserSession {
             Err(e) => {
                 return BrowserActionResponse::err("browser_launch_failed", e.to_string());
             }
+        }
+
+        // Apply CDP UA override if the sidecar changed the UA after the browser was launched.
+        let current_ua = self.user_agent.lock().unwrap().clone();
+        if current_ua != self.last_applied_ua {
+            if let Some(page) = self.active_page.as_ref().cloned() {
+                let ua_clone = current_ua.clone();
+                self.runtime.block_on(async move {
+                    let _ = page
+                        .execute(SetUserAgentOverrideParams::new(ua_clone))
+                        .await;
+                });
+            }
+            self.last_applied_ua = current_ua;
         }
 
         let browser = self.browser.as_ref().unwrap();
@@ -44,7 +65,10 @@ impl BrowserSession {
         if self.browser.is_some() {
             return Ok(());
         }
-        let mut config = BrowserConfig::builder().new_headless_mode();
+        let ua = self.user_agent.lock().unwrap().clone();
+        let mut config = BrowserConfig::builder()
+            .new_headless_mode()
+            .arg(format!("--user-agent={ua}"));
         if browser_headless_disabled() {
             config = config.with_head();
         }
@@ -59,6 +83,7 @@ impl BrowserSession {
             }
         });
         self.browser = Some(browser);
+        self.last_applied_ua = ua;
         Ok(())
     }
 }

@@ -6,6 +6,7 @@ mod network;
 mod params;
 mod sleep;
 mod tracing;
+mod ua;
 
 use std::sync::{
     Arc, Mutex,
@@ -56,6 +57,7 @@ pub(super) fn register_vzglyd_host_on_linker(
     ai::register(linker, shared.clone(), event_sink.clone())?;
     kv::register(linker, shared.clone(), event_sink, runtime_state, wasm_hash)?;
     tracing::register(linker)?;
+    ua::register(linker, shared)?;
 
     Ok(())
 }

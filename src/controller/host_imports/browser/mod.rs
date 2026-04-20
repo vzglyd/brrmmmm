@@ -18,7 +18,8 @@ pub(super) fn register(
     shared: Arc<Mutex<HostState>>,
     event_sink: EventSink,
 ) -> Result<()> {
-    let session = BrowserSession::new()?;
+    let ua = shared.lock().unwrap().user_agent.clone();
+    let session = BrowserSession::new(ua)?;
     let session = Arc::new(Mutex::new(session));
 
     action::register(linker, shared.clone(), event_sink, session)?;

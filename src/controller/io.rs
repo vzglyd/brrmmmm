@@ -163,7 +163,10 @@ pub(super) fn encode_response_for_sidecar(response: &HostResponse) -> Vec<u8> {
 
 // ── Native request execution ─────────────────────────────────────────
 
-pub(super) fn execute_native_request(req: &HostRequest) -> Result<HostResponse, String> {
+pub(super) fn execute_native_request(
+    req: &HostRequest,
+    user_agent: &str,
+) -> Result<HostResponse, String> {
     match req {
         HostRequest::HttpsGet {
             host,
@@ -176,18 +179,19 @@ pub(super) fn execute_native_request(req: &HostRequest) -> Result<HostResponse, 
                 .use_rustls_tls()
                 .timeout(std::time::Duration::from_secs(30));
 
-            if !headers.is_empty() {
-                let mut hm = reqwest::header::HeaderMap::new();
-                for h in headers {
-                    if let (Ok(n), Ok(v)) = (
-                        reqwest::header::HeaderName::from_bytes(h.name.as_bytes()),
-                        reqwest::header::HeaderValue::from_bytes(h.value.as_bytes()),
-                    ) {
-                        hm.insert(n, v);
-                    }
-                }
-                builder = builder.default_headers(hm);
+            let mut hm = reqwest::header::HeaderMap::new();
+            if let Ok(v) = reqwest::header::HeaderValue::from_str(user_agent) {
+                hm.insert(reqwest::header::USER_AGENT, v);
             }
+            for h in headers {
+                if let (Ok(n), Ok(v)) = (
+                    reqwest::header::HeaderName::from_bytes(h.name.as_bytes()),
+                    reqwest::header::HeaderValue::from_bytes(h.value.as_bytes()),
+                ) {
+                    hm.insert(n, v);
+                }
+            }
+            builder = builder.default_headers(hm);
 
             let client = builder.build().map_err(|e| format!("build client: {e}"))?;
             let resp = client

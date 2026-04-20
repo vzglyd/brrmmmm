@@ -60,8 +60,13 @@ pub(super) fn register(
                 path: req_path,
             });
 
+            let ua = {
+                let s = shared.lock().unwrap();
+                s.user_agent.lock().unwrap().clone()
+            };
+
             let start = Instant::now();
-            let response = match execute_native_request(&request) {
+            let response = match execute_native_request(&request, &ua) {
                 Ok(response) => response,
                 Err(error) => {
                     update_failure_state(&runtime_state, &error);

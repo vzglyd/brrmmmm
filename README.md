@@ -20,6 +20,54 @@ tried and why it failed.
 
 ---
 
+## Why this exists
+
+The internet is increasingly hostile to automated access. Services that would benefit
+from API clients don't offer them. Services that do offer APIs gate them behind login
+flows, CAPTCHAs, rate limits, and rotating tokens. This friction is friction by
+design — but it doesn't make the underlying data unavailable, it just makes obtaining
+it harder.
+
+brrmmmm exists because someone will write an automated agent to retrieve that data
+regardless. A computer is a tool built to make people's lives easier; it will always
+be used that way, whatever friction stands in the path. The question is whether the
+agent has a principled runtime to operate in, or whether it's duct-taping shell
+scripts together.
+
+brrmmmm is the principled runtime. It gives sidecar authors a complete, portable
+surface for every remediation strategy that works — from simple retries to
+browser-driven login flows to AI-assisted CAPTCHA resolution — and enforces a clear
+contract between the mission and the runtime.
+
+---
+
+## If this needs to exist, it also needs to address the concerns of those who oppose it
+
+The default position is not: "I am brrmmmm, I have principles, therefore whatever I
+am doing is acceptable." The default position is: "I am brrmmmm, and because I am,
+I will adhere to all standard best-effort attempts to play nicely — consistent with
+the design principles of this framework."
+
+What that means in practice:
+
+- The User-Agent identifies the client honestly on first contact. Servers can see it,
+  log it, and choose to decline. That is a legitimate response and the framework does
+  not argue with it.
+- The framework respects `Retry-After` headers. A 429 is a signal to back off, not a
+  signal to retry immediately. Sidecars receive the full response including all headers
+  and are expected to honour this.
+- Requests are made at the pace the sidecar declares in its acquisition budget — not
+  at the maximum rate the host can sustain.
+- The `ua_set` import exists as a capability. Its use is the sidecar author's decision
+  and their responsibility. It is not a right earned by having announced the client
+  identity first, and it does not confer permission for anything the framework would
+  not otherwise permit.
+
+Transparency about what the tool is, and restraint in how it operates, are the
+baseline. They are not a justification for anything beyond them.
+
+---
+
 ## Two levels of orchestration
 
 External orchestrators (Airflow, Dagu, cron) decide **when** to trigger an acquisition.
@@ -69,22 +117,26 @@ Anything not covered is reported as unrecoverable.
 
 ## Remediation model
 
-The full hierarchy of what a sidecar can do when an acquisition fails:
+The full hierarchy of what a sidecar can do when an acquisition fails. The sidecar
+author decides which levels to implement; brrmmmm provides the host capabilities to
+execute each one.
 
-| Failure | Remedy |
-|---|---|
-| Network timeout / transient 5xx | Retry with exponential backoff |
-| Rate limited (429) | Wait for `Retry-After`, then retry |
-| API token expired (401) | Call token refresh endpoint, retry |
-| Session expired, login form required | Drive browser login flow, retry |
-| MFA prompt | Read TOTP from params or derive from shared secret |
-| CAPTCHA | Take screenshot, invoke AI vision model, submit solution |
-| IP block / account suspended | Report unrecoverable failure |
-| Service permanently gone | Report unrecoverable failure |
+| Failure | Remedy | Implemented by |
+|---|---|---|
+| Network timeout / transient 5xx | Retry with exponential backoff | Sidecar logic |
+| Rate limited (429) | Inspect `Retry-After` header from response, sleep, retry | Sidecar logic (full response headers available) |
+| API token expired (401) | Call token refresh endpoint, retry | Sidecar logic |
+| Session expired, login form required | Drive browser login flow, retry | Sidecar logic via `browser_*` imports |
+| MFA prompt | Read TOTP seed from params, compute code, submit | Sidecar logic (seed delivered via `--params-json`) |
+| CAPTCHA | Take screenshot, invoke AI vision model, submit solution | Sidecar logic via `browser_*` + `ai_*` imports |
+| IP block / account suspended | Report unrecoverable failure | Sidecar decision |
+| Service permanently gone | Report unrecoverable failure | Sidecar decision |
 
 brrmmmm provides the host capabilities for each level: `network_request` for API
 flows, `browser_*` imports for UI-driven flows, `ai_*` imports for interpretation,
-and `kv_*` imports for persisting session state across runs.
+and `kv_*` imports for persisting session state across runs. The sidecar receives
+full HTTP responses (status code, all headers, body) so it can inspect `Retry-After`,
+`WWW-Authenticate`, or any other signal and act accordingly.
 
 ---
 
@@ -123,6 +175,10 @@ brrmmmm --output json run $WASM --once
 ```json
 {"condition":"partly cloudy","is_day":true,"location":"Berlin","ok":true,"temperature_c":14.2,"wind_speed_ms":3.1}
 ```
+
+The weather sidecar calls `open-meteo.com` — a live network connection is required.
+The browser and captcha demos (`browser_login_fixture.wasm`, `captcha_solver.wasm`)
+are fully self-contained and require no external network.
 
 ---
 
@@ -268,9 +324,12 @@ The runtime exposes the `vzglyd_host` module to every sidecar:
 | `kv_delete` | `fn(key_ptr: i32, key_len: i32) -> i32` | Delete a host-persisted byte value |
 | `kv_response_len` | `fn() -> i32` | Query size of the pending KV response |
 | `kv_response_read` | `fn(ptr: i32, len: i32) -> i32` | Read the KV response into sidecar memory |
-| `trace_span_start` | `fn(...) -> i32` | Start a distributed tracing span |
-| `trace_span_end` | `fn(...) -> i32` | End a tracing span |
-| `trace_event` | `fn(ptr: i32, len: i32) -> i32` | Emit an instant trace event |
+| `ua_get_len` | `fn() -> i32` | Query byte length of the current User-Agent string |
+| `ua_get` | `fn(ptr: i32, len: i32) -> i32` | Write current User-Agent into sidecar memory |
+| `ua_set` | `fn(ptr: i32, len: i32) -> i32` | Replace the active User-Agent from sidecar memory |
+| `trace_span_start` | `fn(...) -> i32` | Start a distributed tracing span (stub — reserved) |
+| `trace_span_end` | `fn(...) -> i32` | End a tracing span (stub — reserved) |
+| `trace_event` | `fn(ptr: i32, len: i32) -> i32` | Emit an instant trace event (stub — reserved) |
 
 Network requests use a JSON wire protocol:
 
