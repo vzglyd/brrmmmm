@@ -17,6 +17,8 @@ use crate::host::browser_request::{
 };
 use crate::mission_state::{self, CAP_BROWSER};
 
+use super::super::super::io::lock_runtime;
+
 pub(super) struct BrowserSession {
     pub runtime: Runtime,
     pub browser: Option<Browser>,
@@ -50,7 +52,7 @@ impl BrowserSession {
         }
 
         // Apply CDP UA override if the sidecar changed the UA after the browser was launched.
-        let current_ua = self.shared.lock().unwrap().full_user_agent(None);
+        let current_ua = lock_runtime(&self.shared, "host_state").full_user_agent(None);
         if current_ua != self.last_applied_ua {
             if let Some(page) = self.active_page.as_ref().cloned() {
                 let ua_clone = current_ua.clone();
@@ -82,7 +84,7 @@ impl BrowserSession {
         if self.browser.is_some() {
             return Ok(());
         }
-        let ua = self.shared.lock().unwrap().full_user_agent(None);
+        let ua = lock_runtime(&self.shared, "host_state").full_user_agent(None);
         let mut config = BrowserConfig::builder()
             .new_headless_mode()
             .enable_request_intercept()
@@ -483,7 +485,7 @@ async fn continue_attested_request(
 
     let original = cdp_headers_to_pairs(event.request.headers.inner());
     let headers = {
-        let mut host = shared.lock().unwrap();
+        let mut host = lock_runtime(&shared, "host_state");
         let behavior =
             mission_state::network_event(&binding.method, &binding.authority, &binding.path);
         let envelope =

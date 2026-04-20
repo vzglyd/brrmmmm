@@ -12,7 +12,7 @@ use std::sync::{
 use std::thread;
 
 use anyhow::{Context, Result};
-use wasmtime::{Engine, Module};
+use wasmtime::{Config, Engine, Module};
 
 use crate::abi::{ABI_VERSION_V1, ActiveMode, SidecarRuntimeState};
 use crate::attestation;
@@ -67,9 +67,23 @@ impl SidecarController {
         let runtime_state = Arc::new(Mutex::new(runtime_state));
         let stop_signal = Arc::new(AtomicBool::new(false));
 
-        let engine = Engine::default();
+        let mut engine_config = Config::new();
+        engine_config.epoch_interruption(true);
+        let engine = Engine::new(&engine_config).context("create wasmtime engine")?;
         let module = Module::from_binary(&engine, &wasm_bytes)
             .with_context(|| format!("compile WASM module: {wasm_path}"))?;
+
+        // Shared epoch timer: increments engine epoch every 100ms so that
+        // store.set_epoch_deadline() provides hard timeout enforcement regardless
+        // of whether the guest cooperatively checks the stop_signal.
+        let engine_for_timer = engine.clone();
+        let stop_for_timer = stop_signal.clone();
+        thread::spawn(move || {
+            while !stop_for_timer.load(Ordering::Relaxed) {
+                thread::sleep(std::time::Duration::from_millis(100));
+                engine_for_timer.increment_epoch();
+            }
+        });
 
         {
             lock_runtime(&runtime_state, "runtime_state").mode = ActiveMode::ManagedPolling;

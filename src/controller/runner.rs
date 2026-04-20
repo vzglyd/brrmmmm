@@ -1,9 +1,7 @@
 use std::sync::{
     Arc, Mutex,
-    atomic::{AtomicBool, Ordering},
+    atomic::AtomicBool,
 };
-use std::thread;
-use std::time::Duration;
 
 use anyhow::{Context, Result};
 use wasmtime::{Engine, Linker, Module, Store};
@@ -76,6 +74,11 @@ pub(super) fn run_wasm_instance(
     let wasi_p1 = wasi_builder.build_p1();
 
     let mut store = Store::new(engine, wasi_p1);
+    // Set a generous initial epoch deadline covering module initialization and describe().
+    // With epoch_interruption enabled, the default deadline is 0 (immediately interruptible).
+    // This will be reset to the actual acquisition timeout after describe() is read.
+    store.set_epoch_deadline(600); // 60 s at 10 Hz, covers init/describe
+    store.epoch_deadline_trap();
     let mut linker: Linker<wasmtime_wasi::preview1::WasiP1Ctx> = Linker::new(engine);
     wasmtime_wasi::preview1::add_to_linker_sync(&mut linker, |ctx| ctx)?;
 
@@ -125,20 +128,17 @@ pub(super) fn run_wasm_instance(
             }
             lock_runtime(&runtime_state, "runtime_state").describe = Some(describe);
 
-            let stop_for_timeout = Arc::clone(&stop_signal);
-            let event_sink_timeout = event_sink.clone();
-            thread::spawn(move || {
-                thread::sleep(Duration::from_secs(timeout_secs));
-                if !stop_for_timeout.load(Ordering::SeqCst) {
-                    stop_for_timeout.store(true, Ordering::SeqCst);
-                    diag(
-                        &event_sink_timeout,
-                        &format!(
-                            "[brrmmmm] acquisition budget of {timeout_secs}s expired; signalling stop"
-                        ),
-                    );
-                }
-            });
+            // Set hard epoch deadline: epoch timer increments at ~10 Hz (100ms intervals),
+            // so timeout_secs * 10 ticks gives the acquisition budget as a hard cutoff
+            // that fires even if the guest is in a tight compute loop.
+            store.set_epoch_deadline(timeout_secs * 10);
+            store.epoch_deadline_trap();
+            diag(
+                &event_sink,
+                &format!(
+                    "[brrmmmm] acquisition budget of {timeout_secs}s enforced via epoch interrupt"
+                ),
+            );
         }
         Ok(None) => diag(
             &event_sink,
@@ -164,10 +164,24 @@ pub(super) fn run_wasm_instance(
         &format!("[brrmmmm] calling entry '{entry_name}' (runs until stopped)"),
     );
 
-    let call_result = entry.call(&mut store, &[], &mut []);
+    let call_result = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        entry.call(&mut store, &[], &mut [])
+    })) {
+        Ok(result) => result,
+        Err(panic_payload) => {
+            let msg = panic_payload
+                .downcast_ref::<String>()
+                .map(|s| s.as_str())
+                .or_else(|| panic_payload.downcast_ref::<&str>().copied())
+                .unwrap_or("unknown panic");
+            diag(&event_sink, &format!("[brrmmmm] host import panicked: {msg}"));
+            Err(anyhow::anyhow!("host import panic: {msg}"))
+        }
+    };
 
     let reason = match &call_result {
         Ok(_) => "completed",
+        Err(e) if e.to_string().contains("interrupt") => "timeout",
         Err(_) => "error",
     };
     event_sink.emit(Event::SidecarExit {
@@ -257,19 +271,34 @@ fn configure_sidecar_params(
     let ptr = ptr_fn
         .call(&mut *store, ())
         .context("call vzglyd_params_ptr")? as usize;
-    let write_len = params.len().min(capacity);
+
+    if params.len() > capacity {
+        diag(
+            event_sink,
+            &format!(
+                "[brrmmmm] sidecar params ({} bytes) exceed buffer capacity ({} bytes); aborting param write",
+                params.len(),
+                capacity
+            ),
+        );
+        return Err(anyhow::anyhow!(
+            "params ({} bytes) exceed sidecar buffer capacity ({capacity} bytes)",
+            params.len()
+        ));
+    }
+
     let memory = instance
         .get_memory(&mut *store, "memory")
         .context("sidecar configure requires exported memory")?;
     memory
-        .write(&mut *store, ptr, &params[..write_len])
+        .write(&mut *store, ptr, params)
         .context("write sidecar params")?;
     let status = cfg_fn
-        .call(&mut *store, write_len as i32)
+        .call(&mut *store, params.len() as i32)
         .context("call vzglyd_configure")?;
     diag(
         event_sink,
-        &format!("[brrmmmm] sidecar vzglyd_configure({write_len}) -> {status}"),
+        &format!("[brrmmmm] sidecar vzglyd_configure({}) -> {status}", params.len()),
     );
     Ok(())
 }

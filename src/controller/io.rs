@@ -3,7 +3,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use crate::abi::{ArtifactMeta, SidecarPhase, SidecarRuntimeState};
 use crate::attestation;
 use crate::events::{Event, EventSink, now_ms, now_ts};
-use crate::host::host_request::{Header, HostRequest, HostResponse};
+use crate::host::host_request::{ErrorKind, Header, HostRequest, HostResponse};
 
 // ── Mutex helpers ────────────────────────────────────────────────────
 
@@ -168,7 +168,7 @@ pub(super) fn execute_native_request(
     req: &HostRequest,
     user_agent: &str,
     attestation_headers: &[(String, String)],
-) -> Result<HostResponse, String> {
+) -> Result<HostResponse, (ErrorKind, String)> {
     match req {
         HostRequest::HttpsGet {
             host,
@@ -206,11 +206,13 @@ pub(super) fn execute_native_request(
             }
             builder = builder.default_headers(hm);
 
-            let client = builder.build().map_err(|e| format!("build client: {e}"))?;
+            let client = builder
+                .build()
+                .map_err(|e| (ErrorKind::Io, format!("build client: {e}")))?;
             let resp = client
                 .get(&url)
                 .send()
-                .map_err(|e| format!("request: {e}"))?;
+                .map_err(|e| classify_reqwest_error(&e, format!("request: {e}")))?;
             let status_code = resp.status().as_u16();
 
             let resp_headers: Vec<Header> = resp
@@ -226,7 +228,7 @@ pub(super) fn execute_native_request(
 
             let body = resp
                 .bytes()
-                .map_err(|e| format!("read body: {e}"))?
+                .map_err(|e| (ErrorKind::Io, format!("read body: {e}")))?
                 .to_vec();
 
             Ok(HostResponse::Http {
@@ -244,13 +246,52 @@ pub(super) fn execute_native_request(
             let start = std::time::Instant::now();
             let timeout = std::time::Duration::from_millis(*timeout_ms as u64);
             let _stream = std::net::TcpStream::connect_timeout(
-                &addr.parse().map_err(|e| format!("parse addr: {e}"))?,
+                &addr.parse().map_err(|e| (ErrorKind::Io, format!("parse addr: {e}")))?,
                 timeout,
             )
-            .map_err(|e| format!("connect: {e}"))?;
+            .map_err(|e| classify_io_error(&e, format!("connect: {e}")))?;
             Ok(HostResponse::TcpConnect {
                 elapsed_ms: start.elapsed().as_millis() as u64,
             })
         }
+    }
+}
+
+fn classify_reqwest_error(e: &reqwest::Error, message: String) -> (ErrorKind, String) {
+    if e.is_timeout() {
+        return (ErrorKind::Timeout, message);
+    }
+    if e.is_connect() {
+        if let Some(source) = std::error::Error::source(e) {
+            if let Some(io_err) = source.downcast_ref::<std::io::Error>() {
+                let kind = io_kind_to_error_kind(io_err.kind());
+                if kind != ErrorKind::Io {
+                    return (kind, message);
+                }
+            }
+        }
+    }
+    // reqwest surfaces DNS failures as "builder" errors in some configurations;
+    // check the message as a heuristic.
+    let msg_lower = message.to_ascii_lowercase();
+    if msg_lower.contains("dns") || msg_lower.contains("resolve") || msg_lower.contains("lookup") {
+        return (ErrorKind::Dns, message);
+    }
+    if msg_lower.contains("tls") || msg_lower.contains("ssl") || msg_lower.contains("certificate") {
+        return (ErrorKind::Tls, message);
+    }
+    (ErrorKind::Io, message)
+}
+
+fn classify_io_error(e: &std::io::Error, message: String) -> (ErrorKind, String) {
+    (io_kind_to_error_kind(e.kind()), message)
+}
+
+fn io_kind_to_error_kind(k: std::io::ErrorKind) -> ErrorKind {
+    match k {
+        std::io::ErrorKind::ConnectionRefused => ErrorKind::ConnectionRefused,
+        std::io::ErrorKind::PermissionDenied => ErrorKind::PermissionDenied,
+        std::io::ErrorKind::TimedOut => ErrorKind::Timeout,
+        _ => ErrorKind::Io,
     }
 }

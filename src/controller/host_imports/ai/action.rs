@@ -7,11 +7,13 @@ use wasmtime::Linker;
 use crate::attestation::{self, RequestBinding};
 use crate::events::{Event, EventSink, diag, now_ts};
 use crate::host::HostState;
-use crate::host::ai_request::{decode_action, encode_response};
+use crate::host::ai_request::{AiActionResponse, decode_action, encode_response};
 use crate::mission_state::{self, CAP_AI};
 
 use super::execute::AiSession;
 use super::state::store_pending_response;
+
+use super::super::super::io::lock_runtime;
 
 pub(super) fn register(
     linker: &mut Linker<wasmtime_wasi::preview1::WasiP1Ctx>,
@@ -46,6 +48,11 @@ pub(super) fn register(
                         &event_sink,
                         &format!("[brrmmmm] ai_request decode error: {e}"),
                     );
+                    let error_response = AiActionResponse::err("decode_error", e.to_string());
+                    if let Ok(data) = encode_response(&error_response) {
+                        store_pending_response(&shared, data);
+                        return 0;
+                    }
                     return -1;
                 }
             };
@@ -71,7 +78,7 @@ pub(super) fn register(
                 Ok(body) => body,
                 Err(response) => {
                     {
-                        let mut host = shared.lock().unwrap();
+                        let mut host = lock_runtime(&shared, "host_state");
                         let event = mission_state::ai_event(&action_kind);
                         host.record_activity(CAP_AI, "ai", &event);
                     }
@@ -93,7 +100,7 @@ pub(super) fn register(
                 Some(content_digest),
             );
             let (ua, attestation_headers) = {
-                let mut host = shared.lock().unwrap();
+                let mut host = lock_runtime(&shared, "host_state");
                 let event = mission_state::ai_event(&action_kind);
                 let envelope = host.signed_envelope_for_request(CAP_AI, "ai", &event, &binding);
                 let ua = host.full_user_agent(envelope.as_ref());

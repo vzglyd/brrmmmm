@@ -6,11 +6,13 @@ use wasmtime::Linker;
 
 use crate::events::{Event, EventSink, diag, now_ts};
 use crate::host::HostState;
-use crate::host::browser_request::{decode_action, encode_response};
+use crate::host::browser_request::{BrowserActionResponse, decode_action, encode_response};
 use crate::mission_state::{self, CAP_BROWSER};
 
 use super::execute::BrowserSession;
 use super::state::store_pending_response;
+
+use super::super::super::io::lock_runtime;
 
 pub(super) fn register(
     linker: &mut Linker<wasmtime_wasi::preview1::WasiP1Ctx>,
@@ -45,6 +47,12 @@ pub(super) fn register(
                         &event_sink,
                         &format!("[brrmmmm] browser_action decode error: {e}"),
                     );
+                    let error_response =
+                        BrowserActionResponse::err("decode_error", e.to_string());
+                    if let Ok(data) = encode_response(&error_response) {
+                        store_pending_response(&shared, data);
+                        return 0;
+                    }
                     return -1;
                 }
             };
@@ -52,7 +60,7 @@ pub(super) fn register(
             let action_kind = action.kind().to_string();
             let action_detail = action.detail();
             {
-                let mut host = shared.lock().unwrap();
+                let mut host = lock_runtime(&shared, "host_state");
                 let event = mission_state::browser_action_event(&action_kind);
                 host.record_activity(CAP_BROWSER, "browser_action", &event);
             }

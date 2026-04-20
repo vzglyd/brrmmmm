@@ -5,7 +5,7 @@ use wasmtime::Linker;
 
 use crate::host::HostState;
 
-use super::super::io::{read_memory_from_caller, write_memory_from_caller};
+use super::super::io::{lock_runtime, read_memory_from_caller, write_memory_from_caller};
 
 pub(super) fn register(
     linker: &mut Linker<wasmtime_wasi::preview1::WasiP1Ctx>,
@@ -69,15 +69,19 @@ fn user_agent_len(shared: &Arc<Mutex<HostState>>) -> i32 {
 }
 
 fn current_user_agent_bytes(shared: &Arc<Mutex<HostState>>) -> Vec<u8> {
-    let s = shared.lock().unwrap();
-    s.user_agent.lock().unwrap().as_bytes().to_vec()
+    let s = lock_runtime(shared, "host_state");
+    s.user_agent
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .as_bytes()
+        .to_vec()
 }
 
 fn set_user_agent_bytes(shared: &Arc<Mutex<HostState>>, bytes: Vec<u8>) -> i32 {
     match String::from_utf8(bytes) {
         Ok(new_ua) => {
-            let s = shared.lock().unwrap();
-            *s.user_agent.lock().unwrap() = new_ua;
+            let s = lock_runtime(shared, "host_state");
+            *s.user_agent.lock().unwrap_or_else(|e| e.into_inner()) = new_ua;
             0
         }
         Err(_) => -1,
@@ -85,7 +89,7 @@ fn set_user_agent_bytes(shared: &Arc<Mutex<HostState>>, bytes: Vec<u8>) -> i32 {
 }
 
 fn set_identity_disclosure(shared: &Arc<Mutex<HostState>>, visible: bool) -> i32 {
-    let mut s = shared.lock().unwrap();
+    let mut s = lock_runtime(shared, "host_state");
     s.set_identity_disclosure_visible(visible);
     0
 }

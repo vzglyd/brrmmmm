@@ -58,6 +58,9 @@ pub enum ErrorKind {
     Tls,
     Io,
     Timeout,
+    ConnectionRefused,
+    PermissionDenied,
+    Unknown,
 }
 
 // ── Wire encoding/decoding ─────────────────────────────────────────

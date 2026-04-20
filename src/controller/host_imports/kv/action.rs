@@ -159,7 +159,7 @@ pub(super) fn register(
 
 fn record_kv_activity(shared: &Arc<Mutex<HostState>>, operation: &str) {
     let event = mission_state::kv_event(operation);
-    let mut host = shared.lock().unwrap();
+    let mut host = lock_runtime(shared, "host_state");
     host.record_activity(CAP_KV, "kv", &event);
 }
 

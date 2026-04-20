@@ -21,6 +21,7 @@ pub(super) fn register(
         },
     )?;
 
+    let peek_shared = shared.clone();
     linker.func_wrap(
         "vzglyd_host",
         "ai_response_read",
@@ -28,15 +29,21 @@ pub(super) fn register(
               ptr: i32,
               len: i32|
               -> i32 {
+            let data_len = pending_response_len(&peek_shared);
+            if data_len < 0 {
+                return -1;
+            }
+            if len < data_len {
+                return -1;
+            }
             let Some(data) = take_pending_response(&shared) else {
                 return -1;
             };
-            let write_len = std::cmp::min(data.len(), len as usize);
-            if let Err(e) = write_memory_from_caller(&mut caller, ptr, &data[..write_len]) {
+            if let Err(e) = write_memory_from_caller(&mut caller, ptr, &data) {
                 eprintln!("[brrmmmm] ai_response_read error: {e}");
                 return -1;
             }
-            write_len as i32
+            data.len() as i32
         },
     )?;
 

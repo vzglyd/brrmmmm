@@ -15,8 +15,8 @@ use crate::host::host_request::{ErrorKind, HostRequest, HostResponse};
 use crate::mission_state::{self, CAP_NETWORK};
 
 use super::super::super::io::{
-    describe_request, encode_response_for_sidecar, execute_native_request, read_memory_from_caller,
-    response_info, update_failure_state, update_phase_state,
+    describe_request, encode_response_for_sidecar, execute_native_request, lock_runtime,
+    read_memory_from_caller, response_info, update_failure_state, update_phase_state,
 };
 use super::publish::publish_raw_source_payload;
 use super::state::store_pending_response;
@@ -46,8 +46,16 @@ pub(super) fn register(
                 }
             };
 
-            let Some(request) = decode_request(&req_bytes, &event_sink) else {
-                return -1;
+            let request = match decode_request(&req_bytes, &event_sink) {
+                Some(r) => r,
+                None => {
+                    let response = HostResponse::Error {
+                        error_kind: ErrorKind::Io,
+                        message: "malformed or unsupported network_request payload".to_string(),
+                    };
+                    store_pending_response(&shared, encode_response_for_sidecar(&response));
+                    return 0;
+                }
             };
 
             let req_id = request_counter.fetch_add(1, Ordering::Relaxed);
@@ -63,7 +71,7 @@ pub(super) fn register(
             });
 
             let (ua, attestation_headers) = {
-                let mut s = shared.lock().unwrap();
+                let mut s = lock_runtime(&shared, "host_state");
                 let envelope = match request_binding(&request) {
                     Some(binding) => {
                         let event = mission_state::network_event(
@@ -89,17 +97,17 @@ pub(super) fn register(
             let start = Instant::now();
             let response = match execute_native_request(&request, &ua, &attestation_headers) {
                 Ok(response) => response,
-                Err(error) => {
-                    update_failure_state(&runtime_state, &error);
+                Err((error_kind, message)) => {
+                    update_failure_state(&runtime_state, &message);
                     event_sink.emit(Event::RequestError {
                         ts: now_ts(),
                         request_id,
-                        error_kind: "io".to_string(),
-                        message: error.clone(),
+                        error_kind: format!("{error_kind:?}").to_ascii_lowercase(),
+                        message: message.clone(),
                     });
                     let response = HostResponse::Error {
-                        error_kind: ErrorKind::Io,
-                        message: error,
+                        error_kind,
+                        message,
                     };
                     store_pending_response(&shared, encode_response_for_sidecar(&response));
                     return 0;

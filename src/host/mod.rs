@@ -147,11 +147,13 @@ impl HostState {
             key_id: identity.key_id,
             public_key: identity.public_key,
         };
-        Some(attestation::build_signed_envelope(
-            &fields,
-            binding,
-            &identity.signing_key,
-        ))
+        match attestation::build_signed_envelope(&fields, binding, &identity.signing_key) {
+            Ok(envelope) => Some(envelope),
+            Err(e) => {
+                eprintln!("[brrmmmm] failed to build signed envelope: {e}");
+                None
+            }
+        }
     }
 
     pub fn set_identity_disclosure_visible(&mut self, visible: bool) {
@@ -159,7 +161,12 @@ impl HostState {
     }
 
     pub fn full_user_agent(&self, envelope: Option<&SignedEnvelope>) -> String {
-        let base = self.user_agent.lock().unwrap().trim().to_string();
+        let base = self
+            .user_agent
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .trim()
+            .to_string();
         if !self.identity_disclosure_visible {
             return base;
         }
