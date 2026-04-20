@@ -28,7 +28,7 @@ pub(super) fn register_vzglyd_host_on_linker(
     stop_signal: Arc<AtomicBool>,
     force_refresh: Arc<AtomicBool>,
     wasm_hash: Option<String>,
-) -> Result<()> {
+) -> Result<Arc<Mutex<HostState>>> {
     let shared = Arc::new(Mutex::new(host_state));
     let request_counter = Arc::new(AtomicU64::new(0));
 
@@ -57,7 +57,7 @@ pub(super) fn register_vzglyd_host_on_linker(
     ai::register(linker, shared.clone(), event_sink.clone())?;
     kv::register(linker, shared.clone(), event_sink, runtime_state, wasm_hash)?;
     tracing::register(linker)?;
-    ua::register(linker, shared)?;
+    ua::register(linker, shared.clone())?;
 
-    Ok(())
+    Ok(shared)
 }

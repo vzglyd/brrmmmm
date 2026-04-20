@@ -51,6 +51,19 @@ tasks:
       - 'tests/**/*'
       - 'fixtures/deterministic-sidecar/**/*'
 
+  coverage:
+    command: 'bash'
+    args:
+      - '-lc'
+      - 'export CARGO_INCREMENTAL=0 CARGO_TARGET_DIR=/tmp/brrmmmm-coverage-target; cargo llvm-cov --lib --package brrmmmm --no-report && cargo llvm-cov report --html --output-dir target/coverage && cargo llvm-cov report --lcov --output-path target/coverage/lcov.info'
+    inputs:
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'src/**/*'
+    outputs:
+      - 'target/coverage/html'
+      - 'target/coverage/lcov.info'
+
   build:
     command: 'cargo build'
     args:

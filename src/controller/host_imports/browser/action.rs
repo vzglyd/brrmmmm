@@ -7,6 +7,7 @@ use wasmtime::Linker;
 use crate::events::{Event, EventSink, diag, now_ts};
 use crate::host::HostState;
 use crate::host::browser_request::{decode_action, encode_response};
+use crate::mission_state::{self, CAP_BROWSER};
 
 use super::execute::BrowserSession;
 use super::state::store_pending_response;
@@ -50,6 +51,11 @@ pub(super) fn register(
 
             let action_kind = action.kind().to_string();
             let action_detail = action.detail();
+            {
+                let mut host = shared.lock().unwrap();
+                let event = mission_state::browser_action_event(&action_kind);
+                host.record_activity(CAP_BROWSER, "browser_action", &event);
+            }
 
             event_sink.emit(Event::BrowserAction {
                 ts: now_ts(),

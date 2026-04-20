@@ -26,27 +26,35 @@ impl AiSession {
         }
     }
 
-    pub fn execute(&self, action: AiAction) -> AiActionResponse {
+    pub fn prepare_body(&self, action: &AiAction) -> Result<Vec<u8>, AiActionResponse> {
         if self.api_key.is_empty() {
-            return AiActionResponse::err(
+            return Err(AiActionResponse::err(
                 "no_api_key",
                 "ANTHROPIC_API_KEY is not set on the brrmmmm process",
-            );
+            ));
         }
 
-        let body = match build_request_body(&self.model, &action) {
-            Ok(b) => b,
-            Err(e) => return AiActionResponse::err("request_build_failed", e.to_string()),
-        };
+        build_request_body(&self.model, action)
+            .map_err(|e| AiActionResponse::err("request_build_failed", e.to_string()))
+    }
 
-        let resp = self
+    pub fn execute_prepared(
+        &self,
+        body: Vec<u8>,
+        user_agent: String,
+        attestation_headers: Vec<(String, String)>,
+    ) -> AiActionResponse {
+        let mut request = self
             .client
             .post("https://api.anthropic.com/v1/messages")
             .header("x-api-key", &self.api_key)
             .header("anthropic-version", "2023-06-01")
             .header("content-type", "application/json")
-            .body(body)
-            .send();
+            .header(reqwest::header::USER_AGENT, user_agent);
+        for (name, value) in attestation_headers {
+            request = request.header(name, value);
+        }
+        let resp = request.body(body).send();
 
         let resp = match resp {
             Ok(r) => r,

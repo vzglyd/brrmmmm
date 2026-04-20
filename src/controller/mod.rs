@@ -15,8 +15,10 @@ use anyhow::{Context, Result};
 use wasmtime::{Engine, Module};
 
 use crate::abi::{ABI_VERSION_V1, ActiveMode, SidecarRuntimeState};
+use crate::attestation;
 use crate::events::EventSink;
 use crate::host::ArtifactStore;
+use crate::identity;
 use crate::persistence;
 
 use io::lock_runtime;
@@ -53,6 +55,14 @@ impl SidecarController {
             std::fs::read(wasm_path).with_context(|| format!("read WASM file: {wasm_path}"))?;
 
         let wasm_hash = persistence::wasm_identity(&wasm_bytes);
+        let module_hash = attestation::sha256_digest(&wasm_bytes);
+        let attestation_identity = if identity::attestation_disabled() {
+            None
+        } else {
+            Some(identity::load_or_create().context(
+                "load or create brrmmmm attestation identity; set BRRMMMM_ATTESTATION=off for explicit legacy mode",
+            )?)
+        };
         let runtime_state = persistence::load(&wasm_hash).unwrap_or_default();
         let runtime_state = Arc::new(Mutex::new(runtime_state));
         let stop_signal = Arc::new(AtomicBool::new(false));
@@ -85,6 +95,8 @@ impl SidecarController {
                 abi_version: ABI_VERSION_V1,
                 wasm_size_bytes: wasm_bytes.len(),
                 wasm_hash,
+                module_hash,
+                attestation_identity,
             };
             let context = WasmRunContext {
                 artifact_store: artifact_store_clone,

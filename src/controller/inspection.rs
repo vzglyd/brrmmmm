@@ -137,9 +137,9 @@ fn instantiate_for_inspection(
     wasmtime_wasi::preview1::add_to_linker_sync(&mut linker, |ctx| ctx)?;
 
     let runtime_state = Arc::new(Mutex::new(SidecarRuntimeState::default()));
-    register_vzglyd_host_on_linker(
+    let _shared_host_state = register_vzglyd_host_on_linker(
         &mut linker,
-        HostState::new(false, Arc::new(Mutex::new(None))),
+        HostState::new(false, Arc::new(Mutex::new(None)), [0u8; 32], None),
         EventSink::noop(),
         runtime_state,
         Arc::new(AtomicBool::new(false)),

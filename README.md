@@ -50,9 +50,12 @@ the design principles of this framework."
 
 What that means in practice:
 
-- The User-Agent identifies the client honestly on first contact. Servers can see it,
-  log it, and choose to decline. That is a legitimate response and the framework does
-  not argue with it.
+- By default, the User-Agent identifies the client honestly on first contact. Servers
+  can see it, log it, and choose to decline. That is a legitimate response and the
+  framework does not argue with it.
+- By default, signed attestation gives servers stable handles beyond first contact. They can
+  distinguish one installation, one mission, and one behavior pattern from another
+  instead of guessing from IP addresses or a mutable User-Agent string.
 - The framework respects `Retry-After` headers. A 429 is a signal to back off, not a
   signal to retry immediately. Sidecars receive the full response including all headers
   and are expected to honour this.
@@ -62,6 +65,9 @@ What that means in practice:
   and their responsibility. It is not a right earned by having announced the client
   identity first, and it does not confer permission for anything the framework would
   not otherwise permit.
+- The `identity_disclosure_set` import exists for exceptional compatibility cases.
+  If a sidecar suppresses brrmmmm disclosure, that choice belongs to the sidecar
+  vendor, not the runtime.
 
 Transparency about what the tool is, and restraint in how it operates, are the
 baseline. They are not a justification for anything beyond them.
@@ -327,6 +333,7 @@ The runtime exposes the `vzglyd_host` module to every sidecar:
 | `ua_get_len` | `fn() -> i32` | Query byte length of the current User-Agent string |
 | `ua_get` | `fn(ptr: i32, len: i32) -> i32` | Write current User-Agent into sidecar memory |
 | `ua_set` | `fn(ptr: i32, len: i32) -> i32` | Replace the active User-Agent from sidecar memory |
+| `identity_disclosure_set` | `fn(visible: i32) -> i32` | Enable or disable brrmmmm identity disclosure for subsequent host-mediated requests |
 | `trace_span_start` | `fn(...) -> i32` | Start a distributed tracing span (stub — reserved) |
 | `trace_span_end` | `fn(...) -> i32` | End a tracing span (stub — reserved) |
 | `trace_event` | `fn(ptr: i32, len: i32) -> i32` | Emit an instant trace event (stub — reserved) |
@@ -388,6 +395,46 @@ State is keyed by the WASM binary identity and stored under
 `~/.local/share/brrmmmm/state` by default. Set `BRRMMMM_STATE_DIR` to override that
 directory for tests or isolated runners.
 
+**Remote request attestation (implemented)**
+Remote operators should not have to choose between trusting a polite User-Agent and
+blanket-blocking every automated client. brrmmmm attaches a signed, host-owned
+envelope to outbound host-controlled HTTP requests so receivers can verify that the
+identity data came from the brrmmmm transport path, correlate traffic across rotating
+IPs, and contain abuse at the narrowest useful level.
+
+The envelope is not a permission slip, and it does not prove that a request is
+harmless. It is observability and containment. A receiver can verify the signature,
+facet logs by client and mission, rate-limit one noisy mission, or deny one
+installation key while leaving other brrmmmm clients alone.
+
+In normal visible mode, brrmmmm emits the same request summary in two forms. The
+User-Agent gets a readable `brrm/1` suffix with named products such as `cid`, `mid`,
+`mod`, `seq`, `cap`, `bh`, `ts`, `nonce`, `kid`, `pk`, and `sig`, so an operator can
+understand the request from ordinary User-Agent logs. Short IDs and hashes use 16
+lowercase hex characters: enough to be useful to a tired human without turning the
+header into an opaque blob. The structured `X-Brrm-*` headers carry the full verifier
+fields for systems that want machine-friendly parsing.
+
+The signed fields identify the brrmmmm installation pseudonymously, the loaded
+sidecar mission, the concrete module hash, the per-mission request count, cumulative
+capabilities used, a rolling behavior hash, a timestamp, a nonce, the installation
+key id, the public key, and the request signature.
+
+On first run brrmmmm creates a local Ed25519 keypair and installation id under
+`~/.local/share/brrmmmm/identity`. Set `BRRMMMM_IDENTITY_DIR` to isolate that state
+for tests or separate runners. The installation id and private key never leave the
+machine. Receivers can verify `X-Brrm-Signature` with `X-Brrm-Public-Key` in self-key
+mode; issuer-bound credentials can be layered on later for managed trust and formal
+revocation.
+
+`ua_get` and `ua_set` control the sidecar-owned User-Agent value. When identity
+disclosure is visible, brrmmmm appends its own marker and readable signed suffix, and
+also emits the structured `X-Brrm-*` headers. When disclosure is not visible,
+brrmmmm sends the sidecar-owned User-Agent without adding its own marker, suffix, or
+structured attestation headers. brrmmmm always strips sidecar-supplied `User-Agent`
+and `X-Brrm-*` request headers from host-mediated requests before applying the current
+runtime policy. Set `BRRMMMM_ATTESTATION=off` only for explicit legacy mode.
+
 **`acquisition_timeout_secs` in describe (implemented)**
 Sidecars declare their expected acquisition budget. brrmmmm enforces it. The default
 is 30 seconds; a sidecar that drives a browser login flow may declare 120 seconds.
@@ -445,15 +492,27 @@ features are additive.
 ```bash
 cargo test
 npm --prefix tui run build
+export CARGO_INCREMENTAL=0 CARGO_TARGET_DIR=/tmp/brrmmmm-coverage-target
+cargo llvm-cov --lib --package brrmmmm --no-report
+cargo llvm-cov report --html --output-dir target/coverage
+cargo llvm-cov report --lcov --output-path target/coverage/lcov.info
 ```
 
 With Moonrepo:
 
 ```bash
 moon run core:ci
+moon run core:coverage
 # or without a global install:
 npx --package @moonrepo/cli@2.2.1 moon run core:ci
+npx --package @moonrepo/cli@2.2.1 moon run core:coverage
 ```
+
+The Rust coverage report is written to `target/coverage/html`. CI uploads it as the
+`rust-coverage` artifact and summarizes the User-Agent/disclosure tests in the
+workflow output. The coverage task intentionally targets the library unit tests so
+the User-Agent path is observable without rebuilding every integration target under
+coverage instrumentation.
 
 ---
 

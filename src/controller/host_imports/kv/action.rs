@@ -6,6 +6,7 @@ use wasmtime::Linker;
 use crate::abi::{PersistenceAuthority, SidecarRuntimeState};
 use crate::events::{Event, EventSink, diag, now_ts};
 use crate::host::HostState;
+use crate::mission_state::{self, CAP_KV};
 use crate::persistence;
 
 use super::super::super::io::{lock_runtime, read_memory_from_caller};
@@ -36,6 +37,7 @@ pub(super) fn register(
                     Ok(key) => key,
                     Err(status) => return status,
                 };
+                record_kv_activity(&shared, "get");
 
                 let value = {
                     let state = lock_runtime(&runtime_state, "runtime_state");
@@ -78,6 +80,7 @@ pub(super) fn register(
                     Ok(key) => key,
                     Err(status) => return status,
                 };
+                record_kv_activity(&shared, "set");
 
                 let val_bytes = match read_memory_from_caller(&mut caller, val_ptr, val_len) {
                     Ok(b) => b,
@@ -129,6 +132,7 @@ pub(super) fn register(
                     Ok(key) => key,
                     Err(status) => return status,
                 };
+                record_kv_activity(&shared, "delete");
 
                 event_sink.emit(Event::KvDelete {
                     ts: now_ts(),
@@ -151,6 +155,12 @@ pub(super) fn register(
     }
 
     Ok(())
+}
+
+fn record_kv_activity(shared: &Arc<Mutex<HostState>>, operation: &str) {
+    let event = mission_state::kv_event(operation);
+    let mut host = shared.lock().unwrap();
+    host.record_activity(CAP_KV, "kv", &event);
 }
 
 fn read_key(

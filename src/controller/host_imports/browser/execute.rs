@@ -2,25 +2,32 @@ use std::sync::{Arc, Mutex};
 
 use chromiumoxide::Browser;
 use chromiumoxide::browser::BrowserConfig;
+use chromiumoxide::cdp::browser_protocol::fetch::{
+    ContinueRequestParams, EventRequestPaused, HeaderEntry,
+};
 use chromiumoxide::cdp::browser_protocol::network::SetUserAgentOverrideParams;
 use chromiumoxide::cdp::browser_protocol::page::CaptureScreenshotParams;
 use futures::StreamExt as _;
 use tokio::runtime::Runtime;
 
+use crate::attestation;
+use crate::host::HostState;
 use crate::host::browser_request::{
     BrowserAction, BrowserActionResponse, BrowserCookie, SelectorKind,
 };
+use crate::mission_state::{self, CAP_BROWSER};
 
 pub(super) struct BrowserSession {
     pub runtime: Runtime,
     pub browser: Option<Browser>,
     pub active_page: Option<chromiumoxide::Page>,
-    pub user_agent: Arc<Mutex<String>>,
+    pub shared: Arc<Mutex<HostState>>,
     pub last_applied_ua: String,
+    pub interception_started: bool,
 }
 
 impl BrowserSession {
-    pub fn new(user_agent: Arc<Mutex<String>>) -> anyhow::Result<Self> {
+    pub fn new(shared: Arc<Mutex<HostState>>) -> anyhow::Result<Self> {
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .enable_all()
             .build()?;
@@ -28,8 +35,9 @@ impl BrowserSession {
             runtime,
             browser: None,
             active_page: None,
-            user_agent,
+            shared,
             last_applied_ua: String::new(),
+            interception_started: false,
         })
     }
 
@@ -42,7 +50,7 @@ impl BrowserSession {
         }
 
         // Apply CDP UA override if the sidecar changed the UA after the browser was launched.
-        let current_ua = self.user_agent.lock().unwrap().clone();
+        let current_ua = self.shared.lock().unwrap().full_user_agent(None);
         if current_ua != self.last_applied_ua {
             if let Some(page) = self.active_page.as_ref().cloned() {
                 let ua_clone = current_ua.clone();
@@ -52,22 +60,32 @@ impl BrowserSession {
                         .await;
                 });
             }
-            self.last_applied_ua = current_ua;
+            self.last_applied_ua = current_ua.clone();
         }
 
         let browser = self.browser.as_ref().unwrap();
         let active_page = &mut self.active_page;
-        self.runtime
-            .block_on(run_action(browser, active_page, action))
+        let shared = self.shared.clone();
+        let interception_started = &mut self.interception_started;
+        let user_agent = current_ua;
+        self.runtime.block_on(run_action(
+            browser,
+            active_page,
+            action,
+            shared,
+            interception_started,
+            &user_agent,
+        ))
     }
 
     fn ensure_browser(&mut self) -> anyhow::Result<()> {
         if self.browser.is_some() {
             return Ok(());
         }
-        let ua = self.user_agent.lock().unwrap().clone();
+        let ua = self.shared.lock().unwrap().full_user_agent(None);
         let mut config = BrowserConfig::builder()
             .new_headless_mode()
+            .enable_request_intercept()
             .arg(format!("--user-agent={ua}"));
         if browser_headless_disabled() {
             config = config.with_head();
@@ -92,6 +110,9 @@ async fn run_action(
     browser: &Browser,
     active_page: &mut Option<chromiumoxide::Page>,
     action: BrowserAction,
+    shared: Arc<Mutex<HostState>>,
+    interception_started: &mut bool,
+    user_agent: &str,
 ) -> BrowserActionResponse {
     match action {
         BrowserAction::Navigate { url } => {
@@ -101,10 +122,10 @@ async fn run_action(
                     let pages = browser.pages().await.unwrap_or_default();
                     match pages.into_iter().next() {
                         Some(page) => page,
-                        None => match browser.new_page(&url).await {
+                        None => match browser.new_page("about:blank").await {
                             Ok(page) => {
                                 *active_page = Some(page);
-                                return BrowserActionResponse::ok();
+                                active_page.as_ref().cloned().unwrap()
                             }
                             Err(e) => {
                                 return BrowserActionResponse::err(
@@ -116,6 +137,12 @@ async fn run_action(
                     }
                 }
             };
+            if let Err(e) =
+                ensure_page_attestation(&page, shared.clone(), interception_started, user_agent)
+                    .await
+            {
+                return BrowserActionResponse::err("browser_attestation_failed", e);
+            }
             match page.goto(&url).await {
                 Ok(_) => {
                     *active_page = Some(page);
@@ -125,7 +152,15 @@ async fn run_action(
             }
         }
         BrowserAction::Fill { selector, value } => {
-            let page = match current_page(browser, active_page).await {
+            let page = match current_page(
+                browser,
+                active_page,
+                shared.clone(),
+                interception_started,
+                user_agent,
+            )
+            .await
+            {
                 Ok(p) => p,
                 Err(e) => return BrowserActionResponse::err("no_page", e),
             };
@@ -144,7 +179,15 @@ async fn run_action(
             }
         }
         BrowserAction::Click { selector } => {
-            let page = match current_page(browser, active_page).await {
+            let page = match current_page(
+                browser,
+                active_page,
+                shared.clone(),
+                interception_started,
+                user_agent,
+            )
+            .await
+            {
                 Ok(p) => p,
                 Err(e) => return BrowserActionResponse::err("no_page", e),
             };
@@ -160,7 +203,15 @@ async fn run_action(
             }
         }
         BrowserAction::Press { selector, key } => {
-            let page = match current_page(browser, active_page).await {
+            let page = match current_page(
+                browser,
+                active_page,
+                shared.clone(),
+                interception_started,
+                user_agent,
+            )
+            .await
+            {
                 Ok(p) => p,
                 Err(e) => return BrowserActionResponse::err("no_page", e),
             };
@@ -179,7 +230,15 @@ async fn run_action(
             selector,
             timeout_ms,
         } => {
-            let page = match current_page(browser, active_page).await {
+            let page = match current_page(
+                browser,
+                active_page,
+                shared.clone(),
+                interception_started,
+                user_agent,
+            )
+            .await
+            {
                 Ok(p) => p,
                 Err(e) => return BrowserActionResponse::err("no_page", e),
             };
@@ -196,7 +255,15 @@ async fn run_action(
             pattern,
             timeout_ms,
         } => {
-            let page = match current_page(browser, active_page).await {
+            let page = match current_page(
+                browser,
+                active_page,
+                shared.clone(),
+                interception_started,
+                user_agent,
+            )
+            .await
+            {
                 Ok(p) => p,
                 Err(e) => return BrowserActionResponse::err("no_page", e),
             };
@@ -211,7 +278,15 @@ async fn run_action(
             }
         }
         BrowserAction::CurrentUrl => {
-            let page = match current_page(browser, active_page).await {
+            let page = match current_page(
+                browser,
+                active_page,
+                shared.clone(),
+                interception_started,
+                user_agent,
+            )
+            .await
+            {
                 Ok(p) => p,
                 Err(e) => return BrowserActionResponse::err("no_page", e),
             };
@@ -222,7 +297,15 @@ async fn run_action(
             }
         }
         BrowserAction::GetCookies => {
-            let page = match current_page(browser, active_page).await {
+            let page = match current_page(
+                browser,
+                active_page,
+                shared.clone(),
+                interception_started,
+                user_agent,
+            )
+            .await
+            {
                 Ok(p) => p,
                 Err(e) => return BrowserActionResponse::err("no_page", e),
             };
@@ -245,7 +328,15 @@ async fn run_action(
             }
         }
         BrowserAction::GetText { selector, limit } => {
-            let page = match current_page(browser, active_page).await {
+            let page = match current_page(
+                browser,
+                active_page,
+                shared.clone(),
+                interception_started,
+                user_agent,
+            )
+            .await
+            {
                 Ok(p) => p,
                 Err(e) => return BrowserActionResponse::err("no_page", e),
             };
@@ -259,7 +350,15 @@ async fn run_action(
             selector_kind,
             limit,
         } => {
-            let page = match current_page(browser, active_page).await {
+            let page = match current_page(
+                browser,
+                active_page,
+                shared.clone(),
+                interception_started,
+                user_agent,
+            )
+            .await
+            {
                 Ok(p) => p,
                 Err(e) => return BrowserActionResponse::err("no_page", e),
             };
@@ -269,7 +368,15 @@ async fn run_action(
             }
         }
         BrowserAction::EvaluateJson { expression } => {
-            let page = match current_page(browser, active_page).await {
+            let page = match current_page(
+                browser,
+                active_page,
+                shared.clone(),
+                interception_started,
+                user_agent,
+            )
+            .await
+            {
                 Ok(p) => p,
                 Err(e) => return BrowserActionResponse::err("no_page", e),
             };
@@ -279,7 +386,15 @@ async fn run_action(
             }
         }
         BrowserAction::Screenshot => {
-            let page = match current_page(browser, active_page).await {
+            let page = match current_page(
+                browser,
+                active_page,
+                shared.clone(),
+                interception_started,
+                user_agent,
+            )
+            .await
+            {
                 Ok(p) => p,
                 Err(e) => return BrowserActionResponse::err("no_page", e),
             };
@@ -295,18 +410,118 @@ async fn run_action(
 async fn current_page(
     browser: &Browser,
     active_page: &mut Option<chromiumoxide::Page>,
+    shared: Arc<Mutex<HostState>>,
+    interception_started: &mut bool,
+    user_agent: &str,
 ) -> Result<chromiumoxide::Page, String> {
-    if let Some(page) = active_page.as_ref() {
-        return Ok(page.clone());
+    let page = if let Some(page) = active_page.as_ref() {
+        page.clone()
+    } else {
+        let pages = browser.pages().await.map_err(|e| e.to_string())?;
+        let page = pages
+            .into_iter()
+            .next()
+            .ok_or_else(|| "no open page".to_string())?;
+        *active_page = Some(page.clone());
+        page
+    };
+    ensure_page_attestation(&page, shared, interception_started, user_agent).await?;
+    Ok(page)
+}
+
+async fn ensure_page_attestation(
+    page: &chromiumoxide::Page,
+    shared: Arc<Mutex<HostState>>,
+    interception_started: &mut bool,
+    user_agent: &str,
+) -> Result<(), String> {
+    if !user_agent.is_empty() {
+        page.execute(SetUserAgentOverrideParams::new(user_agent.to_string()))
+            .await
+            .map_err(|error| error.to_string())?;
+    }
+    if *interception_started {
+        return Ok(());
     }
 
-    let pages = browser.pages().await.map_err(|e| e.to_string())?;
-    let page = pages
+    let mut events = page
+        .event_listener::<EventRequestPaused>()
+        .await
+        .map_err(|error| error.to_string())?;
+    let page = page.clone();
+    tokio::spawn(async move {
+        while let Some(event) = events.next().await {
+            let _ = continue_attested_request(&page, shared.clone(), event.as_ref()).await;
+        }
+    });
+    *interception_started = true;
+    Ok(())
+}
+
+async fn continue_attested_request(
+    page: &chromiumoxide::Page,
+    shared: Arc<Mutex<HostState>>,
+    event: &EventRequestPaused,
+) -> Result<(), String> {
+    if event.response_status_code.is_some() {
+        return page
+            .execute(ContinueRequestParams::new(event.request_id.clone()))
+            .await
+            .map(|_| ())
+            .map_err(|error| error.to_string());
+    }
+
+    let Some(binding) =
+        attestation::binding_from_url(&event.request.method, &event.request.url, None)
+    else {
+        return page
+            .execute(ContinueRequestParams::new(event.request_id.clone()))
+            .await
+            .map(|_| ())
+            .map_err(|error| error.to_string());
+    };
+
+    let original = cdp_headers_to_pairs(event.request.headers.inner());
+    let headers = {
+        let mut host = shared.lock().unwrap();
+        let behavior =
+            mission_state::network_event(&binding.method, &binding.authority, &binding.path);
+        let envelope =
+            host.signed_envelope_for_request(CAP_BROWSER, "browser_http", &behavior, &binding);
+        let user_agent = host.full_user_agent(envelope.as_ref());
+        attestation::merge_host_headers(original, &user_agent, envelope.as_ref())
+    };
+    let entries: Vec<HeaderEntry> = headers
         .into_iter()
-        .next()
-        .ok_or_else(|| "no open page".to_string())?;
-    *active_page = Some(page.clone());
-    Ok(page)
+        .map(|(name, value)| HeaderEntry::new(name, value))
+        .collect();
+    let params = ContinueRequestParams::builder()
+        .request_id(event.request_id.clone())
+        .headers(entries)
+        .build()
+        .map_err(|error| error.to_string())?;
+    page.execute(params)
+        .await
+        .map(|_| ())
+        .map_err(|error| error.to_string())
+}
+
+fn cdp_headers_to_pairs(headers: &serde_json::Value) -> Vec<(String, String)> {
+    headers
+        .as_object()
+        .map(|object| {
+            object
+                .iter()
+                .map(|(name, value)| {
+                    let value = value
+                        .as_str()
+                        .map(ToOwned::to_owned)
+                        .unwrap_or_else(|| value.to_string());
+                    (name.clone(), value)
+                })
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 async fn wait_for_selector_match(page: &chromiumoxide::Page, selector: &str) {

@@ -46,6 +46,7 @@ fn run_brr(args: &[&str]) -> std::process::Output {
             "BRRMMMM_STATE_DIR",
             repo_root().join("target/test-state/cli-commands"),
         )
+        .env("BRRMMMM_ATTESTATION", "off")
         .output()
         .expect("failed to run brrmmmm")
 }

@@ -44,3 +44,36 @@ jobs:
 
       - name: Run core:ci
         run: npx --package @moonrepo/cli@2.2.1 moon run core:ci
+
+      - name: Install Rust coverage tooling
+        run: |
+          rustup component add llvm-tools-preview
+          cargo install cargo-llvm-cov --locked
+
+      - name: Run core:coverage
+        run: npx --package @moonrepo/cli@2.2.1 moon run core:coverage
+
+      - name: Upload Rust coverage report
+        uses: actions/upload-artifact@v4
+        with:
+          name: rust-coverage
+          path: |
+            target/coverage/html
+            target/coverage/lcov.info
+
+      - name: Summarize User-Agent coverage
+        run: |
+          {
+            echo '## User-Agent coverage'
+            echo ''
+            echo 'Rust coverage report: artifact `rust-coverage`'
+            echo ''
+            echo 'User-Agent/disclosure tests expected in coverage:'
+            echo '- attestation::tests::user_agent_suffix_is_readable_and_stable'
+            echo '- attestation::tests::reserved_headers_are_removed_before_host_headers_are_appended'
+            echo '- host::tests::visible_identity_appends_marker_and_readable_attestation'
+            echo '- host::tests::hidden_identity_uses_only_sidecar_user_agent'
+            echo '- controller::host_imports::ua::tests::ua_set_helper_replaces_sidecar_user_agent'
+            echo '- controller::host_imports::ua::tests::ua_set_helper_rejects_invalid_utf8'
+            echo '- controller::host_imports::ua::tests::identity_disclosure_helper_toggles_runtime_policy'
+          } >> "$GITHUB_STEP_SUMMARY"

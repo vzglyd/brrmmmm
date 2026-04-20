@@ -11,6 +11,7 @@ use wasmtime::{Engine, Linker, Module, Store};
 use crate::abi::{PersistenceAuthority, SidecarRuntimeState};
 use crate::events::{Event, EventSink, diag, now_ts};
 use crate::host::{ArtifactStore, HostState};
+use crate::identity::InstallationIdentity;
 use crate::persistence;
 
 use super::host_imports::register_vzglyd_host_on_linker;
@@ -27,6 +28,8 @@ pub(super) struct WasmRunConfig {
     pub(super) abi_version: u32,
     pub(super) wasm_size_bytes: usize,
     pub(super) wasm_hash: String,
+    pub(super) module_hash: [u8; 32],
+    pub(super) attestation_identity: Option<InstallationIdentity>,
 }
 
 pub(super) struct WasmRunContext {
@@ -52,6 +55,8 @@ pub(super) fn run_wasm_instance(
         abi_version,
         wasm_size_bytes,
         wasm_hash,
+        module_hash,
+        attestation_identity,
     } = config;
     let WasmRunContext {
         artifact_store,
@@ -75,11 +80,12 @@ pub(super) fn run_wasm_instance(
     wasmtime_wasi::preview1::add_to_linker_sync(&mut linker, |ctx| ctx)?;
 
     // Build host state and register all vzglyd_host imports.
-    let mut host_state = HostState::new(log_channel, params_state);
+    let mut host_state =
+        HostState::new(log_channel, params_state, module_hash, attestation_identity);
     // Share the artifact_store from the controller.
     host_state.artifact_store = artifact_store;
 
-    register_vzglyd_host_on_linker(
+    let shared_host_state = register_vzglyd_host_on_linker(
         &mut linker,
         host_state,
         event_sink.clone(),
@@ -113,6 +119,10 @@ pub(super) fn run_wasm_instance(
                 ts: now_ts(),
                 describe: describe.clone(),
             });
+            {
+                let mut host = lock_runtime(&shared_host_state, "host_state");
+                host.set_mission_describe(&describe);
+            }
             lock_runtime(&runtime_state, "runtime_state").describe = Some(describe);
 
             let stop_for_timeout = Arc::clone(&stop_signal);

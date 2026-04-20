@@ -8,9 +8,11 @@ use anyhow::Result;
 use wasmtime::Linker;
 
 use crate::abi::{SidecarPhase, SidecarRuntimeState};
+use crate::attestation::RequestBinding;
 use crate::events::{Event, EventSink, diag, now_ts};
 use crate::host::HostState;
 use crate::host::host_request::{ErrorKind, HostRequest, HostResponse};
+use crate::mission_state::{self, CAP_NETWORK};
 
 use super::super::super::io::{
     describe_request, encode_response_for_sidecar, execute_native_request, read_memory_from_caller,
@@ -60,13 +62,32 @@ pub(super) fn register(
                 path: req_path,
             });
 
-            let ua = {
-                let s = shared.lock().unwrap();
-                s.user_agent.lock().unwrap().clone()
+            let (ua, attestation_headers) = {
+                let mut s = shared.lock().unwrap();
+                let envelope = match request_binding(&request) {
+                    Some(binding) => {
+                        let event = mission_state::network_event(
+                            &binding.method,
+                            &binding.authority,
+                            &binding.path,
+                        );
+                        s.signed_envelope_for_request(CAP_NETWORK, "network", &event, &binding)
+                    }
+                    None => {
+                        let event = network_activity_event(&request);
+                        s.record_activity(CAP_NETWORK, "network", &event);
+                        None
+                    }
+                };
+                let ua = s.full_user_agent(envelope.as_ref());
+                let headers = envelope
+                    .map(|envelope| envelope.headers)
+                    .unwrap_or_default();
+                (ua, headers)
             };
 
             let start = Instant::now();
-            let response = match execute_native_request(&request, &ua) {
+            let response = match execute_native_request(&request, &ua, &attestation_headers) {
                 Ok(response) => response,
                 Err(error) => {
                     update_failure_state(&runtime_state, &error);
@@ -102,6 +123,24 @@ pub(super) fn register(
     )?;
 
     Ok(())
+}
+
+fn request_binding(request: &HostRequest) -> Option<RequestBinding> {
+    match request {
+        HostRequest::HttpsGet { host, path, .. } => {
+            Some(RequestBinding::new("GET", host, path, None))
+        }
+        HostRequest::TcpConnect { .. } => None,
+    }
+}
+
+fn network_activity_event(request: &HostRequest) -> Vec<u8> {
+    match request {
+        HostRequest::HttpsGet { host, path, .. } => mission_state::network_event("GET", host, path),
+        HostRequest::TcpConnect { host, port, .. } => {
+            format!("TCP\n{}:{}", host.to_ascii_lowercase(), port).into_bytes()
+        }
+    }
 }
 
 fn decode_request(req_bytes: &[u8], sink: &EventSink) -> Option<HostRequest> {

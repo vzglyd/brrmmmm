@@ -66,6 +66,7 @@ fn kv_sidecar_uses_imports_and_persists_host_state() {
     let output = Command::new(bin())
         .args(["run", wasm.to_str().unwrap(), "--once", "--output", "json"])
         .env("BRRMMMM_STATE_DIR", &state_dir)
+        .env("BRRMMMM_ATTESTATION", "off")
         .output()
         .expect("failed to run brrmmmm");
 
@@ -112,6 +113,7 @@ fn kv_sidecar_reports_error_when_state_cannot_be_persisted() {
     let output = Command::new(bin())
         .args(["run", wasm.to_str().unwrap(), "--once", "--output", "json"])
         .env("BRRMMMM_STATE_DIR", &state_path)
+        .env("BRRMMMM_ATTESTATION", "off")
         .output()
         .expect("failed to run brrmmmm");
 

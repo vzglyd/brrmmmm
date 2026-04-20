@@ -1,6 +1,7 @@
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use crate::abi::{ArtifactMeta, SidecarPhase, SidecarRuntimeState};
+use crate::attestation;
 use crate::events::{Event, EventSink, now_ms, now_ts};
 use crate::host::host_request::{Header, HostRequest, HostResponse};
 
@@ -166,6 +167,7 @@ pub(super) fn encode_response_for_sidecar(response: &HostResponse) -> Vec<u8> {
 pub(super) fn execute_native_request(
     req: &HostRequest,
     user_agent: &str,
+    attestation_headers: &[(String, String)],
 ) -> Result<HostResponse, String> {
     match req {
         HostRequest::HttpsGet {
@@ -180,13 +182,24 @@ pub(super) fn execute_native_request(
                 .timeout(std::time::Duration::from_secs(30));
 
             let mut hm = reqwest::header::HeaderMap::new();
-            if let Ok(v) = reqwest::header::HeaderValue::from_str(user_agent) {
-                hm.insert(reqwest::header::USER_AGENT, v);
-            }
             for h in headers {
+                if attestation::is_reserved_header(&h.name) {
+                    continue;
+                }
                 if let (Ok(n), Ok(v)) = (
                     reqwest::header::HeaderName::from_bytes(h.name.as_bytes()),
                     reqwest::header::HeaderValue::from_bytes(h.value.as_bytes()),
+                ) {
+                    hm.insert(n, v);
+                }
+            }
+            if let Ok(v) = reqwest::header::HeaderValue::from_str(user_agent) {
+                hm.insert(reqwest::header::USER_AGENT, v);
+            }
+            for (name, value) in attestation_headers {
+                if let (Ok(n), Ok(v)) = (
+                    reqwest::header::HeaderName::from_bytes(name.as_bytes()),
+                    reqwest::header::HeaderValue::from_str(value),
                 ) {
                     hm.insert(n, v);
                 }
