@@ -251,13 +251,12 @@ pub(super) fn run_wasm_instance(
             .map(|d| d.state_persistence == PersistenceAuthority::HostPersisted)
             .unwrap_or(false);
 
-        if should_persist {
-            if let Err(error) = persistence::save(brrmmmm_config, &wasm_hash, &state) {
-                diag(
-                    &event_sink,
-                    &format!("[brrmmmm] failed to persist runtime state: {error:#}"),
-                );
-            }
+        if should_persist && let Err(error) = persistence::save(brrmmmm_config, &wasm_hash, &state)
+        {
+            diag(
+                &event_sink,
+                &format!("[brrmmmm] failed to persist runtime state: {error:#}"),
+            );
         }
     } else {
         diag(
@@ -564,7 +563,7 @@ mod tests {
                 stop_signal: stop_signal.clone(),
                 force_refresh,
             },
-            &crate::config::Config::load(),
+            &crate::config::Config::load().expect("test config"),
         );
 
         stop_signal.store(true, Ordering::Relaxed);

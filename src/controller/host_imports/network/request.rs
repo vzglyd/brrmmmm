@@ -11,11 +11,12 @@ use crate::attestation::RequestBinding;
 use crate::events::{Event, EventSink, diag, now_ts};
 use crate::host::HostState;
 use crate::host::host_request::{ErrorKind, HostRequest, HostResponse};
-use crate::mission_state::{self, CAP_NETWORK};
+use crate::mission_state::{self, Capabilities};
 
 use super::super::super::io::{
     WasmCaller, WasmLinker, describe_request, encode_response_for_sidecar, execute_native_request,
-    lock_runtime, read_memory_from_caller, response_info, update_failure_state, update_phase_state,
+    lock_runtime, read_limited_memory_from_caller, response_info, update_failure_state,
+    update_phase_state,
 };
 use super::publish::publish_raw_source_payload;
 use super::state::store_pending_response;
@@ -31,7 +32,14 @@ pub(super) fn register(
         "vzglyd_host",
         "network_request",
         move |mut caller: WasmCaller<'_>, ptr: i32, len: i32| -> i32 {
-            let req_bytes = match read_memory_from_caller(&mut caller, ptr, len) {
+            let limits = lock_runtime(&shared, "host_state").config.limits.clone();
+            let req_bytes = match read_limited_memory_from_caller(
+                &mut caller,
+                ptr,
+                len,
+                limits.max_host_payload_bytes,
+                "network_request payload",
+            ) {
                 Ok(bytes) => bytes,
                 Err(error) => {
                     diag(
@@ -75,11 +83,16 @@ pub(super) fn register(
                             &binding.authority,
                             &binding.path,
                         );
-                        s.signed_envelope_for_request(CAP_NETWORK, "network", &event, &binding)
+                        s.signed_envelope_for_request(
+                            Capabilities::NETWORK,
+                            "network",
+                            &event,
+                            &binding,
+                        )
                     }
                     None => {
                         let event = network_activity_event(&request);
-                        s.record_activity(CAP_NETWORK, "network", &event);
+                        s.record_activity(Capabilities::NETWORK, "network", &event);
                         None
                     }
                 };
@@ -91,7 +104,12 @@ pub(super) fn register(
             };
 
             let start = Instant::now();
-            let response = match execute_native_request(&request, &ua, &attestation_headers) {
+            let response = match execute_native_request(
+                &request,
+                &ua,
+                &attestation_headers,
+                limits.max_http_response_bytes,
+            ) {
                 Ok(response) => response,
                 Err((error_kind, message)) => {
                     update_failure_state(&runtime_state, &message);

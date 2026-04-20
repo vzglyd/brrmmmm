@@ -1,4 +1,9 @@
+use brrmmmm::config::RuntimeLimits;
 use brrmmmm::params::{parse_env_vars, parse_params_bytes};
+
+fn limits() -> RuntimeLimits {
+    RuntimeLimits::default()
+}
 
 #[test]
 fn parse_env_vars_splits_on_first_equals() {
@@ -39,13 +44,13 @@ fn parse_env_vars_multiple_pairs() {
 
 #[test]
 fn parse_params_bytes_returns_none_when_both_absent() {
-    let result = parse_params_bytes(None, None).unwrap();
+    let result = parse_params_bytes(None, None, &limits()).unwrap();
     assert!(result.is_none());
 }
 
 #[test]
 fn parse_params_bytes_accepts_json_object() {
-    let result = parse_params_bytes(Some(r#"{"key":"value"}"#), None).unwrap();
+    let result = parse_params_bytes(Some(r#"{"key":"value"}"#), None, &limits()).unwrap();
     assert!(result.is_some());
     let bytes = result.unwrap();
     let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
@@ -54,13 +59,33 @@ fn parse_params_bytes_accepts_json_object() {
 
 #[test]
 fn parse_params_bytes_rejects_json_array() {
-    let result = parse_params_bytes(Some("[1,2,3]"), None);
+    let result = parse_params_bytes(Some("[1,2,3]"), None, &limits());
     assert!(result.is_err());
 }
 
 #[test]
 fn parse_params_bytes_rejects_invalid_json() {
-    let result = parse_params_bytes(Some("not json"), None);
+    let result = parse_params_bytes(Some("not json"), None, &limits());
+    assert!(result.is_err());
+}
+
+#[test]
+fn parse_params_bytes_rejects_oversized_json() {
+    let limits = RuntimeLimits {
+        max_params_bytes: 8,
+        ..RuntimeLimits::default()
+    };
+    let result = parse_params_bytes(Some(r#"{"key":"value"}"#), None, &limits);
+    assert!(result.is_err());
+}
+
+#[test]
+fn parse_params_bytes_rejects_excessive_depth() {
+    let limits = RuntimeLimits {
+        max_json_depth: 2,
+        ..RuntimeLimits::default()
+    };
+    let result = parse_params_bytes(Some(r#"{"a":{"b":1}}"#), None, &limits);
     assert!(result.is_err());
 }
 
@@ -69,7 +94,7 @@ fn parse_params_bytes_reads_from_file() {
     let path =
         std::env::temp_dir().join(format!("brrmmmm_params_test_{}.json", std::process::id()));
     std::fs::write(&path, r#"{"from":"file"}"#).unwrap();
-    let result = parse_params_bytes(None, Some(path.as_path())).unwrap();
+    let result = parse_params_bytes(None, Some(path.as_path()), &limits()).unwrap();
     std::fs::remove_file(&path).ok();
     assert!(result.is_some());
     let value: serde_json::Value = serde_json::from_slice(&result.unwrap()).unwrap();
@@ -83,6 +108,7 @@ fn parse_params_bytes_errors_on_missing_file() {
         Some(std::path::Path::new(
             "/tmp/brrmmmm_nonexistent_xyz_abc_123.json",
         )),
+        &limits(),
     );
     assert!(result.is_err());
 }

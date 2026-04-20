@@ -4,18 +4,17 @@ use anyhow::Result;
 
 use crate::abi::{PersistenceAuthority, SidecarRuntimeState};
 use crate::config::Config;
+use crate::error::BrrmmmmResult;
 
-const KV_MAX_VALUE_BYTES: usize = 64 * 1024;
-const KV_MAX_TOTAL_BYTES: usize = 1024 * 1024;
 use crate::events::{Event, EventSink, diag, now_ts};
 use crate::host::HostState;
-use crate::mission_state::{self, CAP_KV};
+use crate::mission_state::{self, Capabilities};
 use crate::persistence;
 
 use super::super::super::io::{WasmCaller, WasmLinker, lock_runtime, read_memory_from_caller};
 use super::state::{clear_pending_kv_response, store_pending_kv_response};
 
-type PersistFn = fn(&Config, &str, &SidecarRuntimeState) -> anyhow::Result<()>;
+type PersistFn = fn(&Config, &str, &SidecarRuntimeState) -> BrrmmmmResult<()>;
 
 pub(super) fn register(
     linker: &mut WasmLinker,
@@ -33,7 +32,15 @@ pub(super) fn register(
             "vzglyd_host",
             "kv_get",
             move |mut caller: WasmCaller<'_>, ptr: i32, len: i32| -> i32 {
-                let key = match read_key(&mut caller, ptr, len, &event_sink, "kv_get") {
+                let limits = lock_runtime(&shared, "host_state").config.limits.clone();
+                let key = match read_key(
+                    &mut caller,
+                    ptr,
+                    len,
+                    limits.kv_max_key_bytes,
+                    &event_sink,
+                    "kv_get",
+                ) {
                     Ok(key) => key,
                     Err(status) => return status,
                 };
@@ -76,11 +83,30 @@ pub(super) fn register(
                   val_ptr: i32,
                   val_len: i32|
                   -> i32 {
-                let key = match read_key(&mut caller, key_ptr, key_len, &event_sink, "kv_set") {
+                let limits = lock_runtime(&shared, "host_state").config.limits.clone();
+                let key = match read_key(
+                    &mut caller,
+                    key_ptr,
+                    key_len,
+                    limits.kv_max_key_bytes,
+                    &event_sink,
+                    "kv_set",
+                ) {
                     Ok(key) => key,
                     Err(status) => return status,
                 };
                 record_kv_activity(&shared, "set");
+
+                if val_len < 0 || val_len as usize > limits.kv_max_value_bytes {
+                    diag(
+                        &event_sink,
+                        &format!(
+                            "[brrmmmm] kv_set value length {} exceeds configured limit of {} bytes",
+                            val_len, limits.kv_max_value_bytes
+                        ),
+                    );
+                    return -1;
+                }
 
                 let val_bytes = match read_memory_from_caller(&mut caller, val_ptr, val_len) {
                     Ok(b) => b,
@@ -127,7 +153,15 @@ pub(super) fn register(
             "vzglyd_host",
             "kv_delete",
             move |mut caller: WasmCaller<'_>, ptr: i32, len: i32| -> i32 {
-                let key = match read_key(&mut caller, ptr, len, &event_sink, "kv_delete") {
+                let limits = lock_runtime(&shared, "host_state").config.limits.clone();
+                let key = match read_key(
+                    &mut caller,
+                    ptr,
+                    len,
+                    limits.kv_max_key_bytes,
+                    &event_sink,
+                    "kv_delete",
+                ) {
                     Ok(key) => key,
                     Err(status) => return status,
                 };
@@ -161,16 +195,26 @@ pub(super) fn register(
 fn record_kv_activity(shared: &Arc<Mutex<HostState>>, operation: &str) {
     let event = mission_state::kv_event(operation);
     let mut host = lock_runtime(shared, "host_state");
-    host.record_activity(CAP_KV, "kv", &event);
+    host.record_activity(Capabilities::KV, "kv", &event);
 }
 
 fn read_key(
     caller: &mut WasmCaller<'_>,
     ptr: i32,
     len: i32,
+    max_key_bytes: usize,
     event_sink: &EventSink,
     action: &str,
 ) -> std::result::Result<String, i32> {
+    if len < 0 || len as usize > max_key_bytes {
+        diag(
+            event_sink,
+            &format!(
+                "[brrmmmm] {action} key length {len} exceeds configured limit of {max_key_bytes} bytes"
+            ),
+        );
+        return Err(-1);
+    }
     let key_bytes = match read_memory_from_caller(caller, ptr, len) {
         Ok(bytes) => bytes,
         Err(error) => {
@@ -198,11 +242,18 @@ fn set_value(
     wasm_hash: Option<&str>,
     persist: PersistFn,
 ) -> std::result::Result<(), String> {
-    if value.len() > KV_MAX_VALUE_BYTES {
+    if key.len() > config.limits.kv_max_key_bytes {
+        return Err(format!(
+            "kv_set key too large: {} bytes (max {} bytes per key)",
+            key.len(),
+            config.limits.kv_max_key_bytes
+        ));
+    }
+    if value.len() > config.limits.kv_max_value_bytes {
         return Err(format!(
             "kv_set value too large: {} bytes (max {} bytes per key)",
             value.len(),
-            KV_MAX_VALUE_BYTES
+            config.limits.kv_max_value_bytes
         ));
     }
 
@@ -212,12 +263,15 @@ fn set_value(
         .kv
         .iter()
         .filter(|(k, _)| k.as_str() != key.as_str())
-        .map(|(_, v)| v.len())
+        .map(|(k, v)| k.len() + v.len())
         .sum();
-    if existing_total + value.len() > KV_MAX_TOTAL_BYTES {
+    let new_total = existing_total
+        .saturating_add(key.len())
+        .saturating_add(value.len());
+    if new_total > config.limits.kv_max_total_bytes {
         return Err(format!(
-            "kv_set would exceed total KV budget: {existing_total} + {} bytes (max {KV_MAX_TOTAL_BYTES} bytes total)",
-            value.len()
+            "kv_set would exceed total KV budget: {new_total} bytes (max {} bytes total)",
+            config.limits.kv_max_total_bytes
         ));
     }
 
@@ -281,39 +335,51 @@ mod tests {
     use crate::abi::SidecarDescribe;
 
     fn persisted_state() -> Arc<Mutex<SidecarRuntimeState>> {
-        let mut state = SidecarRuntimeState::default();
-        state.describe = Some(SidecarDescribe {
-            schema_version: 1,
-            logical_id: "brrmmmm.test.kv".to_string(),
-            name: "KV Test".to_string(),
-            description: "KV test".to_string(),
-            abi_version: 1,
-            run_modes: vec!["managed_polling".to_string()],
-            state_persistence: PersistenceAuthority::HostPersisted,
-            required_env_vars: vec![],
-            optional_env_vars: vec![],
-            params: None,
-            capabilities_needed: vec!["kv".to_string()],
-            poll_strategy: None,
-            cooldown_policy: None,
-            artifact_types: vec!["published_output".to_string()],
-            acquisition_timeout_secs: None,
-        });
+        let state = SidecarRuntimeState {
+            describe: Some(SidecarDescribe {
+                schema_version: 1,
+                logical_id: "brrmmmm.test.kv".to_string(),
+                name: "KV Test".to_string(),
+                description: "KV test".to_string(),
+                abi_version: 1,
+                run_modes: vec!["managed_polling".to_string()],
+                state_persistence: PersistenceAuthority::HostPersisted,
+                required_env_vars: vec![],
+                optional_env_vars: vec![],
+                params: None,
+                capabilities_needed: vec!["kv".to_string()],
+                poll_strategy: None,
+                cooldown_policy: None,
+                artifact_types: vec!["published_output".to_string()],
+                acquisition_timeout_secs: None,
+            }),
+            ..Default::default()
+        };
         Arc::new(Mutex::new(state))
     }
 
-    fn persist_ok(_config: &Config, _wasm_hash: &str, _state: &SidecarRuntimeState) -> anyhow::Result<()> {
+    fn persist_ok(
+        _config: &Config,
+        _wasm_hash: &str,
+        _state: &SidecarRuntimeState,
+    ) -> BrrmmmmResult<()> {
         Ok(())
     }
 
-    fn persist_err(_config: &Config, _wasm_hash: &str, _state: &SidecarRuntimeState) -> anyhow::Result<()> {
-        anyhow::bail!("state directory is not writable")
+    fn persist_err(
+        _config: &Config,
+        _wasm_hash: &str,
+        _state: &SidecarRuntimeState,
+    ) -> BrrmmmmResult<()> {
+        Err(crate::error::BrrmmmmError::PersistenceFailure(
+            "state directory is not writable".to_string(),
+        ))
     }
 
     #[test]
     fn set_value_rolls_back_new_key_when_persistence_fails() {
         let state = persisted_state();
-        let config = Config::load();
+        let config = Config::load().expect("test config");
 
         let result = set_value(
             &config,
@@ -335,7 +401,7 @@ mod tests {
     #[test]
     fn set_value_restores_previous_value_when_persistence_fails() {
         let state = persisted_state();
-        let config = Config::load();
+        let config = Config::load().expect("test config");
         lock_runtime(&state, "runtime_state")
             .kv
             .insert("token".to_string(), b"old".to_vec());
@@ -359,7 +425,7 @@ mod tests {
     #[test]
     fn delete_value_restores_deleted_value_when_persistence_fails() {
         let state = persisted_state();
-        let config = Config::load();
+        let config = Config::load().expect("test config");
         lock_runtime(&state, "runtime_state")
             .kv
             .insert("token".to_string(), b"secret".to_vec());
@@ -376,7 +442,7 @@ mod tests {
     #[test]
     fn delete_value_missing_key_does_not_require_persistence() {
         let state = persisted_state();
-        let config = Config::load();
+        let config = Config::load().expect("test config");
 
         let result = delete_value(&config, &state, "missing", Some("wasm-hash"), persist_err);
 
@@ -386,8 +452,8 @@ mod tests {
     #[test]
     fn set_value_rejects_oversized_single_value() {
         let state = persisted_state();
-        let config = Config::load();
-        let oversized = vec![0u8; KV_MAX_VALUE_BYTES + 1];
+        let config = Config::load().expect("test config");
+        let oversized = vec![0u8; config.limits.kv_max_value_bytes + 1];
 
         let result = set_value(
             &config,
@@ -402,28 +468,46 @@ mod tests {
     }
 
     #[test]
+    fn set_value_rejects_oversized_key() {
+        let state = persisted_state();
+        let config = Config::load().expect("test config");
+        let key = "k".repeat(config.limits.kv_max_key_bytes + 1);
+
+        let result = set_value(
+            &config,
+            &state,
+            key,
+            b"value".to_vec(),
+            Some("wasm-hash"),
+            persist_ok,
+        );
+
+        assert!(result.unwrap_err().contains("key too large"));
+    }
+
+    #[test]
     fn set_value_rejects_when_total_budget_exceeded() {
         let state = persisted_state();
-        let config = Config::load();
-        // Fill the map: 16 keys × KV_MAX_VALUE_BYTES = KV_MAX_TOTAL_BYTES exactly.
-        for i in 0..16usize {
+        let config = Config::load().expect("test config");
+        // Fill the map near capacity. Key bytes count toward the total budget.
+        for i in 0..15usize {
             set_value(
                 &config,
                 &state,
                 format!("key{i}"),
-                vec![0u8; KV_MAX_VALUE_BYTES],
+                vec![0u8; config.limits.kv_max_value_bytes],
                 Some("wasm-hash"),
                 persist_ok,
             )
             .unwrap_or_else(|e| panic!("key{i} should fit: {e}"));
         }
 
-        // Any additional write (even 1 byte) must be rejected.
+        // Another max-sized value must be rejected.
         let result = set_value(
             &config,
             &state,
             "overflow".to_string(),
-            vec![0u8; 1],
+            vec![0u8; config.limits.kv_max_value_bytes],
             Some("wasm-hash"),
             persist_ok,
         );
@@ -434,14 +518,14 @@ mod tests {
     #[test]
     fn set_value_replacing_existing_key_does_not_double_count_old_bytes() {
         let state = persisted_state();
-        let config = Config::load();
-        // Fill the map to capacity (16 × KV_MAX_VALUE_BYTES = KV_MAX_TOTAL_BYTES).
-        for i in 0..16usize {
+        let config = Config::load().expect("test config");
+        // Fill the map near capacity. Key bytes count toward the total budget.
+        for i in 0..15usize {
             set_value(
                 &config,
                 &state,
                 format!("key{i}"),
-                vec![0u8; KV_MAX_VALUE_BYTES],
+                vec![0u8; config.limits.kv_max_value_bytes],
                 Some("wasm-hash"),
                 persist_ok,
             )
@@ -467,7 +551,7 @@ mod tests {
     #[test]
     fn host_persisted_set_requires_wasm_identity() {
         let state = persisted_state();
-        let config = Config::load();
+        let config = Config::load().expect("test config");
 
         let result = set_value(
             &config,

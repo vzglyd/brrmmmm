@@ -133,6 +133,34 @@ fn events_mode_outputs_ndjson_without_payload_leakage() {
     assert!(!events.iter().any(|event| event["ok"] == true));
 }
 
+#[test]
+fn invalid_config_exits_with_input_code() {
+    let wasm = fixture_wasm();
+    let output = Command::new(bin())
+        .args(["--log-format", "json", "validate", wasm.to_str().unwrap()])
+        .env(
+            "BRRMMMM_STATE_DIR",
+            repo_root().join("target/test-state/cli-invalid-config"),
+        )
+        .env("BRRMMMM_BROWSER_HEADLESS", "maybe")
+        .env("BRRMMMM_ATTESTATION", "off")
+        .output()
+        .expect("failed to run brrmmmm");
+
+    assert_eq!(output.status.code(), Some(64));
+    assert!(output.stdout.is_empty());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let event: Value = serde_json::from_str(stderr.trim()).expect("stderr is JSON");
+    assert_eq!(event["level"], "error");
+    assert_eq!(event["category"], "config_invalid");
+    assert!(
+        event["message"]
+            .as_str()
+            .is_some_and(|message| message.contains("invalid configuration")),
+        "stderr:\n{stderr}"
+    );
+}
+
 fn has_event(events: &[Value], kind: &str) -> bool {
     events.iter().any(|event| event["type"] == kind)
 }

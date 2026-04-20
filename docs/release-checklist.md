@@ -22,18 +22,37 @@ If Moon is unavailable on a machine, run the underlying commands:
 
 ```bash
 cargo check
+cargo fmt --check
+cargo clippy --all-targets -- -D warnings
 cargo test
+cargo doc --no-deps
 npm --prefix tui run build
+npm --prefix tui test
 cargo package --allow-dirty
 ```
 
 The automated gate must prove:
 
 - The Rust CLI compiles.
+- Rust formatting and clippy pass with warnings denied.
 - The deterministic WASM fixture builds.
 - `validate`, `inspect`, `run --once`, and `run --once --events` work against the fixture.
 - The Ink TUI TypeScript build passes.
+- The Ink TUI tests pass.
 - Cargo packaging can be dry-run locally.
+
+## V1 hardening gate
+
+Accept the release only if these invariants are covered by tests:
+
+- Missing persisted state and corrupted persisted state have distinct load results.
+- Runtime state writes use temp-file write, fsync, rename, and parent-directory fsync.
+- Identity creation uses a complete temp directory and never deletes an existing identity during create.
+- Identity repair is explicit; normal load does not repair mismatched public key files.
+- KV enforces configured key, value, and total byte limits, and failed persisted writes roll back in-memory mutations.
+- Params are bounded JSON objects with a configured depth limit.
+- Runtime phase transitions are validated before mutation.
+- Invalid configuration exits with a deterministic input/config exit code.
 
 ## Manual real-sidecar gate
 

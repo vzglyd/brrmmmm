@@ -5,8 +5,10 @@ use std::str::FromStr;
 use anyhow::{Context, Result};
 use ed25519_dalek::SigningKey;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 use crate::events::now_ms;
+use crate::persistence::{FileMode, atomic_write, fsync_dir};
 use crate::utils::{base64url, decode_base64url, short_hash_16};
 
 macro_rules! define_id_type {
@@ -43,7 +45,12 @@ macro_rules! define_id_type {
                 let bytes = decode_base64url(s)
                     .map_err(|e| anyhow::anyhow!("invalid {}: {}", $label, e))?;
                 let array: [u8; $size] = bytes.try_into().map_err(|bytes: Vec<u8>| {
-                    anyhow::anyhow!("expected {} bytes for {}, got {}", $size, $label, bytes.len())
+                    anyhow::anyhow!(
+                        "expected {} bytes for {}, got {}",
+                        $size,
+                        $label,
+                        bytes.len()
+                    )
                 })?;
                 Ok(Self(array))
             }
@@ -71,7 +78,7 @@ macro_rules! define_id_type {
 }
 
 define_id_type!(ClientId, 16, "client_id");
-define_id_type!(KeyId, 16, "key_id");
+define_id_type!(KeyId, 32, "key_id");
 define_id_type!(InstallationId, 32, "installation_id");
 define_id_type!(PublicKey, 32, "public_key");
 define_id_type!(MissionId, 16, "mission_id");
@@ -86,9 +93,25 @@ pub struct IdentityMetadata {
 }
 
 #[derive(Clone)]
+pub struct IdentitySigner {
+    signing_key: SigningKey,
+}
+
+impl IdentitySigner {
+    fn new(signing_key: SigningKey) -> Self {
+        Self { signing_key }
+    }
+
+    pub fn sign_message(&self, message: &[u8]) -> ed25519_dalek::Signature {
+        use ed25519_dalek::Signer as _;
+        self.signing_key.sign(message)
+    }
+}
+
+#[derive(Clone)]
 pub struct InstallationIdentity {
     pub metadata: IdentityMetadata,
-    signing_key: SigningKey,
+    signer: IdentitySigner,
 }
 
 impl InstallationIdentity {
@@ -101,10 +124,10 @@ impl InstallationIdentity {
         Self {
             metadata: IdentityMetadata {
                 client_id,
-                key_id: KeyId(short_hash_16(b"brrmmmm-key-id-v1", public_key.as_bytes())),
+                key_id: derive_key_id(&public_key),
                 public_key,
             },
-            signing_key,
+            signer: IdentitySigner::new(signing_key),
         }
     }
 
@@ -121,14 +144,16 @@ impl InstallationIdentity {
     }
 
     pub fn sign_message(&self, message: &[u8]) -> ed25519_dalek::Signature {
-        use ed25519_dalek::Signer;
-        self.signing_key.sign(message)
+        self.signer.sign_message(message)
     }
 }
 
 impl ed25519_dalek::Signer<ed25519_dalek::Signature> for InstallationIdentity {
-    fn try_sign(&self, message: &[u8]) -> Result<ed25519_dalek::Signature, ed25519_dalek::SignatureError> {
-        self.signing_key.try_sign(message)
+    fn try_sign(
+        &self,
+        message: &[u8],
+    ) -> Result<ed25519_dalek::Signature, ed25519_dalek::SignatureError> {
+        self.signer.signing_key.try_sign(message)
     }
 }
 
@@ -162,17 +187,25 @@ pub fn load_or_create_at(dir: &Path) -> Result<InstallationIdentity> {
     match load_existing_at(dir) {
         Ok(identity) => Ok(identity),
         Err(IdentityError::NotFound) => create_new_at(dir),
-        Err(IdentityError::PublicKeyMismatch) => {
-            // Repair public key if needed
-            let identity = load_existing_at_ignoring_mismatch(dir)
-                .map_err(|e| anyhow::anyhow!("repair failed: {e}"))?;
-            let public_key_path = dir.join("public_key.bin");
-            write_private(&public_key_path, identity.public_key().as_bytes())
-                .with_context(|| format!("repair {}", public_key_path.display()))?;
-            Ok(identity)
-        }
         Err(e) => Err(e.into()),
     }
+}
+
+pub fn load_at(dir: &Path) -> Result<InstallationIdentity> {
+    load_existing_at(dir).map_err(Into::into)
+}
+
+pub fn validate_at(dir: &Path) -> Result<IdentityMetadata> {
+    Ok(load_existing_at(dir)?.metadata)
+}
+
+pub fn repair_at(dir: &Path) -> Result<InstallationIdentity> {
+    let identity = load_existing_at_ignoring_mismatch(dir)
+        .map_err(|e| anyhow::anyhow!("repair failed: {e}"))?;
+    let public_key_path = dir.join("public_key.bin");
+    write_private(&public_key_path, identity.public_key().as_bytes())
+        .with_context(|| format!("repair {}", public_key_path.display()))?;
+    Ok(identity)
 }
 
 fn load_existing_at(dir: &Path) -> Result<InstallationIdentity, IdentityError> {
@@ -197,9 +230,21 @@ fn load_existing_at(dir: &Path) -> Result<InstallationIdentity, IdentityError> {
 fn load_existing_at_ignoring_mismatch(dir: &Path) -> Result<InstallationIdentity, IdentityError> {
     let identity_path = dir.join("identity.json");
     let private_key_path = dir.join("private_key.bin");
+    let public_key_path = dir.join("public_key.bin");
 
-    if !identity_path.exists() || !private_key_path.exists() {
+    if !dir.exists() {
         return Err(IdentityError::NotFound);
+    }
+    let identity_exists = identity_path.exists();
+    let private_key_exists = private_key_path.exists();
+    let public_key_exists = public_key_path.exists();
+    if !identity_exists && !private_key_exists && !public_key_exists {
+        return Err(IdentityError::NotFound);
+    }
+    if !identity_exists || !private_key_exists || !public_key_exists {
+        return Err(IdentityError::Corrupted(
+            "identity directory is incomplete".to_string(),
+        ));
     }
 
     let identity_bytes = std::fs::read(&identity_path)
@@ -230,41 +275,33 @@ fn load_existing_at_ignoring_mismatch(dir: &Path) -> Result<InstallationIdentity
     Ok(InstallationIdentity {
         metadata: IdentityMetadata {
             client_id,
-            key_id: KeyId(short_hash_16(b"brrmmmm-key-id-v1", public_key.as_bytes())),
+            key_id: derive_key_id(&public_key),
             public_key,
         },
-        signing_key,
+        signer: IdentitySigner::new(signing_key),
     })
 }
 
 fn create_new_at(dir: &Path) -> Result<InstallationIdentity> {
-    log::trace!("generating new cryptographic identity at {}", dir.display());
+    tracing::trace!("generating new cryptographic identity at {}", dir.display());
 
-    if let Some(parent) = dir.parent() {
-        std::fs::create_dir_all(parent)
-            .with_context(|| format!("create parent directory: {}", parent.display()))?;
-    }
+    let parent = dir.parent().unwrap_or_else(|| Path::new("."));
+    std::fs::create_dir_all(parent)
+        .with_context(|| format!("create parent directory: {}", parent.display()))?;
 
-    // Create a temporary directory in the same parent
-    let tmp_dir_name = format!(
-        ".tmp-identity-{}",
-        base64url(&short_hash_16(b"tmp", now_ms().to_be_bytes().as_slice()))
-    );
-    let tmp_dir = dir.parent().unwrap_or_else(|| Path::new(".")).join(tmp_dir_name);
-    std::fs::create_dir_all(&tmp_dir)
-        .with_context(|| format!("create temporary identity directory: {}", tmp_dir.display()))?;
+    let tmp_dir = create_temp_identity_dir(parent)?;
 
     let result = (|| -> Result<InstallationIdentity> {
         let mut raw_installation_id = [0u8; 32];
         getrandom::fill(&mut raw_installation_id)
             .map_err(|error| anyhow::anyhow!("generate installation id: {error}"))?;
-        log::trace!("entropy source initialized for installation_id");
+        tracing::trace!("entropy source initialized for installation_id");
         let installation_id = InstallationId(raw_installation_id);
 
         let mut seed = [0u8; 32];
         getrandom::fill(&mut seed)
             .map_err(|error| anyhow::anyhow!("generate signing key: {error}"))?;
-        log::trace!("entropy source initialized for signing_key");
+        tracing::trace!("entropy source initialized for signing_key");
         let signing_key = SigningKey::from_bytes(&seed);
         let public_key = PublicKey(signing_key.verifying_key().to_bytes());
         let client_id = derive_client_id(&installation_id);
@@ -284,21 +321,25 @@ fn create_new_at(dir: &Path) -> Result<InstallationIdentity> {
         Ok(InstallationIdentity {
             metadata: IdentityMetadata {
                 client_id,
-                key_id: KeyId(short_hash_16(b"brrmmmm-key-id-v1", public_key.as_bytes())),
+                key_id: derive_key_id(&public_key),
                 public_key,
             },
-            signing_key,
+            signer: IdentitySigner::new(signing_key),
         })
     })();
 
     match result {
         Ok(identity) => {
-            // Atomic move
             if dir.exists() {
-                let _ = std::fs::remove_dir_all(dir);
+                let _ = std::fs::remove_dir_all(&tmp_dir);
+                anyhow::bail!(
+                    "identity directory already exists while creating: {}",
+                    dir.display()
+                );
             }
             std::fs::rename(&tmp_dir, dir)
                 .with_context(|| format!("move {} to {}", tmp_dir.display(), dir.display()))?;
+            fsync_dir(parent).map_err(anyhow::Error::new)?;
             Ok(identity)
         }
         Err(e) => {
@@ -308,6 +349,29 @@ fn create_new_at(dir: &Path) -> Result<InstallationIdentity> {
     }
 }
 
+fn create_temp_identity_dir(parent: &Path) -> Result<std::path::PathBuf> {
+    let stamp = base64url(&short_hash_16(b"tmp", now_ms().to_be_bytes().as_slice()));
+    for attempt in 0..32u32 {
+        let tmp_dir = parent.join(format!(
+            ".tmp-identity-{}-{stamp}-{attempt}",
+            std::process::id()
+        ));
+        match std::fs::create_dir(&tmp_dir) {
+            Ok(()) => return Ok(tmp_dir),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => {
+                return Err(error).with_context(|| {
+                    format!("create temporary identity directory: {}", tmp_dir.display())
+                });
+            }
+        }
+    }
+    anyhow::bail!(
+        "create temporary identity directory in {} after 32 attempts",
+        parent.display()
+    )
+}
+
 fn derive_client_id(installation_id: &InstallationId) -> ClientId {
     ClientId(short_hash_16(
         b"brrmmmm-client-id-v1",
@@ -315,27 +379,18 @@ fn derive_client_id(installation_id: &InstallationId) -> ClientId {
     ))
 }
 
-#[cfg(unix)]
 fn write_private(path: &Path, data: &[u8]) -> Result<()> {
-    use std::io::Write as _;
-    use std::os::unix::fs::OpenOptionsExt as _;
-
-    let mut file = std::fs::OpenOptions::new()
-        .create(true)
-        .truncate(true)
-        .write(true)
-        .mode(0o600)
-        .open(path)
-        .with_context(|| format!("open {}", path.display()))?;
-    file.write_all(data)
-        .with_context(|| format!("write {}", path.display()))?;
-    Ok(())
+    atomic_write(path, data, FileMode::Private).map_err(anyhow::Error::new)
 }
 
-#[cfg(not(unix))]
-fn write_private(path: &Path, data: &[u8]) -> Result<()> {
-    std::fs::write(path, data).with_context(|| format!("write {}", path.display()))?;
-    Ok(())
+fn derive_key_id(public_key: &PublicKey) -> KeyId {
+    let mut hasher = Sha256::new();
+    hasher.update(b"brrmmmm-key-id-v1");
+    hasher.update(public_key.as_bytes());
+    let digest = hasher.finalize();
+    let mut out = [0u8; 32];
+    out.copy_from_slice(&digest);
+    KeyId(out)
 }
 
 #[cfg(test)]
@@ -363,16 +418,31 @@ mod tests {
     }
 
     #[test]
-    fn repair_recreates_public_key() {
+    fn public_key_mismatch_requires_explicit_repair() {
         let dir = std::env::temp_dir().join(format!("brrmmmm-test-repair-{}", now_ms()));
         let identity = load_or_create_at(&dir).unwrap();
         let public_key_path = dir.join("public_key.bin");
 
-        // Corrupt public key
         std::fs::write(&public_key_path, [0u8; 32]).unwrap();
 
-        let repaired = load_or_create_at(&dir).unwrap();
+        let implicit = load_or_create_at(&dir);
+        assert!(implicit.is_err());
+
+        let repaired = repair_at(&dir).unwrap();
         assert_eq!(repaired.public_key(), identity.public_key());
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn incomplete_identity_directory_is_corrupted_not_missing() {
+        let dir = std::env::temp_dir().join(format!("brrmmmm-test-partial-{}", now_ms()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("identity.json"), b"{}").unwrap();
+
+        let result = load_or_create_at(&dir);
+        assert!(result.is_err());
+        assert!(dir.join("identity.json").exists());
 
         let _ = std::fs::remove_dir_all(dir);
     }

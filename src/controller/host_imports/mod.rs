@@ -21,6 +21,7 @@ use crate::host::HostState;
 
 use super::io::WasmLinker;
 
+#[allow(clippy::too_many_arguments)]
 pub(super) fn register_vzglyd_host_on_linker(
     linker: &mut WasmLinker,
     host_state: HostState,

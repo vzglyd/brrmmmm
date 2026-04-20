@@ -15,7 +15,7 @@ use crate::host::HostState;
 use crate::host::browser_request::{
     BrowserAction, BrowserActionResponse, BrowserCookie, SelectorKind,
 };
-use crate::mission_state::{self, CAP_BROWSER};
+use crate::mission_state::{self, Capabilities};
 
 use super::super::super::io::lock_runtime;
 
@@ -94,17 +94,17 @@ impl BrowserSession {
             .new_headless_mode()
             .enable_request_intercept()
             .arg(format!("--user-agent={ua}"));
-        if !lock_runtime(&self.shared, "host_state").config.browser_headless {
+        if !lock_runtime(&self.shared, "host_state")
+            .config
+            .browser_headless
+        {
             config = config.with_head();
         }
         let config = config.build().map_err(|e| anyhow::anyhow!("{e}"))?;
         let (browser, mut handler) = self.runtime.block_on(Browser::launch(config))?;
         self.runtime.spawn(async move {
-            loop {
-                match handler.next().await {
-                    Some(_) => {}
-                    None => break,
-                }
+            while handler.next().await.is_some() {
+                // Drive chromiumoxide's event handler until the browser exits.
             }
         });
         self.browser = Some(browser);
@@ -494,8 +494,12 @@ async fn continue_attested_request(
         let mut host = lock_runtime(&shared, "host_state");
         let behavior =
             mission_state::network_event(&binding.method, &binding.authority, &binding.path);
-        let envelope =
-            host.signed_envelope_for_request(CAP_BROWSER, "browser_http", &behavior, &binding);
+        let envelope = host.signed_envelope_for_request(
+            Capabilities::BROWSER,
+            "browser_http",
+            &behavior,
+            &binding,
+        );
         let user_agent = host.full_user_agent(envelope.as_ref());
         attestation::merge_host_headers(original, &user_agent, envelope.as_ref())
     };
@@ -661,7 +665,7 @@ fn glob_rec(p: &[char], t: &[char], pi: usize, ti: usize) -> bool {
 
 fn base64_encode(bytes: &[u8]) -> String {
     const CHARS: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut out = String::with_capacity((bytes.len() + 2) / 3 * 4);
+    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
     for chunk in bytes.chunks(3) {
         let b0 = chunk[0];
         let b1 = if chunk.len() > 1 { chunk[1] } else { 0 };

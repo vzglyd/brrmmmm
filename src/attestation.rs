@@ -2,9 +2,10 @@ use std::collections::HashMap;
 use std::str::FromStr;
 
 use ed25519_dalek::{Signature, Signer, Verifier, VerifyingKey};
+use sha2::{Digest, Sha256};
 
 use crate::identity::{ClientId, KeyId, PublicKey};
-use crate::utils::{base64url, short_hash_16};
+use crate::utils::base64url;
 
 pub const PROTOCOL_VERSION: u8 = 1;
 pub const UA_SHORT_HEX_CHARS: usize = 16;
@@ -235,7 +236,7 @@ pub fn verify_signed_envelope(
     {
         return Err(AttestationError::KeyMismatch);
     }
-    let expected_key_id = KeyId(short_hash_16(b"brrmmmm-key-id-v1", public_key.as_bytes()));
+    let expected_key_id = derive_key_id(&public_key);
     if key_id != expected_key_id {
         return Err(AttestationError::KeyMismatch);
     }
@@ -280,6 +281,16 @@ pub fn verify_signed_envelope(
         nonce,
         key_id,
     })
+}
+
+fn derive_key_id(public_key: &PublicKey) -> KeyId {
+    let mut hasher = Sha256::new();
+    hasher.update(b"brrmmmm-key-id-v1");
+    hasher.update(public_key.as_bytes());
+    let digest = hasher.finalize();
+    let mut out = [0u8; 32];
+    out.copy_from_slice(&digest);
+    KeyId(out)
 }
 
 pub fn binding_from_url(
@@ -496,7 +507,7 @@ mod tests {
             cap_mask: 0x05,
             timestamp_ms: 123_456_789,
             nonce: [5u8; 16],
-            key_id: KeyId(short_hash_16(b"brrmmmm-key-id-v1", public_key.as_bytes())),
+            key_id: derive_key_id(&public_key),
             public_key,
         }
     }

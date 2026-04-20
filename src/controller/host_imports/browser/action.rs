@@ -6,12 +6,14 @@ use anyhow::Result;
 use crate::events::{Event, EventSink, diag, now_ts};
 use crate::host::HostState;
 use crate::host::browser_request::{BrowserActionResponse, decode_action, encode_response};
-use crate::mission_state::{self, CAP_BROWSER};
+use crate::mission_state::{self, Capabilities};
 
 use super::execute::BrowserSession;
 use super::state::store_pending_response;
 
-use super::super::super::io::{WasmCaller, WasmLinker, lock_runtime};
+use super::super::super::io::{
+    WasmCaller, WasmLinker, lock_runtime, read_limited_memory_from_caller,
+};
 
 pub(super) fn register(
     linker: &mut WasmLinker,
@@ -23,9 +25,14 @@ pub(super) fn register(
         "vzglyd_host",
         "browser_action",
         move |mut caller: WasmCaller<'_>, ptr: i32, len: i32| -> i32 {
-            use super::super::super::io::read_memory_from_caller;
-
-            let bytes = match read_memory_from_caller(&mut caller, ptr, len) {
+            let limits = lock_runtime(&shared, "host_state").config.limits.clone();
+            let bytes = match read_limited_memory_from_caller(
+                &mut caller,
+                ptr,
+                len,
+                limits.max_host_payload_bytes,
+                "browser_action payload",
+            ) {
                 Ok(b) => b,
                 Err(e) => {
                     diag(
@@ -57,7 +64,7 @@ pub(super) fn register(
             {
                 let mut host = lock_runtime(&shared, "host_state");
                 let event = mission_state::browser_action_event(&action_kind);
-                host.record_activity(CAP_BROWSER, "browser_action", &event);
+                host.record_activity(Capabilities::BROWSER, "browser_action", &event);
             }
 
             event_sink.emit(Event::BrowserAction {

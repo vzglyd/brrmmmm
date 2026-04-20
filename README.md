@@ -235,6 +235,9 @@ brrmmmm run sidecar.wasm --once --params-file sidecar-params.json
 
 # Debug: log each channel_push to stderr
 brrmmmm run sidecar.wasm --once --log-channel
+
+# Emit diagnostic logs as JSON lines on stderr
+brrmmmm run sidecar.wasm --once --log-format json
 ```
 
 All commands accept `--output json|text|table`. The default for `run` and `validate`
@@ -341,6 +344,8 @@ The runtime exposes the `vzglyd_host` module to every sidecar:
 Runtime params are host-owned. A sidecar that accepts `--params-json` or
 `--params-file` must import `params_len` and `params_read`; the legacy raw
 `vzglyd_params_ptr`/`vzglyd_configure` buffer is not used by the production runner.
+Params must be a JSON object, default to a 1 MiB byte limit, and are rejected if
+their JSON nesting exceeds the configured depth limit.
 
 Network requests use a JSON wire protocol:
 
@@ -398,6 +403,29 @@ last successful cursors. Declare `"state_persistence": "host_persisted"` and
 State is keyed by the WASM binary identity and stored under
 `~/.local/share/brrmmmm/state` by default. Set `BRRMMMM_STATE_DIR` to override that
 directory for tests or isolated runners.
+
+KV is for metadata-sized state, not blobs. Defaults are 256 bytes per key, 64 KiB
+per value, and 1 MiB total per WASM identity, with key bytes counted in the total.
+Oversized writes fail and do not mutate in-memory or persisted state. Large payloads
+belong in `artifact_publish` or `channel_push`, with KV storing only references.
+
+Persistence load distinguishes absence from corruption. A missing state file starts
+fresh; unreadable, malformed, or over-quota state fails the run so operators can
+repair or remove the bad file explicitly.
+
+Relevant limit overrides:
+
+| Variable | Default |
+|---|---:|
+| `BRRMMMM_KV_MAX_KEY_BYTES` | `256` |
+| `BRRMMMM_KV_MAX_VALUE_BYTES` | `65536` |
+| `BRRMMMM_KV_MAX_TOTAL_BYTES` | `1048576` |
+| `BRRMMMM_MAX_PARAMS_BYTES` | `1048576` |
+| `BRRMMMM_MAX_JSON_DEPTH` | `64` |
+| `BRRMMMM_MAX_HOST_PAYLOAD_BYTES` | `1048576` |
+| `BRRMMMM_MAX_ARTIFACT_BYTES` | `10485760` |
+| `BRRMMMM_MAX_HTTP_RESPONSE_BYTES` | `10485760` |
+| `BRRMMMM_MAX_AI_RESPONSE_BYTES` | `10485760` |
 
 **Remote request attestation (implemented)**
 Remote operators should not have to choose between trusting a polite User-Agent and

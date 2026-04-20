@@ -94,7 +94,7 @@ mod tests {
             Arc::new(Mutex::new(None)),
             crate::identity::ModuleHash([0u8; 32]),
             None,
-            crate::config::Config::load(),
+            crate::config::Config::load().expect("test config"),
         )))
     }
 

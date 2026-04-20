@@ -9,6 +9,13 @@ pub(crate) enum OutputFormat {
     Table,
 }
 
+#[derive(ValueEnum, Clone, Default, PartialEq, Debug)]
+pub(crate) enum LogFormat {
+    #[default]
+    Text,
+    Json,
+}
+
 #[derive(Parser)]
 #[command(
     name = "brrmmmm",
@@ -32,6 +39,10 @@ pub(crate) struct Cli {
     /// Verbose output
     #[arg(short, long, global = true)]
     pub(crate) verbose: bool,
+
+    /// Diagnostic log format written to stderr.
+    #[arg(long, global = true, value_enum, default_value_t = LogFormat::Text)]
+    pub(crate) log_format: LogFormat,
 
     #[command(subcommand)]
     pub(crate) command: Option<Commands>,

@@ -1,17 +1,17 @@
+use std::io::Read as _;
+
 use crate::host::ai_request::{AiAction, AiActionResponse};
 
 pub(super) struct AiSession {
     client: reqwest::blocking::Client,
     model: String,
     api_key: String,
+    max_response_bytes: usize,
 }
 
 impl AiSession {
     pub fn new(config: &crate::config::Config) -> anyhow::Result<Self> {
-        let api_key = config
-            .anthropic_api_key
-            .clone()
-            .unwrap_or_default();
+        let api_key = config.anthropic_api_key.clone().unwrap_or_default();
         let model = config.ai_model.clone();
         let client = reqwest::blocking::Client::builder()
             .timeout(std::time::Duration::from_secs(60))
@@ -20,6 +20,7 @@ impl AiSession {
             client,
             model,
             api_key,
+            max_response_bytes: config.limits.max_ai_response_bytes,
         })
     }
 
@@ -59,8 +60,36 @@ impl AiSession {
         };
 
         let status = resp.status();
-        let text = match resp.text() {
-            Ok(t) => t,
+        if let Some(content_length) = resp.content_length()
+            && content_length > self.max_response_bytes as u64
+        {
+            return AiActionResponse::err(
+                "response_too_large",
+                format!(
+                    "response body is {content_length} bytes, exceeding configured limit of {} bytes",
+                    self.max_response_bytes
+                ),
+            );
+        }
+
+        let mut reader = resp.take(self.max_response_bytes.saturating_add(1) as u64);
+        let mut body = Vec::new();
+        let text = match std::io::Read::read_to_end(&mut reader, &mut body) {
+            Ok(_) if body.len() <= self.max_response_bytes => match String::from_utf8(body) {
+                Ok(text) => text,
+                Err(error) => {
+                    return AiActionResponse::err("response_read_failed", error.to_string());
+                }
+            },
+            Ok(_) => {
+                return AiActionResponse::err(
+                    "response_too_large",
+                    format!(
+                        "response body exceeds configured limit of {} bytes",
+                        self.max_response_bytes
+                    ),
+                );
+            }
             Err(e) => return AiActionResponse::err("response_read_failed", e.to_string()),
         };
 

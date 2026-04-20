@@ -56,7 +56,7 @@ fn kv_storage_roundtrips_in_runtime_state() {
     assert_eq!(state.kv.get(&key), Some(&value));
 
     state.kv.remove(&key);
-    assert!(state.kv.get(&key).is_none());
+    assert!(!state.kv.contains_key(&key));
 }
 
 #[test]
@@ -105,7 +105,7 @@ fn kv_sidecar_uses_imports_and_persists_host_state() {
 }
 
 #[test]
-fn kv_sidecar_reports_error_when_state_cannot_be_persisted() {
+fn kv_sidecar_fails_when_state_path_is_unreadable() {
     let wasm = kv_fixture_wasm();
     let state_path = temp_state_dir();
     std::fs::write(&state_path, b"not a directory").unwrap();
@@ -118,16 +118,14 @@ fn kv_sidecar_reports_error_when_state_cannot_be_persisted() {
         .expect("failed to run brrmmmm");
 
     assert!(
-        output.status.success(),
-        "kv sidecar run failed\nstdout:\n{}\nstderr:\n{}",
+        !output.status.success(),
+        "kv sidecar unexpectedly succeeded\nstdout:\n{}\nstderr:\n{}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
-
-    let payload: serde_json::Value =
-        serde_json::from_slice(&output.stdout).expect("run stdout is JSON");
-    assert_eq!(payload["ok"], false);
-    assert_eq!(payload["error"], "kv_set failed");
+    assert!(output.stdout.is_empty());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("persistence failure"), "stderr:\n{stderr}");
 
     let _ = std::fs::remove_file(state_path);
 }

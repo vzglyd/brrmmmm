@@ -9,7 +9,7 @@ use crate::attestation::{self, EnvelopeFields, RequestBinding, SignedEnvelope};
 use crate::config::Config;
 use crate::events::now_ms;
 use crate::identity::{InstallationIdentity, ModuleHash};
-use crate::mission_state::MissionState;
+use crate::mission_state::{Capabilities, MissionState};
 
 // ── Artifact store ───────────────────────────────────────────────────
 
@@ -125,14 +125,14 @@ impl HostState {
         self.mission.set_describe(describe);
     }
 
-    pub fn record_activity(&mut self, cap: u8, event_tag: &str, normalized_event: &[u8]) {
+    pub fn record_activity(&mut self, cap: Capabilities, event_tag: &str, normalized_event: &[u8]) {
         self.mission
             .record_activity(cap, event_tag, normalized_event);
     }
 
     pub fn signed_envelope_for_request(
         &mut self,
-        cap: u8,
+        cap: Capabilities,
         event_tag: &str,
         normalized_event: &[u8],
         binding: &RequestBinding,
@@ -149,11 +149,11 @@ impl HostState {
         }
         let fields = EnvelopeFields {
             client_id: identity.client_id(),
-            mission_id: self.mission.mission_id.as_bytes().clone(),
-            module_hash: self.mission.module_hash.as_bytes().clone(),
+            mission_id: *self.mission.mission_id().as_bytes(),
+            module_hash: *self.mission.module_hash().as_bytes(),
             request_count,
-            behavior_hash: self.mission.behavior_hash.as_bytes().clone(),
-            cap_mask: self.mission.cap_mask,
+            behavior_hash: *self.mission.behavior_hash().as_bytes(),
+            cap_mask: self.mission.cap_mask(),
             timestamp_ms: now_ms(),
             nonce,
             key_id: identity.key_id(),
@@ -239,12 +239,17 @@ mod tests {
             Arc::new(Mutex::new(None)),
             ModuleHash([3u8; 32]),
             Some(identity()),
-            Config::load(),
+            Config::load().expect("test config"),
         );
         *host.user_agent.lock().unwrap() = "sidecar/1".to_string();
         let binding = RequestBinding::new("GET", "example.com", "/v1", None);
         let envelope = host
-            .signed_envelope_for_request(0x01, "network", b"GET\nexample.com\n/v1", &binding)
+            .signed_envelope_for_request(
+                Capabilities::NETWORK,
+                "network",
+                b"GET\nexample.com\n/v1",
+                &binding,
+            )
             .unwrap();
 
         let ua = host.full_user_agent(Some(&envelope));
@@ -262,14 +267,18 @@ mod tests {
             Arc::new(Mutex::new(None)),
             ModuleHash([3u8; 32]),
             Some(identity()),
-            Config::load(),
+            Config::load().expect("test config"),
         );
         *host.user_agent.lock().unwrap() = "sidecar/2".to_string();
         host.set_identity_disclosure_visible(false);
         let binding = RequestBinding::new("GET", "example.com", "/v1", None);
 
-        let envelope =
-            host.signed_envelope_for_request(0x01, "network", b"GET\nexample.com\n/v1", &binding);
+        let envelope = host.signed_envelope_for_request(
+            Capabilities::NETWORK,
+            "network",
+            b"GET\nexample.com\n/v1",
+            &binding,
+        );
 
         assert!(envelope.is_none());
         assert_eq!(host.full_user_agent(None), "sidecar/2");

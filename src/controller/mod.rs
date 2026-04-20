@@ -53,7 +53,7 @@ impl SidecarController {
         event_sink: EventSink,
         config: &Config,
     ) -> Result<Self> {
-        let policy = RuntimePolicy::default();
+        let policy = RuntimePolicy::from_limits(&config.limits);
         if let Some(params) = params_bytes.as_ref()
             && params.len() > policy.max_params_bytes
         {
@@ -76,7 +76,9 @@ impl SidecarController {
                 "load or create brrmmmm attestation identity; set BRRMMMM_ATTESTATION=off for explicit legacy mode",
             )?)
         };
-        let runtime_state = persistence::load(config, &wasm_hash).unwrap_or_default();
+        let runtime_state = persistence::load(config, &wasm_hash)
+            .with_context(|| format!("load persisted runtime state for WASM {wasm_hash}"))?
+            .unwrap_or_default();
         let runtime_state = Arc::new(Mutex::new(runtime_state));
         let stop_signal = Arc::new(AtomicBool::new(false));
 

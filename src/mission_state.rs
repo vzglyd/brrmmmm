@@ -3,18 +3,23 @@ use sha2::{Digest, Sha256};
 use crate::abi::SidecarDescribe;
 use crate::identity::{BehaviorHash, MissionId, ModuleHash};
 
-pub const CAP_NETWORK: u8 = 0x01;
-pub const CAP_BROWSER: u8 = 0x02;
-pub const CAP_AI: u8 = 0x04;
-pub const CAP_KV: u8 = 0x08;
+bitflags::bitflags! {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct Capabilities: u8 {
+        const NETWORK = 0x01;
+        const BROWSER = 0x02;
+        const AI = 0x04;
+        const KV = 0x08;
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct MissionState {
-    pub module_hash: ModuleHash,
-    pub mission_id: MissionId,
-    pub request_count: u64,
-    pub behavior_hash: BehaviorHash,
-    pub cap_mask: u8,
+    module_hash: ModuleHash,
+    mission_id: MissionId,
+    request_count: u64,
+    behavior_hash: BehaviorHash,
+    capabilities: Capabilities,
 }
 
 impl MissionState {
@@ -24,7 +29,7 @@ impl MissionState {
             mission_id: mission_id_without_describe(module_hash),
             request_count: 0,
             behavior_hash: BehaviorHash([0u8; 16]),
-            cap_mask: 0,
+            capabilities: Capabilities::empty(),
         }
     }
 
@@ -32,15 +37,41 @@ impl MissionState {
         self.mission_id = mission_id_from_describe(self.module_hash, describe);
     }
 
-    pub fn record_activity(&mut self, cap: u8, event_tag: &str, normalized_event: &[u8]) {
-        self.cap_mask |= cap;
+    pub fn record_activity(
+        &mut self,
+        capability: Capabilities,
+        event_tag: &str,
+        normalized_event: &[u8],
+    ) {
+        self.capabilities.insert(capability);
         self.behavior_hash = next_behavior_hash(self.behavior_hash, event_tag, normalized_event);
     }
 
-    pub fn next_request(&mut self, cap: u8, event_tag: &str, normalized_event: &[u8]) -> u64 {
-        self.record_activity(cap, event_tag, normalized_event);
+    pub fn next_request(
+        &mut self,
+        capability: Capabilities,
+        event_tag: &str,
+        normalized_event: &[u8],
+    ) -> u64 {
+        self.record_activity(capability, event_tag, normalized_event);
         self.request_count = self.request_count.saturating_add(1);
         self.request_count
+    }
+
+    pub fn module_hash(&self) -> ModuleHash {
+        self.module_hash
+    }
+
+    pub fn mission_id(&self) -> MissionId {
+        self.mission_id
+    }
+
+    pub fn behavior_hash(&self) -> BehaviorHash {
+        self.behavior_hash
+    }
+
+    pub fn cap_mask(&self) -> u8 {
+        self.capabilities.bits()
     }
 }
 
@@ -199,13 +230,16 @@ mod tests {
     #[test]
     fn request_count_increments_and_cap_mask_accumulates() {
         let mut state = MissionState::new(ModuleHash([1u8; 32]));
-        let first = state.next_request(CAP_NETWORK, "network", b"GET\nexample.com\n/");
-        let second = state.next_request(CAP_AI, "ai", b"complete");
+        let first = state.next_request(Capabilities::NETWORK, "network", b"GET\nexample.com\n/");
+        let second = state.next_request(Capabilities::AI, "ai", b"complete");
 
         assert_eq!(first, 1);
         assert_eq!(second, 2);
-        assert_eq!(state.cap_mask, CAP_NETWORK | CAP_AI);
-        assert_ne!(state.behavior_hash, BehaviorHash([0u8; 16]));
+        assert_eq!(
+            state.cap_mask(),
+            (Capabilities::NETWORK | Capabilities::AI).bits()
+        );
+        assert_ne!(state.behavior_hash(), BehaviorHash([0u8; 16]));
     }
 
     #[test]

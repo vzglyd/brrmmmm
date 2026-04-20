@@ -36,7 +36,7 @@ pub(crate) fn cmd_run(options: RunOptions<'_>) -> Result<()> {
     } = options;
 
     let env_vars = params::parse_env_vars(env);
-    let params_bytes = params::parse_params_bytes(params_json, params_file)?;
+    let params_bytes = params::parse_params_bytes(params_json, params_file, &config.limits)?;
 
     let sink = if events_mode {
         EventSink::for_stdout()

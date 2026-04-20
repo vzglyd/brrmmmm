@@ -1,9 +1,11 @@
+use std::io::Read as _;
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use wasmtime::{Caller, Engine, Linker, Store, StoreLimits, StoreLimitsBuilder};
 
 use crate::abi::{ArtifactMeta, SidecarPhase, SidecarRuntimeState};
 use crate::attestation;
+use crate::config::RuntimeLimits;
 use crate::events::{Event, EventSink, diag, now_ms, now_ts};
 use crate::host::host_request::{ErrorKind, Header, HostRequest, HostResponse};
 
@@ -43,6 +45,14 @@ impl Default for RuntimePolicy {
 }
 
 impl RuntimePolicy {
+    pub(super) fn from_limits(limits: &RuntimeLimits) -> Self {
+        Self {
+            max_params_bytes: limits.max_params_bytes,
+            max_describe_bytes: limits.max_host_payload_bytes,
+            ..Self::default()
+        }
+    }
+
     pub(super) fn epoch_ticks_for_secs(&self, secs: u64) -> u64 {
         secs.saturating_mul(EPOCH_TICKS_PER_SECOND).max(1)
     }
@@ -117,15 +127,17 @@ pub(super) fn update_phase_state(
     let previous = {
         let mut state = lock_runtime(runtime_state, "runtime_state");
         let prev = state.phase.clone();
+        if !is_valid_phase_transition(&prev, &phase) {
+            diag(
+                event_sink,
+                &format!("[brrmmmm] rejected invalid phase transition {prev:?} -> {phase:?}"),
+            );
+            return;
+        }
         state.phase = phase.clone();
         prev
     };
-    if !is_valid_phase_transition(&previous, &phase) {
-        diag(
-            event_sink,
-            &format!("[brrmmmm] unexpected phase transition {previous:?} → {phase:?}"),
-        );
-    }
+    tracing::trace!(from = ?previous, to = ?phase, "sidecar phase transition");
     event_sink.emit(Event::Phase {
         ts: now_ts(),
         phase,
@@ -145,6 +157,7 @@ fn is_valid_phase_transition(from: &SidecarPhase, to: &SidecarPhase) -> bool {
     matches!(
         (from, to),
         (Idle, Fetching)
+            | (Idle, Publishing)
             | (CoolingDown, Fetching)
             | (CoolingDown, Idle)
             | (Failed, Fetching)
@@ -164,6 +177,18 @@ pub(super) fn update_sleep_state(
 ) {
     {
         let mut state = lock_runtime(runtime_state, "runtime_state");
+        if !is_valid_phase_transition(&state.phase, &SidecarPhase::CoolingDown) {
+            let previous = state.phase.clone();
+            drop(state);
+            diag(
+                event_sink,
+                &format!(
+                    "[brrmmmm] rejected invalid phase transition {previous:?} -> {:?}",
+                    SidecarPhase::CoolingDown
+                ),
+            );
+            return;
+        }
         state.phase = SidecarPhase::CoolingDown;
         state.next_scheduled_poll_at_ms = Some(wake_ms);
         state.cooldown_until_ms = Some(wake_ms);
@@ -230,6 +255,9 @@ pub(super) fn read_memory_from_caller(
     ptr: i32,
     len: i32,
 ) -> anyhow::Result<Vec<u8>> {
+    if ptr < 0 || len < 0 {
+        anyhow::bail!("memory read invalid negative range: ptr={ptr}, len={len}");
+    }
     let mem = caller
         .get_export("memory")
         .and_then(|m| m.into_memory())
@@ -240,6 +268,23 @@ pub(super) fn read_memory_from_caller(
         .and_then(|s| s.get(..len as usize))
         .ok_or_else(|| anyhow::anyhow!("memory read OOB: ptr={ptr}, len={len}"))?;
     Ok(data.to_vec())
+}
+
+pub(super) fn read_limited_memory_from_caller(
+    caller: &mut WasmCaller<'_>,
+    ptr: i32,
+    len: i32,
+    limit: usize,
+    label: &str,
+) -> anyhow::Result<Vec<u8>> {
+    if len < 0 {
+        anyhow::bail!("{label} length is negative: {len}");
+    }
+    let len = len as usize;
+    if len > limit {
+        anyhow::bail!("{label} length {len} exceeds configured limit of {limit} bytes");
+    }
+    read_memory_from_caller(caller, ptr, len as i32)
 }
 
 pub(super) fn write_memory_from_caller(
@@ -293,6 +338,7 @@ pub(super) fn execute_native_request(
     req: &HostRequest,
     user_agent: &str,
     attestation_headers: &[(String, String)],
+    max_response_bytes: usize,
 ) -> Result<HostResponse, (ErrorKind, String)> {
     match req {
         HostRequest::HttpsGet {
@@ -351,10 +397,27 @@ pub(super) fn execute_native_request(
                 })
                 .collect();
 
-            let body = resp
-                .bytes()
-                .map_err(|e| (ErrorKind::Io, format!("read body: {e}")))?
-                .to_vec();
+            if let Some(content_length) = resp.content_length()
+                && content_length > max_response_bytes as u64
+            {
+                return Err((
+                    ErrorKind::Io,
+                    format!(
+                        "response body is {content_length} bytes, exceeding configured limit of {max_response_bytes} bytes"
+                    ),
+                ));
+            }
+
+            let mut reader = resp.take(max_response_bytes.saturating_add(1) as u64);
+            let mut body = Vec::new();
+            std::io::Read::read_to_end(&mut reader, &mut body)
+                .map_err(|e| (ErrorKind::Io, format!("read body: {e}")))?;
+            if body.len() > max_response_bytes {
+                return Err((
+                    ErrorKind::Io,
+                    format!("response body exceeds configured limit of {max_response_bytes} bytes"),
+                ));
+            }
 
             Ok(HostResponse::Http {
                 status_code,
@@ -388,14 +451,13 @@ fn classify_reqwest_error(e: &reqwest::Error, message: String) -> (ErrorKind, St
     if e.is_timeout() {
         return (ErrorKind::Timeout, message);
     }
-    if e.is_connect() {
-        if let Some(source) = std::error::Error::source(e) {
-            if let Some(io_err) = source.downcast_ref::<std::io::Error>() {
-                let kind = io_kind_to_error_kind(io_err.kind());
-                if kind != ErrorKind::Io {
-                    return (kind, message);
-                }
-            }
+    if e.is_connect()
+        && let Some(source) = std::error::Error::source(e)
+        && let Some(io_err) = source.downcast_ref::<std::io::Error>()
+    {
+        let kind = io_kind_to_error_kind(io_err.kind());
+        if kind != ErrorKind::Io {
+            return (kind, message);
         }
     }
     // reqwest surfaces DNS failures as "builder" errors in some configurations;
@@ -420,5 +482,42 @@ fn io_kind_to_error_kind(k: std::io::ErrorKind) -> ErrorKind {
         std::io::ErrorKind::PermissionDenied => ErrorKind::PermissionDenied,
         std::io::ErrorKind::TimedOut => ErrorKind::Timeout,
         _ => ErrorKind::Io,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn phase_transition_allows_expected_lifecycle() {
+        assert!(is_valid_phase_transition(
+            &SidecarPhase::Idle,
+            &SidecarPhase::Fetching
+        ));
+        assert!(is_valid_phase_transition(
+            &SidecarPhase::Fetching,
+            &SidecarPhase::Parsing
+        ));
+        assert!(is_valid_phase_transition(
+            &SidecarPhase::Parsing,
+            &SidecarPhase::Publishing
+        ));
+        assert!(is_valid_phase_transition(
+            &SidecarPhase::Publishing,
+            &SidecarPhase::Idle
+        ));
+    }
+
+    #[test]
+    fn phase_transition_rejects_invalid_jump() {
+        assert!(!is_valid_phase_transition(
+            &SidecarPhase::Idle,
+            &SidecarPhase::Parsing
+        ));
+        assert!(!is_valid_phase_transition(
+            &SidecarPhase::Parsing,
+            &SidecarPhase::Fetching
+        ));
     }
 }

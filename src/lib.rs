@@ -2,6 +2,7 @@ pub mod abi;
 pub(crate) mod attestation;
 pub mod config;
 pub mod controller;
+pub mod error;
 pub mod events;
 pub mod host;
 pub mod identity;
