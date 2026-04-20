@@ -6,8 +6,9 @@ use std::sync::{Arc, Mutex};
 
 use crate::abi::SidecarDescribe;
 use crate::attestation::{self, EnvelopeFields, RequestBinding, SignedEnvelope};
+use crate::config::Config;
 use crate::events::now_ms;
-use crate::identity::InstallationIdentity;
+use crate::identity::{InstallationIdentity, ModuleHash};
 use crate::mission_state::MissionState;
 
 // ── Artifact store ───────────────────────────────────────────────────
@@ -91,14 +92,18 @@ pub struct HostState {
 
     /// Per-sidecar mission state used for signed request envelopes and local behavior summary.
     pub mission: MissionState,
+
+    /// Global configuration.
+    pub config: Config,
 }
 
 impl HostState {
     pub fn new(
         log_channel: bool,
         params_bytes: Arc<Mutex<Option<Vec<u8>>>>,
-        module_hash: [u8; 32],
+        module_hash: ModuleHash,
         identity: Option<InstallationIdentity>,
+        config: Config,
     ) -> Self {
         Self {
             artifact_store: Arc::new(Mutex::new(ArtifactStore::default())),
@@ -112,6 +117,7 @@ impl HostState {
             identity_disclosure_visible: true,
             identity,
             mission: MissionState::new(module_hash),
+            config,
         }
     }
 
@@ -142,18 +148,18 @@ impl HostState {
             return None;
         }
         let fields = EnvelopeFields {
-            client_id: identity.client_id,
-            mission_id: self.mission.mission_id,
-            module_hash: self.mission.module_hash,
+            client_id: identity.client_id(),
+            mission_id: self.mission.mission_id.as_bytes().clone(),
+            module_hash: self.mission.module_hash.as_bytes().clone(),
             request_count,
-            behavior_hash: self.mission.behavior_hash,
+            behavior_hash: self.mission.behavior_hash.as_bytes().clone(),
             cap_mask: self.mission.cap_mask,
             timestamp_ms: now_ms(),
             nonce,
-            key_id: identity.key_id,
-            public_key: identity.public_key,
+            key_id: identity.key_id(),
+            public_key: identity.public_key(),
         };
-        match attestation::build_signed_envelope(&fields, binding, &identity.signing_key) {
+        match attestation::build_signed_envelope(&fields, binding, identity) {
             Ok(envelope) => Some(envelope),
             Err(e) => {
                 eprintln!("[brrmmmm] failed to build signed envelope: {e}");
@@ -220,20 +226,10 @@ fn lock_or_recover<'a, T>(mutex: &'a Mutex<T>, name: &str) -> std::sync::MutexGu
 mod tests {
     use std::sync::{Arc, Mutex};
 
-    use ed25519_dalek::SigningKey;
-
     use super::*;
-    use crate::attestation::short_hash_16;
 
     fn identity() -> InstallationIdentity {
-        let signing_key = SigningKey::from_bytes(&[7u8; 32]);
-        let public_key = signing_key.verifying_key().to_bytes();
-        InstallationIdentity {
-            client_id: [1u8; 16],
-            key_id: short_hash_16(b"brrmmmm-key-id-v1", &public_key),
-            public_key,
-            signing_key,
-        }
+        InstallationIdentity::new_for_test([7u8; 32])
     }
 
     #[test]
@@ -241,8 +237,9 @@ mod tests {
         let mut host = HostState::new(
             false,
             Arc::new(Mutex::new(None)),
-            [3u8; 32],
+            ModuleHash([3u8; 32]),
             Some(identity()),
+            Config::load(),
         );
         *host.user_agent.lock().unwrap() = "sidecar/1".to_string();
         let binding = RequestBinding::new("GET", "example.com", "/v1", None);
@@ -254,7 +251,8 @@ mod tests {
 
         assert!(ua.starts_with(&format!("sidecar/1 brrmmmm/{}", env!("CARGO_PKG_VERSION"))));
         assert!(ua.contains(" brrm/1 "));
-        assert!(ua.contains(" cid/0101010101010101 "));
+        assert!(ua.contains(" cid/"));
+        assert!(ua.contains("pk/"));
     }
 
     #[test]
@@ -262,8 +260,9 @@ mod tests {
         let mut host = HostState::new(
             false,
             Arc::new(Mutex::new(None)),
-            [3u8; 32],
+            ModuleHash([3u8; 32]),
             Some(identity()),
+            Config::load(),
         );
         *host.user_agent.lock().unwrap() = "sidecar/2".to_string();
         host.set_identity_disclosure_visible(false);

@@ -92,8 +92,9 @@ mod tests {
         Arc::new(Mutex::new(HostState::new(
             false,
             Arc::new(Mutex::new(None)),
-            [0u8; 32],
+            crate::identity::ModuleHash([0u8; 32]),
             None,
+            crate::config::Config::load(),
         )))
     }
 

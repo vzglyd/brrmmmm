@@ -1,6 +1,7 @@
 use sha2::{Digest, Sha256};
 
 use crate::abi::SidecarDescribe;
+use crate::identity::{BehaviorHash, MissionId, ModuleHash};
 
 pub const CAP_NETWORK: u8 = 0x01;
 pub const CAP_BROWSER: u8 = 0x02;
@@ -9,20 +10,20 @@ pub const CAP_KV: u8 = 0x08;
 
 #[derive(Debug, Clone)]
 pub struct MissionState {
-    pub module_hash: [u8; 32],
-    pub mission_id: [u8; 16],
+    pub module_hash: ModuleHash,
+    pub mission_id: MissionId,
     pub request_count: u64,
-    pub behavior_hash: [u8; 16],
+    pub behavior_hash: BehaviorHash,
     pub cap_mask: u8,
 }
 
 impl MissionState {
-    pub fn new(module_hash: [u8; 32]) -> Self {
+    pub fn new(module_hash: ModuleHash) -> Self {
         Self {
             module_hash,
             mission_id: mission_id_without_describe(module_hash),
             request_count: 0,
-            behavior_hash: [0u8; 16],
+            behavior_hash: BehaviorHash([0u8; 16]),
             cap_mask: 0,
         }
     }
@@ -43,14 +44,14 @@ impl MissionState {
     }
 }
 
-pub fn mission_id_without_describe(module_hash: [u8; 32]) -> [u8; 16] {
+pub fn mission_id_without_describe(module_hash: ModuleHash) -> MissionId {
     let mut hasher = Sha256::new();
     push_str(&mut hasher, "brrmmmm-mission-v1");
-    push_bytes(&mut hasher, &module_hash);
+    push_bytes(&mut hasher, module_hash.as_bytes());
     short(hasher.finalize())
 }
 
-pub fn mission_id_from_describe(module_hash: [u8; 32], describe: &SidecarDescribe) -> [u8; 16] {
+pub fn mission_id_from_describe(module_hash: ModuleHash, describe: &SidecarDescribe) -> MissionId {
     let mut capabilities = describe.capabilities_needed.clone();
     capabilities.sort();
     let mut modes = describe.run_modes.clone();
@@ -58,7 +59,7 @@ pub fn mission_id_from_describe(module_hash: [u8; 32], describe: &SidecarDescrib
 
     let mut hasher = Sha256::new();
     push_str(&mut hasher, "brrmmmm-mission-v1");
-    push_bytes(&mut hasher, &module_hash);
+    push_bytes(&mut hasher, module_hash.as_bytes());
     push_str(&mut hasher, &describe.logical_id);
     hasher.update(describe.abi_version.to_be_bytes());
     for capability in capabilities {
@@ -92,12 +93,16 @@ pub fn kv_event(operation_kind: &str) -> Vec<u8> {
     format!("operation={operation_kind}").into_bytes()
 }
 
-fn next_behavior_hash(previous: [u8; 16], event_tag: &str, normalized_event: &[u8]) -> [u8; 16] {
+fn next_behavior_hash(
+    previous: BehaviorHash,
+    event_tag: &str,
+    normalized_event: &[u8],
+) -> BehaviorHash {
     let mut hasher = Sha256::new();
-    hasher.update(previous);
+    hasher.update(previous.as_bytes());
     push_str(&mut hasher, event_tag);
     push_bytes(&mut hasher, normalized_event);
-    short(hasher.finalize())
+    BehaviorHash(short_bytes(hasher.finalize()))
 }
 
 fn normalize_path_for_behavior(path: &str) -> String {
@@ -146,7 +151,11 @@ fn push_bytes(hasher: &mut Sha256, value: &[u8]) {
     hasher.update(&value[..len as usize]);
 }
 
-fn short(digest: impl AsRef<[u8]>) -> [u8; 16] {
+fn short(digest: impl AsRef<[u8]>) -> MissionId {
+    MissionId(short_bytes(digest))
+}
+
+fn short_bytes(digest: impl AsRef<[u8]>) -> [u8; 16] {
     let mut out = [0u8; 16];
     out.copy_from_slice(&digest.as_ref()[..16]);
     out
@@ -180,7 +189,7 @@ mod tests {
 
     #[test]
     fn mission_id_changes_when_capabilities_change() {
-        let module_hash = [9u8; 32];
+        let module_hash = ModuleHash([9u8; 32]);
         let a = mission_id_from_describe(module_hash, &describe(vec!["network".to_string()]));
         let b = mission_id_from_describe(module_hash, &describe(vec!["browser".to_string()]));
 
@@ -189,14 +198,14 @@ mod tests {
 
     #[test]
     fn request_count_increments_and_cap_mask_accumulates() {
-        let mut state = MissionState::new([1u8; 32]);
+        let mut state = MissionState::new(ModuleHash([1u8; 32]));
         let first = state.next_request(CAP_NETWORK, "network", b"GET\nexample.com\n/");
         let second = state.next_request(CAP_AI, "ai", b"complete");
 
         assert_eq!(first, 1);
         assert_eq!(second, 2);
         assert_eq!(state.cap_mask, CAP_NETWORK | CAP_AI);
-        assert_ne!(state.behavior_hash, [0u8; 16]);
+        assert_ne!(state.behavior_hash, BehaviorHash([0u8; 16]));
     }
 
     #[test]

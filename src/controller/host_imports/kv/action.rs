@@ -3,6 +3,7 @@ use std::sync::{Arc, Mutex};
 use anyhow::Result;
 
 use crate::abi::{PersistenceAuthority, SidecarRuntimeState};
+use crate::config::Config;
 
 const KV_MAX_VALUE_BYTES: usize = 64 * 1024;
 const KV_MAX_TOTAL_BYTES: usize = 1024 * 1024;
@@ -14,7 +15,7 @@ use crate::persistence;
 use super::super::super::io::{WasmCaller, WasmLinker, lock_runtime, read_memory_from_caller};
 use super::state::{clear_pending_kv_response, store_pending_kv_response};
 
-type PersistFn = fn(&str, &SidecarRuntimeState) -> anyhow::Result<()>;
+type PersistFn = fn(&Config, &str, &SidecarRuntimeState) -> anyhow::Result<()>;
 
 pub(super) fn register(
     linker: &mut WasmLinker,
@@ -99,7 +100,9 @@ pub(super) fn register(
                 });
 
                 clear_pending_kv_response(&shared);
+                let config = lock_runtime(&shared, "host_state").config.clone();
                 if let Err(error) = set_value(
+                    &config,
                     &runtime_state,
                     key,
                     val_bytes,
@@ -136,7 +139,9 @@ pub(super) fn register(
                 });
 
                 clear_pending_kv_response(&shared);
+                let config = lock_runtime(&shared, "host_state").config.clone();
                 if let Err(error) = delete_value(
+                    &config,
                     &runtime_state,
                     &key,
                     wasm_hash.as_deref(),
@@ -186,6 +191,7 @@ fn read_key(
 }
 
 fn set_value(
+    config: &Config,
     runtime_state: &Arc<Mutex<SidecarRuntimeState>>,
     key: String,
     value: Vec<u8>,
@@ -216,7 +222,7 @@ fn set_value(
     }
 
     let previous = state.kv.insert(key.clone(), value);
-    if let Err(error) = persist_if_host_persisted(&state, wasm_hash, persist) {
+    if let Err(error) = persist_if_host_persisted(config, &state, wasm_hash, persist) {
         restore_value(&mut state, key, previous);
         return Err(error);
     }
@@ -224,6 +230,7 @@ fn set_value(
 }
 
 fn delete_value(
+    config: &Config,
     runtime_state: &Arc<Mutex<SidecarRuntimeState>>,
     key: &str,
     wasm_hash: Option<&str>,
@@ -234,7 +241,7 @@ fn delete_value(
     if previous.is_none() {
         return Ok(());
     }
-    if let Err(error) = persist_if_host_persisted(&state, wasm_hash, persist) {
+    if let Err(error) = persist_if_host_persisted(config, &state, wasm_hash, persist) {
         restore_value(&mut state, key.to_string(), previous);
         return Err(error);
     }
@@ -250,6 +257,7 @@ fn restore_value(state: &mut SidecarRuntimeState, key: String, previous: Option<
 }
 
 fn persist_if_host_persisted(
+    config: &Config,
     state: &SidecarRuntimeState,
     wasm_hash: Option<&str>,
     persist: PersistFn,
@@ -264,7 +272,7 @@ fn persist_if_host_persisted(
     }
     let wasm_hash =
         wasm_hash.ok_or_else(|| "host-persisted KV state has no WASM identity".to_string())?;
-    persist(wasm_hash, state).map_err(|error| format!("{error:#}"))
+    persist(config, wasm_hash, state).map_err(|error| format!("{error:#}"))
 }
 
 #[cfg(test)]
@@ -294,19 +302,21 @@ mod tests {
         Arc::new(Mutex::new(state))
     }
 
-    fn persist_ok(_wasm_hash: &str, _state: &SidecarRuntimeState) -> anyhow::Result<()> {
+    fn persist_ok(_config: &Config, _wasm_hash: &str, _state: &SidecarRuntimeState) -> anyhow::Result<()> {
         Ok(())
     }
 
-    fn persist_err(_wasm_hash: &str, _state: &SidecarRuntimeState) -> anyhow::Result<()> {
+    fn persist_err(_config: &Config, _wasm_hash: &str, _state: &SidecarRuntimeState) -> anyhow::Result<()> {
         anyhow::bail!("state directory is not writable")
     }
 
     #[test]
     fn set_value_rolls_back_new_key_when_persistence_fails() {
         let state = persisted_state();
+        let config = Config::load();
 
         let result = set_value(
+            &config,
             &state,
             "token".to_string(),
             b"secret".to_vec(),
@@ -325,11 +335,13 @@ mod tests {
     #[test]
     fn set_value_restores_previous_value_when_persistence_fails() {
         let state = persisted_state();
+        let config = Config::load();
         lock_runtime(&state, "runtime_state")
             .kv
             .insert("token".to_string(), b"old".to_vec());
 
         let result = set_value(
+            &config,
             &state,
             "token".to_string(),
             b"new".to_vec(),
@@ -347,11 +359,12 @@ mod tests {
     #[test]
     fn delete_value_restores_deleted_value_when_persistence_fails() {
         let state = persisted_state();
+        let config = Config::load();
         lock_runtime(&state, "runtime_state")
             .kv
             .insert("token".to_string(), b"secret".to_vec());
 
-        let result = delete_value(&state, "token", Some("wasm-hash"), persist_err);
+        let result = delete_value(&config, &state, "token", Some("wasm-hash"), persist_err);
 
         assert!(result.is_err());
         assert_eq!(
@@ -363,8 +376,9 @@ mod tests {
     #[test]
     fn delete_value_missing_key_does_not_require_persistence() {
         let state = persisted_state();
+        let config = Config::load();
 
-        let result = delete_value(&state, "missing", Some("wasm-hash"), persist_err);
+        let result = delete_value(&config, &state, "missing", Some("wasm-hash"), persist_err);
 
         assert!(result.is_ok());
     }
@@ -372,9 +386,11 @@ mod tests {
     #[test]
     fn set_value_rejects_oversized_single_value() {
         let state = persisted_state();
+        let config = Config::load();
         let oversized = vec![0u8; KV_MAX_VALUE_BYTES + 1];
 
         let result = set_value(
+            &config,
             &state,
             "big".to_string(),
             oversized,
@@ -388,9 +404,11 @@ mod tests {
     #[test]
     fn set_value_rejects_when_total_budget_exceeded() {
         let state = persisted_state();
+        let config = Config::load();
         // Fill the map: 16 keys × KV_MAX_VALUE_BYTES = KV_MAX_TOTAL_BYTES exactly.
         for i in 0..16usize {
             set_value(
+                &config,
                 &state,
                 format!("key{i}"),
                 vec![0u8; KV_MAX_VALUE_BYTES],
@@ -402,6 +420,7 @@ mod tests {
 
         // Any additional write (even 1 byte) must be rejected.
         let result = set_value(
+            &config,
             &state,
             "overflow".to_string(),
             vec![0u8; 1],
@@ -415,9 +434,11 @@ mod tests {
     #[test]
     fn set_value_replacing_existing_key_does_not_double_count_old_bytes() {
         let state = persisted_state();
+        let config = Config::load();
         // Fill the map to capacity (16 × KV_MAX_VALUE_BYTES = KV_MAX_TOTAL_BYTES).
         for i in 0..16usize {
             set_value(
+                &config,
                 &state,
                 format!("key{i}"),
                 vec![0u8; KV_MAX_VALUE_BYTES],
@@ -429,6 +450,7 @@ mod tests {
 
         // Replace an existing key with a smaller value — this should not exceed the budget.
         let result = set_value(
+            &config,
             &state,
             "key0".to_string(),
             vec![1u8; 10],
@@ -445,8 +467,10 @@ mod tests {
     #[test]
     fn host_persisted_set_requires_wasm_identity() {
         let state = persisted_state();
+        let config = Config::load();
 
         let result = set_value(
+            &config,
             &state,
             "token".to_string(),
             b"secret".to_vec(),

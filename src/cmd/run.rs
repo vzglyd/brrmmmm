@@ -1,6 +1,7 @@
 use anyhow::{Context, Result};
 use std::path::Path;
 
+use brrmmmm::config::Config;
 use brrmmmm::controller::SidecarController;
 use brrmmmm::events::{EnvVarStatus, Event, EventSink, now_ts};
 use brrmmmm::params;
@@ -18,6 +19,7 @@ pub(crate) struct RunOptions<'a> {
     pub(crate) events_mode: bool,
     pub(crate) verbose: bool,
     pub(crate) output: OutputFormat,
+    pub(crate) config: &'a Config,
 }
 
 pub(crate) fn cmd_run(options: RunOptions<'_>) -> Result<()> {
@@ -30,6 +32,7 @@ pub(crate) fn cmd_run(options: RunOptions<'_>) -> Result<()> {
         events_mode,
         verbose: _verbose,
         output,
+        config,
     } = options;
 
     let env_vars = params::parse_env_vars(env);
@@ -56,6 +59,7 @@ pub(crate) fn cmd_run(options: RunOptions<'_>) -> Result<()> {
         events_mode,
         output,
         sink,
+        config,
     })
 }
 
@@ -67,6 +71,7 @@ struct RunOnceOptions<'a> {
     events_mode: bool,
     output: OutputFormat,
     sink: EventSink,
+    config: &'a Config,
 }
 
 fn run_once(options: RunOnceOptions<'_>) -> Result<()> {
@@ -78,6 +83,7 @@ fn run_once(options: RunOnceOptions<'_>) -> Result<()> {
         events_mode,
         output,
         sink,
+        config,
     } = options;
 
     let wasm_str = wasm_path.to_string_lossy();
@@ -87,9 +93,15 @@ fn run_once(options: RunOnceOptions<'_>) -> Result<()> {
         eprintln!("[brrmmmm] starting sidecar, waiting for first channel_push...");
     }
 
-    let controller =
-        SidecarController::new(&wasm_str, env_vars, params_bytes.clone(), log_channel, sink)
-            .with_context(|| format!("failed to load sidecar: {wasm_str}"))?;
+    let controller = SidecarController::new(
+        &wasm_str,
+        env_vars,
+        params_bytes.clone(),
+        log_channel,
+        sink,
+        config,
+    )
+    .with_context(|| format!("failed to load sidecar: {wasm_str}"))?;
 
     let mut timeout = std::time::Duration::from_secs(30);
     let start = std::time::Instant::now();

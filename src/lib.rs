@@ -1,5 +1,6 @@
 pub mod abi;
 pub(crate) mod attestation;
+pub mod config;
 pub mod controller;
 pub mod events;
 pub mod host;
@@ -7,3 +8,4 @@ pub mod identity;
 pub(crate) mod mission_state;
 pub mod params;
 pub mod persistence;
+pub(crate) mod utils;

@@ -14,6 +14,7 @@ use std::path::PathBuf;
 use anyhow::Context;
 
 use crate::abi::SidecarRuntimeState;
+use crate::config::Config;
 
 // ── Hashing ──────────────────────────────────────────────────────────
 
@@ -31,23 +32,8 @@ pub fn wasm_identity(data: &[u8]) -> String {
 
 // ── Storage path ──────────────────────────────────────────────────────
 
-fn state_dir() -> Option<PathBuf> {
-    if let Some(path) = std::env::var_os("BRRMMMM_STATE_DIR") {
-        return Some(PathBuf::from(path));
-    }
-    let home = std::env::var_os("HOME")?;
-    let mut path = PathBuf::from(home);
-    path.push(".local");
-    path.push("share");
-    path.push("brrmmmm");
-    path.push("state");
-    Some(path)
-}
-
-fn state_path(hash: &str) -> Option<PathBuf> {
-    let mut path = state_dir()?;
-    path.push(format!("{hash}.json"));
-    Some(path)
+fn state_path(config: &Config, hash: &str) -> PathBuf {
+    config.state_dir.join(format!("{hash}.json"))
 }
 
 // ── Public API ────────────────────────────────────────────────────────
@@ -55,15 +41,15 @@ fn state_path(hash: &str) -> Option<PathBuf> {
 /// Load persisted runtime state for a WASM module identified by `wasm_hash`.
 /// Returns `None` if no state file exists or if deserialization fails.
 #[allow(dead_code)]
-pub fn load(wasm_hash: &str) -> Option<SidecarRuntimeState> {
-    let path = state_path(wasm_hash)?;
+pub fn load(config: &Config, wasm_hash: &str) -> Option<SidecarRuntimeState> {
+    let path = state_path(config, wasm_hash);
     let data = std::fs::read(&path).ok()?;
     serde_json::from_slice(&data).ok()
 }
 
 /// Persist runtime state for a WASM module identified by `wasm_hash`.
-pub fn save(wasm_hash: &str, state: &SidecarRuntimeState) -> anyhow::Result<()> {
-    let path = state_path(wasm_hash).context("resolve brrmmmm state path")?;
+pub fn save(config: &Config, wasm_hash: &str, state: &SidecarRuntimeState) -> anyhow::Result<()> {
+    let path = state_path(config, wasm_hash);
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)
             .with_context(|| format!("create brrmmmm state directory: {}", dir.display()))?;
@@ -76,8 +62,7 @@ pub fn save(wasm_hash: &str, state: &SidecarRuntimeState) -> anyhow::Result<()> 
 
 /// Remove persisted state for a WASM module.
 #[allow(dead_code)]
-pub fn clear(wasm_hash: &str) {
-    if let Some(path) = state_path(wasm_hash) {
-        let _ = std::fs::remove_file(path);
-    }
+pub fn clear(config: &Config, wasm_hash: &str) {
+    let path = state_path(config, wasm_hash);
+    let _ = std::fs::remove_file(path);
 }

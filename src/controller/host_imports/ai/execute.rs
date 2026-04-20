@@ -1,7 +1,5 @@
 use crate::host::ai_request::{AiAction, AiActionResponse};
 
-const DEFAULT_ANTHROPIC_MODEL: &str = "claude-haiku-4-5-20251001";
-
 pub(super) struct AiSession {
     client: reqwest::blocking::Client,
     model: String,
@@ -9,12 +7,12 @@ pub(super) struct AiSession {
 }
 
 impl AiSession {
-    pub fn new() -> anyhow::Result<Self> {
-        let api_key = std::env::var("ANTHROPIC_API_KEY").unwrap_or_default();
-        let model = std::env::var("BRRMMMM_AI_MODEL")
-            .ok()
-            .filter(|value| !value.trim().is_empty())
-            .unwrap_or_else(|| DEFAULT_ANTHROPIC_MODEL.to_string());
+    pub fn new(config: &crate::config::Config) -> anyhow::Result<Self> {
+        let api_key = config
+            .anthropic_api_key
+            .clone()
+            .unwrap_or_default();
+        let model = config.ai_model.clone();
         let client = reqwest::blocking::Client::builder()
             .timeout(std::time::Duration::from_secs(60))
             .build()?;

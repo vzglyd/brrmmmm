@@ -10,13 +10,14 @@ use cli::{Cli, Commands, OutputFormat};
 fn main() -> Result<()> {
     env_logger::init();
 
+    let config = brrmmmm::config::Config::load();
     let cli = Cli::parse();
 
     match (cli.command, cli.wasm) {
         (None, Some(_wasm)) => {
             // Re-collect args for TUI launch (including global flags)
             let raw: Vec<String> = std::env::args().skip(1).collect();
-            tui::launch_tui(&raw);
+            tui::launch_tui(&raw, &config);
         }
         (None, None) => {
             // This case should be handled by clap (required command or positional)
@@ -43,6 +44,7 @@ fn main() -> Result<()> {
                 events_mode: events,
                 verbose: cli.verbose,
                 output: cli.output.unwrap_or(OutputFormat::Text),
+                config: &config,
             }),
             Commands::Inspect { wasm_path } => {
                 cmd::cmd_inspect(&wasm_path, cli.output.unwrap_or(OutputFormat::Json))

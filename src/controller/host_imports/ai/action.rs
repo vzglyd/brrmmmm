@@ -3,7 +3,7 @@ use std::time::Instant;
 
 use anyhow::Result;
 
-use crate::attestation::{self, RequestBinding};
+use crate::attestation::RequestBinding;
 use crate::events::{Event, EventSink, diag, now_ts};
 use crate::host::HostState;
 use crate::host::ai_request::{AiActionResponse, decode_action, encode_response};
@@ -88,7 +88,7 @@ pub(super) fn register(
                 }
             };
 
-            let content_digest = attestation::sha256_digest(&body);
+            let content_digest = crate::utils::sha256_digest(&body);
             let binding = RequestBinding::new(
                 "POST",
                 "api.anthropic.com",

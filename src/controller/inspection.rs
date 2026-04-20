@@ -143,14 +143,22 @@ fn instantiate_for_inspection(
     wasmtime_wasi::preview1::add_to_linker_sync(&mut linker, |state| &mut state.wasi)?;
 
     let runtime_state = Arc::new(Mutex::new(SidecarRuntimeState::default()));
+    let config = crate::config::Config::load();
     let _shared_host_state = register_vzglyd_host_on_linker(
         &mut linker,
-        HostState::new(false, Arc::new(Mutex::new(None)), [0u8; 32], None),
+        HostState::new(
+            false,
+            Arc::new(Mutex::new(None)),
+            crate::identity::ModuleHash([0u8; 32]),
+            None,
+            config.clone(),
+        ),
         EventSink::noop(),
         runtime_state,
         Arc::new(AtomicBool::new(false)),
         Arc::new(AtomicBool::new(false)),
         None,
+        &config,
     )?;
 
     let instance = linker

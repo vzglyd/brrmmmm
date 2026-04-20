@@ -12,10 +12,10 @@ use std::sync::{
 use std::thread;
 
 use anyhow::{Context, Result};
-use wasmtime::{Config, Engine, Module};
+use wasmtime::{Config as WasmtimeConfig, Engine, Module};
 
 use crate::abi::{ABI_VERSION_V1, ActiveMode, SidecarRuntimeState};
-use crate::attestation;
+use crate::config::Config;
 use crate::events::EventSink;
 use crate::host::ArtifactStore;
 use crate::identity;
@@ -51,6 +51,7 @@ impl SidecarController {
         params_bytes: Option<Vec<u8>>,
         log_channel: bool,
         event_sink: EventSink,
+        config: &Config,
     ) -> Result<Self> {
         let policy = RuntimePolicy::default();
         if let Some(params) = params_bytes.as_ref()
@@ -67,19 +68,19 @@ impl SidecarController {
             std::fs::read(wasm_path).with_context(|| format!("read WASM file: {wasm_path}"))?;
 
         let wasm_hash = persistence::wasm_identity(&wasm_bytes);
-        let module_hash = attestation::sha256_digest(&wasm_bytes);
-        let attestation_identity = if identity::attestation_disabled() {
+        let module_hash = identity::ModuleHash(crate::utils::sha256_digest(&wasm_bytes));
+        let attestation_identity = if config.attestation_disabled {
             None
         } else {
-            Some(identity::load_or_create().context(
+            Some(identity::load_or_create(config).context(
                 "load or create brrmmmm attestation identity; set BRRMMMM_ATTESTATION=off for explicit legacy mode",
             )?)
         };
-        let runtime_state = persistence::load(&wasm_hash).unwrap_or_default();
+        let runtime_state = persistence::load(config, &wasm_hash).unwrap_or_default();
         let runtime_state = Arc::new(Mutex::new(runtime_state));
         let stop_signal = Arc::new(AtomicBool::new(false));
 
-        let mut engine_config = Config::new();
+        let mut engine_config = WasmtimeConfig::new();
         engine_config.epoch_interruption(true);
         let engine = Engine::new(&engine_config).context("create wasmtime engine")?;
         let module = Module::from_binary(&engine, &wasm_bytes)
@@ -111,6 +112,8 @@ impl SidecarController {
         let runtime_state_clone = runtime_state.clone();
         let stop_clone = stop_signal.clone();
         let wasm_path_str = wasm_path.to_string();
+        let config_clone = config.clone();
+        let wasm_bytes_for_thread = wasm_bytes.clone();
 
         let handle = thread::spawn(move || {
             let config = WasmRunConfig {
@@ -119,7 +122,7 @@ impl SidecarController {
                 params_bytes,
                 log_channel,
                 abi_version: ABI_VERSION_V1,
-                wasm_size_bytes: wasm_bytes.len(),
+                wasm_size_bytes: wasm_bytes_for_thread.len(),
                 wasm_hash,
                 module_hash,
                 attestation_identity,
@@ -133,7 +136,7 @@ impl SidecarController {
                 stop_signal: stop_clone,
                 force_refresh: force_refresh_clone,
             };
-            let result = run_wasm_instance(&engine, &module, config, context);
+            let result = run_wasm_instance(&engine, &module, config, context, &config_clone);
             if let Err(e) = result {
                 eprintln!("[brrmmmm] WASM execution error: {e:?}");
             }
@@ -189,5 +192,6 @@ impl Drop for SidecarController {
     fn drop(&mut self) {
         self.stop_signal.store(true, Ordering::Relaxed);
         self.thread.take();
+        // runner handles saving state on exit, but we could do it here too if needed
     }
 }

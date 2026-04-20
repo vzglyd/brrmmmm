@@ -17,8 +17,9 @@ pub(super) fn register(
     linker: &mut WasmLinker,
     shared: Arc<Mutex<HostState>>,
     event_sink: EventSink,
+    config: &crate::config::Config,
 ) -> Result<()> {
-    let session = AiSession::new()?;
+    let session = AiSession::new(config)?;
     let session = Arc::new(Mutex::new(session));
 
     action::register(linker, shared.clone(), event_sink, session)?;

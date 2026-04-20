@@ -1,8 +1,10 @@
 use std::collections::HashMap;
+use std::str::FromStr;
 
-use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
-use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
-use sha2::{Digest, Sha256};
+use ed25519_dalek::{Signature, Signer, Verifier, VerifyingKey};
+
+use crate::identity::{ClientId, KeyId, PublicKey};
+use crate::utils::{base64url, short_hash_16};
 
 pub const PROTOCOL_VERSION: u8 = 1;
 pub const UA_SHORT_HEX_CHARS: usize = 16;
@@ -85,7 +87,7 @@ impl RequestBinding {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EnvelopeFields {
-    pub client_id: [u8; 16],
+    pub client_id: ClientId,
     pub mission_id: [u8; 16],
     pub module_hash: [u8; 32],
     pub request_count: u64,
@@ -93,8 +95,8 @@ pub struct EnvelopeFields {
     pub cap_mask: u8,
     pub timestamp_ms: u64,
     pub nonce: [u8; 16],
-    pub key_id: [u8; 16],
-    pub public_key: [u8; 32],
+    pub key_id: KeyId,
+    pub public_key: PublicKey,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -106,7 +108,7 @@ pub struct SignedEnvelope {
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[allow(dead_code)]
 pub struct VerifiedEnvelope {
-    pub client_id: [u8; 16],
+    pub client_id: ClientId,
     pub mission_id: [u8; 16],
     pub module_hash: [u8; 32],
     pub request_count: u64,
@@ -114,47 +116,24 @@ pub struct VerifiedEnvelope {
     pub cap_mask: u8,
     pub timestamp_ms: u64,
     pub nonce: [u8; 16],
-    pub key_id: [u8; 16],
+    pub key_id: KeyId,
 }
 
-pub fn sha256_digest(data: &[u8]) -> [u8; 32] {
-    let mut out = [0u8; 32];
-    out.copy_from_slice(&Sha256::digest(data));
-    out
-}
-
-pub fn short_hash_16(label: &[u8], data: &[u8]) -> [u8; 16] {
-    let mut hasher = Sha256::new();
-    hasher.update(label);
-    hasher.update(data);
-    let digest = hasher.finalize();
-    let mut out = [0u8; 16];
-    out.copy_from_slice(&digest[..16]);
-    out
-}
-
-pub fn base64url(data: &[u8]) -> String {
-    URL_SAFE_NO_PAD.encode(data)
-}
-
-pub fn decode_base64url(value: &str) -> Result<Vec<u8>, String> {
-    URL_SAFE_NO_PAD
-        .decode(value.as_bytes())
-        .map_err(|error| format!("base64url decode: {error}"))
-}
-
-pub fn build_signed_envelope(
+pub fn build_signed_envelope<S>(
     fields: &EnvelopeFields,
     binding: &RequestBinding,
-    signing_key: &SigningKey,
-) -> Result<SignedEnvelope, AttestationError> {
+    signer: &S,
+) -> Result<SignedEnvelope, AttestationError>
+where
+    S: Signer<ed25519_dalek::Signature>,
+{
     let payload = canonical_payload(fields, binding)?;
-    let signature = signing_key.sign(&payload);
+    let signature = signer.sign(&payload);
     let signature_bytes = signature.to_bytes();
     let user_agent_suffix = user_agent_suffix(fields, binding.content_digest, &signature_bytes);
     let mut headers = vec![
         (HEADER_VERSION.to_string(), PROTOCOL_VERSION.to_string()),
-        (HEADER_CLIENT_ID.to_string(), base64url(&fields.client_id)),
+        (HEADER_CLIENT_ID.to_string(), fields.client_id.to_string()),
         (HEADER_MISSION_ID.to_string(), base64url(&fields.mission_id)),
         (
             HEADER_MODULE_HASH.to_string(),
@@ -177,8 +156,8 @@ pub fn build_signed_envelope(
             fields.timestamp_ms.to_string(),
         ),
         (HEADER_NONCE.to_string(), base64url(&fields.nonce)),
-        (HEADER_KEY_ID.to_string(), base64url(&fields.key_id)),
-        (HEADER_PUBLIC_KEY.to_string(), base64url(&fields.public_key)),
+        (HEADER_KEY_ID.to_string(), fields.key_id.to_string()),
+        (HEADER_PUBLIC_KEY.to_string(), fields.public_key.to_string()),
     ];
     if let Some(content_digest) = binding.content_digest {
         headers.push((
@@ -200,7 +179,7 @@ pub fn user_agent_suffix(
 ) -> String {
     let mut parts = vec![
         format!("brrm/{PROTOCOL_VERSION}"),
-        format!("cid/{}", short_hex(&fields.client_id)),
+        format!("cid/{}", short_hex(fields.client_id.as_bytes())),
         format!("mid/{}", short_hex(&fields.mission_id)),
         format!("mod/{}", short_hex(&fields.module_hash)),
         format!("seq/{}", fields.request_count),
@@ -208,8 +187,8 @@ pub fn user_agent_suffix(
         format!("bh/{}", short_hex(&fields.behavior_hash)),
         format!("ts/{}", ua_timestamp(fields.timestamp_ms)),
         format!("nonce/{}", base64url(&fields.nonce)),
-        format!("kid/{}", short_hex(&fields.key_id)),
-        format!("pk/{}", base64url(&fields.public_key)),
+        format!("kid/{}", short_hex(fields.key_id.as_bytes())),
+        format!("pk/{}", fields.public_key),
     ];
     if let Some(content_digest) = content_digest {
         parts.push(format!("cd/{}", short_hex(&content_digest)));
@@ -222,7 +201,7 @@ pub fn user_agent_suffix(
 pub fn verify_signed_envelope(
     headers: &[(String, String)],
     binding: &RequestBinding,
-    trusted_public_key: Option<[u8; 32]>,
+    trusted_public_key: Option<PublicKey>,
 ) -> Result<VerifiedEnvelope, AttestationError> {
     let map = header_map(headers);
     let version = required(&map, HEADER_VERSION)?;
@@ -232,34 +211,38 @@ pub fn verify_signed_envelope(
         )));
     }
 
-    let client_id = parse_array::<16>(required(&map, HEADER_CLIENT_ID)?)?;
-    let mission_id = parse_array::<16>(required(&map, HEADER_MISSION_ID)?)?;
-    let module_hash = parse_array::<32>(required(&map, HEADER_MODULE_HASH)?)?;
+    let client_id = ClientId::from_str(required(&map, HEADER_CLIENT_ID)?)
+        .map_err(|e| AttestationError::MalformedField(e.to_string()))?;
+    let mission_id = parse_raw::<16>(required(&map, HEADER_MISSION_ID)?)?;
+    let module_hash = parse_raw::<32>(required(&map, HEADER_MODULE_HASH)?)?;
     let request_count = required(&map, HEADER_REQUEST_COUNT)?
         .parse::<u64>()
         .map_err(|e| AttestationError::MalformedField(format!("request count parse: {e}")))?;
-    let behavior_hash = parse_array::<16>(required(&map, HEADER_BEHAVIOR_HASH)?)?;
+    let behavior_hash = parse_raw::<16>(required(&map, HEADER_BEHAVIOR_HASH)?)?;
     let cap_mask = u8::from_str_radix(required(&map, HEADER_CAP_MASK)?, 16)
         .map_err(|e| AttestationError::MalformedField(format!("cap mask parse: {e}")))?;
     let timestamp_ms = required(&map, HEADER_TIMESTAMP_MS)?
         .parse::<u64>()
         .map_err(|e| AttestationError::MalformedField(format!("timestamp parse: {e}")))?;
-    let nonce = parse_array::<16>(required(&map, HEADER_NONCE)?)?;
-    let key_id = parse_array::<16>(required(&map, HEADER_KEY_ID)?)?;
-    let public_key = parse_array::<32>(required(&map, HEADER_PUBLIC_KEY)?)?;
+    let nonce = parse_raw::<16>(required(&map, HEADER_NONCE)?)?;
+    let key_id = KeyId::from_str(required(&map, HEADER_KEY_ID)?)
+        .map_err(|e| AttestationError::MalformedField(e.to_string()))?;
+    let public_key = PublicKey::from_str(required(&map, HEADER_PUBLIC_KEY)?)
+        .map_err(|e| AttestationError::MalformedField(e.to_string()))?;
+
     if let Some(expected) = trusted_public_key
         && public_key != expected
     {
         return Err(AttestationError::KeyMismatch);
     }
-    let expected_key_id = short_hash_16(b"brrmmmm-key-id-v1", &public_key);
+    let expected_key_id = KeyId(short_hash_16(b"brrmmmm-key-id-v1", public_key.as_bytes()));
     if key_id != expected_key_id {
         return Err(AttestationError::KeyMismatch);
     }
 
     let content_digest = map
         .get(&HEADER_CONTENT_DIGEST.to_ascii_lowercase())
-        .map(|value| parse_array::<32>(value))
+        .map(|value| parse_raw::<32>(value))
         .transpose()?;
     if content_digest != binding.content_digest {
         return Err(AttestationError::ContentDigestMismatch);
@@ -278,10 +261,10 @@ pub fn verify_signed_envelope(
         public_key,
     };
     let payload = canonical_payload(&fields, binding)?;
-    let signature = parse_array::<64>(required(&map, HEADER_SIGNATURE)?)?;
+    let signature = parse_raw::<64>(required(&map, HEADER_SIGNATURE)?)?;
     let signature = Signature::from_bytes(&signature);
-    let verifying_key =
-        VerifyingKey::from_bytes(&public_key).map_err(|_| AttestationError::KeyMismatch)?;
+    let verifying_key = VerifyingKey::from_bytes(public_key.as_bytes())
+        .map_err(|_| AttestationError::KeyMismatch)?;
     verifying_key
         .verify(&payload, &signature)
         .map_err(|_| AttestationError::SignatureInvalid)?;
@@ -425,7 +408,7 @@ pub(crate) fn canonical_payload(
         180 + binding.method.len() + binding.authority.len() + binding.path.len(),
     );
     out.push(PROTOCOL_VERSION);
-    out.extend_from_slice(&fields.client_id);
+    out.extend_from_slice(fields.client_id.as_bytes());
     out.extend_from_slice(&fields.mission_id);
     out.extend_from_slice(&fields.module_hash);
     out.extend_from_slice(&fields.request_count.to_be_bytes());
@@ -486,9 +469,8 @@ fn required<'a>(
         .ok_or(AttestationError::MissingHeader(name))
 }
 
-#[allow(dead_code)]
-fn parse_array<const N: usize>(value: &str) -> Result<[u8; N], AttestationError> {
-    let bytes = decode_base64url(value).map_err(AttestationError::MalformedField)?;
+fn parse_raw<const N: usize>(value: &str) -> Result<[u8; N], AttestationError> {
+    let bytes = crate::utils::decode_base64url(value).map_err(AttestationError::MalformedField)?;
     bytes.try_into().map_err(|bytes: Vec<u8>| {
         AttestationError::MalformedField(format!("expected {N} bytes, got {}", bytes.len()))
     })
@@ -504,9 +486,9 @@ mod tests {
         SigningKey::from_bytes(&[7u8; 32])
     }
 
-    fn fields(public_key: [u8; 32]) -> EnvelopeFields {
+    fn fields(public_key: PublicKey) -> EnvelopeFields {
         EnvelopeFields {
-            client_id: [1u8; 16],
+            client_id: ClientId([1u8; 16]),
             mission_id: [2u8; 16],
             module_hash: [3u8; 32],
             request_count: 42,
@@ -514,7 +496,7 @@ mod tests {
             cap_mask: 0x05,
             timestamp_ms: 123_456_789,
             nonce: [5u8; 16],
-            key_id: short_hash_16(b"brrmmmm-key-id-v1", &public_key),
+            key_id: KeyId(short_hash_16(b"brrmmmm-key-id-v1", public_key.as_bytes())),
             public_key,
         }
     }
@@ -522,7 +504,7 @@ mod tests {
     #[test]
     fn signed_envelope_verifies() {
         let key = key();
-        let public_key = key.verifying_key().to_bytes();
+        let public_key = PublicKey(key.verifying_key().to_bytes());
         let fields = fields(public_key);
         let binding = RequestBinding::new("GET", "Example.COM", "/v1?q=1", None);
         let envelope = build_signed_envelope(&fields, &binding, &key).unwrap();
@@ -538,7 +520,7 @@ mod tests {
     #[test]
     fn tampered_binding_fails_verification() {
         let key = key();
-        let public_key = key.verifying_key().to_bytes();
+        let public_key = PublicKey(key.verifying_key().to_bytes());
         let fields = fields(public_key);
         let binding = RequestBinding::new("GET", "example.com", "/v1", None);
         let envelope = build_signed_envelope(&fields, &binding, &key).unwrap();
@@ -550,7 +532,7 @@ mod tests {
     #[test]
     fn user_agent_suffix_is_readable_and_stable() {
         let key = key();
-        let public_key = key.verifying_key().to_bytes();
+        let public_key = PublicKey(key.verifying_key().to_bytes());
         let mut fields = fields(public_key);
         fields.timestamp_ms = 123_456_789;
         let binding = RequestBinding::new("POST", "example.com", "/v1", Some([9u8; 32]));
@@ -598,7 +580,7 @@ mod tests {
         assert_eq!(binding.path, "/");
         // Verify it still canonicalizes correctly (no FieldTooLong)
         let key = key();
-        let public_key = key.verifying_key().to_bytes();
+        let public_key = PublicKey(key.verifying_key().to_bytes());
         let fields = fields(public_key);
         assert!(canonical_payload(&fields, &binding).is_ok());
     }
@@ -608,7 +590,7 @@ mod tests {
         let binding =
             RequestBinding::new("GET", "example.com", "/search?q=hello+world&lang=en", None);
         let key = key();
-        let public_key = key.verifying_key().to_bytes();
+        let public_key = PublicKey(key.verifying_key().to_bytes());
         let fields = fields(public_key);
         let envelope = build_signed_envelope(&fields, &binding, &key).unwrap();
         assert!(verify_signed_envelope(&envelope.headers, &binding, Some(public_key)).is_ok());
@@ -619,7 +601,7 @@ mod tests {
         let long_path = "/".repeat(70_000); // > u16::MAX
         let binding = RequestBinding::new("GET", "example.com", long_path, None);
         let key = key();
-        let public_key = key.verifying_key().to_bytes();
+        let public_key = PublicKey(key.verifying_key().to_bytes());
         let fields = fields(public_key);
         let result = build_signed_envelope(&fields, &binding, &key);
         assert_eq!(result, Err(AttestationError::FieldTooLong));
@@ -628,7 +610,7 @@ mod tests {
     #[test]
     fn user_agent_suffix_is_deterministic_across_calls() {
         let key = key();
-        let public_key = key.verifying_key().to_bytes();
+        let public_key = PublicKey(key.verifying_key().to_bytes());
         let fields = fields(public_key);
         let binding = RequestBinding::new("GET", "example.com", "/v1", None);
         // Use the same nonce/timestamp — build_signed_envelope signs deterministically

@@ -9,7 +9,7 @@ use wasmtime::{Engine, Module};
 use crate::abi::{PersistenceAuthority, SidecarRuntimeState};
 use crate::events::{Event, EventSink, diag, now_ts};
 use crate::host::{ArtifactStore, HostState};
-use crate::identity::InstallationIdentity;
+use crate::identity::{InstallationIdentity, ModuleHash};
 use crate::persistence;
 
 use super::host_imports::register_vzglyd_host_on_linker;
@@ -28,7 +28,7 @@ pub(super) struct WasmRunConfig {
     pub(super) abi_version: u32,
     pub(super) wasm_size_bytes: usize,
     pub(super) wasm_hash: String,
-    pub(super) module_hash: [u8; 32],
+    pub(super) module_hash: ModuleHash,
     pub(super) attestation_identity: Option<InstallationIdentity>,
     pub(super) policy: RuntimePolicy,
 }
@@ -47,6 +47,7 @@ pub(super) fn run_wasm_instance(
     module: &Module,
     config: WasmRunConfig,
     context: WasmRunContext,
+    brrmmmm_config: &crate::config::Config,
 ) -> Result<()> {
     let WasmRunConfig {
         wasm_path,
@@ -82,8 +83,13 @@ pub(super) fn run_wasm_instance(
     wasmtime_wasi::preview1::add_to_linker_sync(&mut linker, |state| &mut state.wasi)?;
 
     // Build host state and register all vzglyd_host imports.
-    let mut host_state =
-        HostState::new(log_channel, params_state, module_hash, attestation_identity);
+    let mut host_state = HostState::new(
+        log_channel,
+        params_state,
+        module_hash,
+        attestation_identity,
+        brrmmmm_config.clone(),
+    );
     // Share the artifact_store from the controller.
     host_state.artifact_store = artifact_store.clone();
 
@@ -95,6 +101,7 @@ pub(super) fn run_wasm_instance(
         stop_signal.clone(),
         force_refresh,
         Some(wasm_hash.clone()),
+        brrmmmm_config,
     )?;
 
     if let Err(error) = validate_params_contract(module, params_bytes.as_deref(), &policy) {
@@ -245,7 +252,7 @@ pub(super) fn run_wasm_instance(
             .unwrap_or(false);
 
         if should_persist {
-            if let Err(error) = persistence::save(&wasm_hash, &state) {
+            if let Err(error) = persistence::save(brrmmmm_config, &wasm_hash, &state) {
                 diag(
                     &event_sink,
                     &format!("[brrmmmm] failed to persist runtime state: {error:#}"),
@@ -545,7 +552,7 @@ mod tests {
                 abi_version: 1,
                 wasm_size_bytes: wat.len(),
                 wasm_hash: "test-wasm".to_string(),
-                module_hash: [0u8; 32],
+                module_hash: ModuleHash([0u8; 32]),
                 attestation_identity: None,
                 policy,
             },
@@ -557,6 +564,7 @@ mod tests {
                 stop_signal: stop_signal.clone(),
                 force_refresh,
             },
+            &crate::config::Config::load(),
         );
 
         stop_signal.store(true, Ordering::Relaxed);

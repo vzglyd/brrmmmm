@@ -94,7 +94,7 @@ impl BrowserSession {
             .new_headless_mode()
             .enable_request_intercept()
             .arg(format!("--user-agent={ua}"));
-        if browser_headless_disabled() {
+        if !lock_runtime(&self.shared, "host_state").config.browser_headless {
             config = config.with_head();
         }
         let config = config.build().map_err(|e| anyhow::anyhow!("{e}"))?;
@@ -680,18 +680,6 @@ fn base64_encode(bytes: &[u8]) -> String {
         }
     }
     out
-}
-
-fn browser_headless_disabled() -> bool {
-    std::env::var("BRRMMMM_BROWSER_HEADLESS")
-        .map(|value| {
-            let value = value.trim();
-            value == "0"
-                || value.eq_ignore_ascii_case("false")
-                || value.eq_ignore_ascii_case("no")
-                || value.eq_ignore_ascii_case("off")
-        })
-        .unwrap_or(false)
 }
 
 #[cfg(test)]
