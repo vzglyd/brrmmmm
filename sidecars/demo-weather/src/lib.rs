@@ -8,12 +8,13 @@ const DEFAULT_LAT: &str = "52.52";
 const DEFAULT_LON: &str = "13.41";
 const DEFAULT_LOCATION: &str = "Berlin";
 
-#[link(wasm_import_module = "vzglyd_host")]
+#[link(wasm_import_module = "brrmmmm_host")]
 unsafe extern "C" {
     fn host_call(ptr: i32, len: i32) -> i32;
     fn host_response_len() -> i32;
     fn host_response_read(ptr: i32, len: i32) -> i32;
     fn artifact_publish(kind_ptr: i32, kind_len: i32, data_ptr: i32, data_len: i32) -> i32;
+    fn mission_outcome_report(ptr: i32, len: i32) -> i32;
     fn log_info(ptr: i32, len: i32) -> i32;
     fn params_len() -> i32;
     fn params_read(ptr: i32, len: i32) -> i32;
@@ -25,22 +26,22 @@ struct WeatherParams {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn vzglyd_sidecar_abi_version() -> u32 {
-    2
+pub extern "C" fn brrmmmm_module_abi_version() -> u32 {
+    3
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn vzglyd_sidecar_describe_ptr() -> i32 {
+pub extern "C" fn brrmmmm_module_describe_ptr() -> i32 {
     DESCRIBE.as_ptr() as i32
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn vzglyd_sidecar_describe_len() -> i32 {
+pub extern "C" fn brrmmmm_module_describe_len() -> i32 {
     DESCRIBE.len() as i32
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn vzglyd_sidecar_start() {
+pub extern "C" fn brrmmmm_module_start() {
     let lat = env_var("LATITUDE").unwrap_or_else(|| DEFAULT_LAT.to_string());
     let lon = env_var("LONGITUDE").unwrap_or_else(|| DEFAULT_LON.to_string());
     let location = params_location_name()
@@ -112,6 +113,7 @@ pub extern "C" fn vzglyd_sidecar_start() {
         "is_day": cw.is_day == 1
     });
     publish("published_output", published.to_string().as_bytes());
+    report_outcome("published", "published_output", "weather module published output");
 
     log(format!("done: {location} {temp}°C {condition}", temp = cw.temperature).as_str());
 }
@@ -205,10 +207,21 @@ fn publish_error(location: &str, message: &str) {
     });
     let bytes = payload.to_string();
     publish("published_output", bytes.as_bytes());
+    report_outcome("terminal_failure", "weather_fetch_failed", message);
 }
 
 fn log(msg: &str) {
     unsafe { log_info(msg.as_ptr() as i32, msg.len() as i32) };
+}
+
+fn report_outcome(status: &str, reason_code: &str, message: &str) {
+    let outcome = format!(
+        r#"{{"status":"{status}","reason_code":"{reason_code}","message":{message_json},"primary_artifact_kind":"published_output"}}"#,
+        message_json = serde_json::Value::String(message.to_string()),
+    );
+    unsafe {
+        mission_outcome_report(outcome.as_ptr() as i32, outcome.len() as i32);
+    }
 }
 
 fn env_var(name: &str) -> Option<String> {

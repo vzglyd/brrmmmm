@@ -3,7 +3,7 @@ use std::path::Path;
 use brrmmmm::config::RuntimeLimits;
 use brrmmmm::error::{BrrmmmmError, BrrmmmmResult};
 
-pub(super) fn parse_env_vars(raw: &[String]) -> Vec<(String, String)> {
+pub(crate) fn parse_env_vars(raw: &[String]) -> Vec<(String, String)> {
     raw.iter()
         .filter_map(|value| {
             value
@@ -13,7 +13,7 @@ pub(super) fn parse_env_vars(raw: &[String]) -> Vec<(String, String)> {
         .collect()
 }
 
-pub(super) fn parse_params_bytes(
+pub(crate) fn parse_params_bytes(
     params_json: Option<&str>,
     params_file: Option<&Path>,
     limits: &RuntimeLimits,
@@ -41,12 +41,38 @@ pub(super) fn parse_params_bytes(
     let value: serde_json::Value = serde_json::from_slice(&raw).map_err(|error| {
         BrrmmmmError::ParamsInvalid(format!("params must be valid JSON: {error}"))
     })?;
+    validate_params_value(&value, limits)?;
+
+    serde_json::to_vec(&value)
+        .map(Some)
+        .map_err(|error| BrrmmmmError::ParamsInvalid(format!("serialize sidecar params: {error}")))
+}
+
+pub(crate) fn parse_params_value(
+    value: &serde_json::Value,
+    limits: &RuntimeLimits,
+) -> BrrmmmmResult<Vec<u8>> {
+    validate_params_value(value, limits)?;
+    let bytes = serde_json::to_vec(value).map_err(|error| {
+        BrrmmmmError::ParamsInvalid(format!("serialize sidecar params: {error}"))
+    })?;
+    if bytes.len() > limits.max_params_bytes {
+        return Err(BrrmmmmError::budget(
+            "params",
+            bytes.len(),
+            limits.max_params_bytes,
+        ));
+    }
+    Ok(bytes)
+}
+
+fn validate_params_value(value: &serde_json::Value, limits: &RuntimeLimits) -> BrrmmmmResult<()> {
     if !value.is_object() {
         return Err(BrrmmmmError::ParamsInvalid(
             "sidecar params must be a JSON object".to_string(),
         ));
     }
-    let depth = json_depth(&value);
+    let depth = json_depth(value);
     if depth > limits.max_json_depth {
         return Err(BrrmmmmError::budget(
             "params json depth",
@@ -54,10 +80,7 @@ pub(super) fn parse_params_bytes(
             limits.max_json_depth,
         ));
     }
-
-    serde_json::to_vec(&value)
-        .map(Some)
-        .map_err(|error| BrrmmmmError::ParamsInvalid(format!("serialize sidecar params: {error}")))
+    Ok(())
 }
 
 fn json_depth(value: &serde_json::Value) -> usize {

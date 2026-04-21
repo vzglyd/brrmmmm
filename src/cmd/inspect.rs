@@ -1,7 +1,7 @@
 use anyhow::Result;
 use std::path::Path;
 
-use brrmmmm::controller::inspect_wasm_contract;
+use brrmmmm::controller::inspect_module_contract;
 
 use crate::cli::OutputFormat;
 
@@ -9,7 +9,7 @@ use super::output::print_table;
 
 pub(crate) fn cmd_inspect(wasm_path: &Path, output: OutputFormat) -> Result<()> {
     let wasm_str = wasm_path.to_string_lossy();
-    let inspection = inspect_wasm_contract(&wasm_str)?;
+    let inspection = inspect_module_contract(&wasm_str)?;
 
     match output {
         OutputFormat::Json => {
@@ -34,6 +34,9 @@ pub(crate) fn cmd_inspect(wasm_path: &Path, output: OutputFormat) -> Result<()> 
                 "entrypoint:     {}",
                 inspection.entrypoint.as_deref().unwrap_or("-")
             );
+            if !inspection.host_imports.is_empty() {
+                println!("host_imports:   {}", inspection.host_imports.join(", "));
+            }
             if let Some(describe) = describe {
                 if let Some(poll) = &describe.poll_strategy {
                     println!("poll_strategy:  {poll}");
@@ -69,6 +72,9 @@ pub(crate) fn cmd_inspect(wasm_path: &Path, output: OutputFormat) -> Result<()> 
                     inspection.entrypoint.clone().unwrap_or_default(),
                 ),
             ];
+            if !inspection.host_imports.is_empty() {
+                rows.push(("host_imports", inspection.host_imports.join(", ")));
+            }
             if let Some(describe) = describe {
                 if let Some(poll) = &describe.poll_strategy {
                     rows.push(("poll_strategy", poll.to_string()));

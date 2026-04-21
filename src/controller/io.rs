@@ -2,7 +2,9 @@ use std::sync::{Arc, Mutex, MutexGuard};
 
 use wasmtime::{Caller, Engine, Linker, Store, StoreLimits, StoreLimitsBuilder};
 
-use crate::abi::{ArtifactMeta, SidecarPhase, SidecarRuntimeState};
+use crate::abi::{
+    ArtifactMeta, MissionOutcome, MissionOutcomeStatus, MissionPhase, MissionRuntimeState,
+};
 use crate::config::RuntimeLimits;
 use crate::events::{Event, EventSink, diag, now_ms, now_ts};
 use crate::host::host_request::ErrorKind;
@@ -22,7 +24,6 @@ pub(super) struct RuntimePolicy {
     pub(super) max_tables: usize,
     pub(super) max_params_bytes: usize,
     pub(super) max_describe_bytes: usize,
-    pub(super) legacy_configure_buffer: bool,
 }
 
 impl Default for RuntimePolicy {
@@ -37,7 +38,6 @@ impl Default for RuntimePolicy {
             max_tables: 8,
             max_params_bytes: 1024 * 1024,
             max_describe_bytes: 1024 * 1024,
-            legacy_configure_buffer: false,
         }
     }
 }
@@ -118,9 +118,9 @@ pub(super) fn lock_runtime<'a, T>(mutex: &'a Mutex<T>, name: &str) -> MutexGuard
 // ── Runtime state helpers ────────────────────────────────────────────
 
 pub(super) fn update_phase_state(
-    runtime_state: &Arc<Mutex<SidecarRuntimeState>>,
+    runtime_state: &Arc<Mutex<MissionRuntimeState>>,
     event_sink: &EventSink,
-    phase: SidecarPhase,
+    phase: MissionPhase,
 ) {
     let previous = {
         let mut state = lock_runtime(runtime_state, "runtime_state");
@@ -135,15 +135,15 @@ pub(super) fn update_phase_state(
         state.phase = phase.clone();
         prev
     };
-    tracing::trace!(from = ?previous, to = ?phase, "sidecar phase transition");
+    tracing::trace!(from = ?previous, to = ?phase, "mission phase transition");
     event_sink.emit(Event::Phase {
         ts: now_ts(),
         phase,
     });
 }
 
-fn is_valid_phase_transition(from: &SidecarPhase, to: &SidecarPhase) -> bool {
-    use SidecarPhase::*;
+fn is_valid_phase_transition(from: &MissionPhase, to: &MissionPhase) -> bool {
+    use MissionPhase::*;
     // Self-transitions are always valid (e.g. multiple artifact publishes in sequence).
     if from == to {
         return true;
@@ -168,38 +168,38 @@ fn is_valid_phase_transition(from: &SidecarPhase, to: &SidecarPhase) -> bool {
 }
 
 pub(super) fn update_sleep_state(
-    runtime_state: &Arc<Mutex<SidecarRuntimeState>>,
+    runtime_state: &Arc<Mutex<MissionRuntimeState>>,
     event_sink: &EventSink,
     duration_ms: u64,
     wake_ms: u64,
 ) {
     {
         let mut state = lock_runtime(runtime_state, "runtime_state");
-        if !is_valid_phase_transition(&state.phase, &SidecarPhase::CoolingDown) {
+        if !is_valid_phase_transition(&state.phase, &MissionPhase::CoolingDown) {
             let previous = state.phase.clone();
             drop(state);
             diag(
                 event_sink,
                 &format!(
                     "[brrmmmm] rejected invalid phase transition {previous:?} -> {:?}",
-                    SidecarPhase::CoolingDown
+                    MissionPhase::CoolingDown
                 ),
             );
             return;
         }
-        state.phase = SidecarPhase::CoolingDown;
+        state.phase = MissionPhase::CoolingDown;
         state.next_scheduled_poll_at_ms = Some(wake_ms);
         state.cooldown_until_ms = Some(wake_ms);
         state.backoff_ms = Some(duration_ms);
     }
     event_sink.emit(Event::Phase {
         ts: now_ts(),
-        phase: SidecarPhase::CoolingDown,
+        phase: MissionPhase::CoolingDown,
     });
 }
 
 pub(super) fn update_artifact_state(
-    runtime_state: &Arc<Mutex<SidecarRuntimeState>>,
+    runtime_state: &Arc<Mutex<MissionRuntimeState>>,
     meta: &ArtifactMeta,
 ) {
     let mut state = lock_runtime(runtime_state, "runtime_state");
@@ -215,12 +215,59 @@ pub(super) fn update_artifact_state(
     }
 }
 
-pub(super) fn update_failure_state(runtime_state: &Arc<Mutex<SidecarRuntimeState>>, error: &str) {
+pub(super) fn update_failure_state(runtime_state: &Arc<Mutex<MissionRuntimeState>>, error: &str) {
     let mut state = lock_runtime(runtime_state, "runtime_state");
-    state.phase = SidecarPhase::Failed;
+    state.phase = MissionPhase::Failed;
     state.last_failure_at_ms = Some(now_ms());
     state.consecutive_failures = state.consecutive_failures.saturating_add(1);
     state.last_error = Some(error.to_string());
+}
+
+pub(super) fn update_mission_outcome_state(
+    runtime_state: &Arc<Mutex<MissionRuntimeState>>,
+    event_sink: &EventSink,
+    outcome: MissionOutcome,
+    reported_by: &str,
+) {
+    let now = now_ms();
+    {
+        let mut state = lock_runtime(runtime_state, "runtime_state");
+        match outcome.status {
+            MissionOutcomeStatus::Published => {
+                state.phase = MissionPhase::Publishing;
+                state.last_success_at_ms = Some(now);
+                state.consecutive_failures = 0;
+                state.last_error = None;
+            }
+            MissionOutcomeStatus::RetryableFailure => {
+                state.phase = MissionPhase::Failed;
+                state.last_failure_at_ms = Some(now);
+                state.consecutive_failures = state.consecutive_failures.saturating_add(1);
+                state.last_error = Some(outcome.message.clone());
+                if let Some(retry_after_ms) = outcome.retry_after_ms {
+                    let wake_at = now.saturating_add(retry_after_ms);
+                    state.next_allowed_at_ms = Some(wake_at);
+                    state.cooldown_until_ms = Some(wake_at);
+                    state.backoff_ms = Some(retry_after_ms);
+                }
+            }
+            MissionOutcomeStatus::TerminalFailure
+            | MissionOutcomeStatus::OperatorActionRequired => {
+                state.phase = MissionPhase::Failed;
+                state.last_failure_at_ms = Some(now);
+                state.consecutive_failures = state.consecutive_failures.saturating_add(1);
+                state.last_error = Some(outcome.message.clone());
+            }
+        }
+        state.last_outcome = Some(outcome.clone());
+        state.last_outcome_at_ms = Some(now);
+        state.last_outcome_reported_by = Some(reported_by.to_string());
+    }
+    event_sink.emit(Event::MissionOutcome {
+        ts: now_ts(),
+        reported_by: reported_by.to_string(),
+        outcome,
+    });
 }
 
 // ── Memory helpers ───────────────────────────────────────────────────
@@ -325,32 +372,32 @@ mod tests {
     #[test]
     fn phase_transition_allows_expected_lifecycle() {
         assert!(is_valid_phase_transition(
-            &SidecarPhase::Idle,
-            &SidecarPhase::Fetching
+            &MissionPhase::Idle,
+            &MissionPhase::Fetching
         ));
         assert!(is_valid_phase_transition(
-            &SidecarPhase::Fetching,
-            &SidecarPhase::Parsing
+            &MissionPhase::Fetching,
+            &MissionPhase::Parsing
         ));
         assert!(is_valid_phase_transition(
-            &SidecarPhase::Parsing,
-            &SidecarPhase::Publishing
+            &MissionPhase::Parsing,
+            &MissionPhase::Publishing
         ));
         assert!(is_valid_phase_transition(
-            &SidecarPhase::Publishing,
-            &SidecarPhase::Idle
+            &MissionPhase::Publishing,
+            &MissionPhase::Idle
         ));
     }
 
     #[test]
     fn phase_transition_rejects_invalid_jump() {
         assert!(!is_valid_phase_transition(
-            &SidecarPhase::Idle,
-            &SidecarPhase::Parsing
+            &MissionPhase::Idle,
+            &MissionPhase::Parsing
         ));
         assert!(!is_valid_phase_transition(
-            &SidecarPhase::Parsing,
-            &SidecarPhase::Fetching
+            &MissionPhase::Parsing,
+            &MissionPhase::Fetching
         ));
     }
 }

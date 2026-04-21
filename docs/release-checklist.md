@@ -1,10 +1,10 @@
 # Release checklist
 
-This checklist defines "done enough to release" for brrmmmm.
+This is the minimum release bar for `brrmmmm`.
 
 ## Automated gate
 
-Run:
+Preferred:
 
 ```bash
 moon run core:ci
@@ -12,15 +12,7 @@ moon run core:docs
 moon run core:release-dry-run
 ```
 
-If Moon is not installed globally, use:
-
-```bash
-npx --package @moonrepo/cli@2.2.1 moon run core:ci
-npx --package @moonrepo/cli@2.2.1 moon run core:docs
-npx --package @moonrepo/cli@2.2.1 moon run core:release-dry-run
-```
-
-If Moon is unavailable on a machine, run the underlying commands:
+Fallback:
 
 ```bash
 cargo check
@@ -35,53 +27,45 @@ cargo package --allow-dirty
 
 The automated gate must prove:
 
-- The Rust CLI compiles.
-- Rust formatting and clippy pass with warnings denied.
-- Public API docs build cleanly with `missing_docs` denied.
-- The deterministic WASM fixture builds.
-- `validate`, `inspect`, `run --once`, and `run --once --events` work against the fixture.
-- The Ink TUI TypeScript build passes.
-- The Ink TUI tests pass.
-- Cargo packaging can be dry-run locally.
+- the runtime compiles and packages cleanly
+- docs build with `missing_docs` denied
+- the deterministic mission-module fixture builds
+- `validate`, `inspect`, `run --once`, `run --once --events`, and `explain` work against fixtures
+- the TUI build and tests pass
 
-## V1 hardening gate
+## Runtime invariants
 
-Accept the release only if these invariants are covered by tests:
+Do not release unless tests cover:
 
-- Missing persisted state and corrupted persisted state have distinct load results.
-- Runtime state writes use temp-file write, fsync, rename, and parent-directory fsync.
-- Identity creation uses a complete temp directory and never deletes an existing identity during create.
-- Identity repair is explicit; normal load does not repair mismatched public key files.
-- KV enforces configured key, value, and total byte limits, and failed persisted writes roll back in-memory mutations.
-- Params are bounded JSON objects with a configured depth limit.
-- Runtime phase transitions are validated before mutation.
-- Invalid configuration exits with a deterministic input/config exit code.
+- distinct handling for missing versus corrupted persisted state
+- atomic writes for runtime state, mission ledgers, and mission records
+- bounded params, artifacts, KV state, and host payloads
+- validated runtime phase transitions
+- deterministic config/input exit behavior
+- v3 ABI validation, including `brrmmmm_module_start` and `brrmmmm_host.mission_outcome_report`
+- durable mission-record generation for success, timeout, and failure paths
 
-## Manual real-sidecar gate
+## Manual real-mission gate
 
-Choose one real sidecar that represents normal production use. Do not put this in CI unless its secrets, network dependencies, and vendor uptime are stable.
+Choose one real mission module representative of production use.
 
 Run:
 
 ```bash
-brrmmmm validate path/to/sidecar.wasm
-brrmmmm inspect path/to/sidecar.wasm > inspect.json
-brrmmmm run path/to/sidecar.wasm --once > payload.json
-brrmmmm run path/to/sidecar.wasm --once --events > events.ndjson
-brrmmmm path/to/sidecar.wasm
+brrmmmm validate path/to/mission-module.wasm
+brrmmmm inspect path/to/mission-module.wasm > inspect.json
+brrmmmm run path/to/mission-module.wasm --once > payload.json
+brrmmmm run path/to/mission-module.wasm --once --result-path mission.json
+brrmmmm run path/to/mission-module.wasm --once --events > events.ndjson
+brrmmmm explain mission.json
+brrmmmm path/to/mission-module.wasm
 ```
 
 Accept the release only if:
 
-- `inspect.json` contains the real contract: modes, params, artifacts, polling, cooldown, and env vars.
-- `payload.json` is exactly the JSON the consumer should parse.
-- `events.ndjson` contains valid NDJSON with no raw payload line mixed into the stream.
-- The TUI explains how to consume `published_output`, lets params be edited, shows local clock time, and keeps the pipeline scrollable.
-- Failures point to the next developer action.
-
-## Release shape
-
-- Rust remains the canonical runtime and CLI.
-- The TypeScript Ink app remains the public TUI frontend for this release.
-- Moonrepo is the repo-level task manager across Rust, Node, and fixture builds.
-- Ratatui remains a future option, not a release blocker.
+- `inspect.json` contains the real contract, including host imports and artifacts
+- `payload.json` is the intended consumer payload
+- `mission.json` is a valid schema-v2 mission record with `outcome`, `host_decision`, and `explanation`
+- `events.ndjson` is valid NDJSON with no raw payload line mixed into the stream
+- `brrmmmm explain mission.json` gives the next operator action without replaying the mission
+- the TUI surfaces `published_output`, params, mission outcome, and logs coherently

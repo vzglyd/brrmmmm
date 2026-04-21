@@ -5,7 +5,7 @@ pub mod host_request;
 
 use std::sync::{Arc, Mutex};
 
-use crate::abi::SidecarDescribe;
+use crate::abi::MissionModuleDescribe;
 use crate::attestation::{self, EnvelopeFields, RequestBinding, SignedEnvelope};
 use crate::config::Config;
 use crate::events::now_ms;
@@ -56,7 +56,7 @@ impl ArtifactStore {
 
 // ── Shared state between host imports and the runner ────────────────
 
-/// State shared by all vzglyd_host import functions.
+/// State shared by all brrmmmm_host import functions.
 pub struct HostState {
     /// Named artifact store (replaces raw channel_data).
     pub artifact_store: Arc<Mutex<ArtifactStore>>,
@@ -114,7 +114,7 @@ impl HostState {
         }
     }
 
-    pub fn set_mission_describe(&mut self, describe: &SidecarDescribe) {
+    pub fn set_mission_describe(&mut self, describe: &MissionModuleDescribe) {
         self.mission.set_describe(describe);
     }
 

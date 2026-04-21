@@ -7,16 +7,18 @@ use anyhow::{Context, Result};
 use futures::FutureExt as _;
 use wasmtime::{Engine, Module};
 
-use crate::abi::{PersistenceAuthority, SidecarRuntimeState};
+use crate::abi::{MissionOutcome, MissionOutcomeStatus, MissionRuntimeState, PersistenceAuthority};
 use crate::events::{Event, EventSink, diag, now_ts};
 use crate::host::{ArtifactStore, HostState};
 use crate::identity::{InstallationIdentity, ModuleHash};
+use crate::mission_ledger;
 use crate::persistence;
 
-use super::host_imports::register_vzglyd_host_on_linker;
+use super::host_imports::register_brrmmmm_host_on_linker;
 use super::inspection::read_static_describe;
 use super::io::{
     RuntimePolicy, WasmLinker, WasmStore, build_wasm_store, lock_runtime, update_failure_state,
+    update_mission_outcome_state,
 };
 
 // ── WASM instance runner ─────────────────────────────────────────────
@@ -36,7 +38,7 @@ pub(super) struct WasmRunConfig {
 
 pub(super) struct WasmRunContext {
     pub(super) artifact_store: Arc<Mutex<ArtifactStore>>,
-    pub(super) runtime_state: Arc<Mutex<SidecarRuntimeState>>,
+    pub(super) runtime_state: Arc<Mutex<MissionRuntimeState>>,
     pub(super) params_state: Arc<Mutex<Option<Vec<u8>>>>,
     pub(super) event_sink: EventSink,
     pub(super) stop_signal: Arc<AtomicBool>,
@@ -83,7 +85,7 @@ pub(super) async fn run_wasm_instance(
     let mut linker = WasmLinker::new(engine);
     wasmtime_wasi::preview1::add_to_linker_async(&mut linker, |state| &mut state.wasi)?;
 
-    // Build host state and register all vzglyd_host imports.
+    // Build host state and register all brrmmmm_host imports.
     let mut host_state = HostState::new(
         log_channel,
         params_state,
@@ -94,7 +96,7 @@ pub(super) async fn run_wasm_instance(
     // Share the artifact_store from the controller.
     host_state.artifact_store = artifact_store.clone();
 
-    let shared_host_state = register_vzglyd_host_on_linker(
+    let shared_host_state = register_brrmmmm_host_on_linker(
         &mut linker,
         host_state,
         event_sink.clone(),
@@ -154,7 +156,7 @@ pub(super) async fn run_wasm_instance(
 
     let mut entry_timeout_secs = policy.default_acquisition_timeout_secs;
     let describe_result = run_guest_phase(
-        "read sidecar describe",
+        "read mission module describe",
         call_describe(&instance, &mut store, &policy),
     )
     .await;
@@ -174,11 +176,19 @@ pub(super) async fn run_wasm_instance(
                 let mut host = lock_runtime(&shared_host_state, "host_state");
                 host.set_mission_describe(&describe);
             }
-            lock_runtime(&runtime_state, "runtime_state").describe = Some(describe);
+            {
+                let mut state = lock_runtime(&runtime_state, "runtime_state");
+                state.describe = Some(describe.clone());
+                if let Ok(Some(ledger)) =
+                    mission_ledger::load(brrmmmm_config, &describe.logical_id, module_hash)
+                {
+                    mission_ledger::apply_to_runtime_state(&mut state, &ledger);
+                }
+            }
         }
         Ok(None) => diag(
             &event_sink,
-            "[brrmmmm] sidecar is missing static describe exports",
+            "[brrmmmm] mission module is missing static describe exports",
         ),
         Err(error) => {
             finish_failed_run(
@@ -205,7 +215,7 @@ pub(super) async fn run_wasm_instance(
         ),
     );
 
-    diag(&event_sink, "[brrmmmm] starting sidecar...");
+    diag(&event_sink, "[brrmmmm] starting mission module...");
 
     let entry_name = find_entry(&instance, &mut store);
 
@@ -219,7 +229,7 @@ pub(super) async fn run_wasm_instance(
         &format!("[brrmmmm] calling entry '{entry_name}' (runs until stopped)"),
     );
 
-    let call_result = run_guest_phase("execute sidecar entry", async {
+    let call_result = run_guest_phase("execute mission module entry", async {
         entry
             .call_async(&mut store, &[], &mut [])
             .await
@@ -233,7 +243,13 @@ pub(super) async fn run_wasm_instance(
         Err(e) if is_timeout_error(e) => "timeout",
         Err(_) => "error",
     };
-    event_sink.emit(Event::SidecarExit {
+    ensure_terminal_outcome(
+        &runtime_state,
+        &event_sink,
+        &artifact_store,
+        call_result.as_ref().err(),
+    );
+    event_sink.emit(Event::ModuleExit {
         ts: now_ts(),
         reason: reason.to_string(),
     });
@@ -264,6 +280,15 @@ pub(super) async fn run_wasm_instance(
             diag(
                 &event_sink,
                 &format!("[brrmmmm] failed to persist runtime state: {error:#}"),
+            );
+        }
+        if let Some(describe) = state.describe.as_ref()
+            && let Err(error) =
+                mission_ledger::save(brrmmmm_config, &describe.logical_id, module_hash, &state)
+        {
+            diag(
+                &event_sink,
+                &format!("[brrmmmm] failed to persist mission ledger: {error:#}"),
             );
         }
     } else {
@@ -343,7 +368,7 @@ fn is_timeout_error(error: &anyhow::Error) -> bool {
 }
 
 fn finish_failed_run(
-    runtime_state: &Arc<Mutex<SidecarRuntimeState>>,
+    runtime_state: &Arc<Mutex<MissionRuntimeState>>,
     event_sink: &EventSink,
     stop_signal: &Arc<AtomicBool>,
     artifact_store: &Arc<Mutex<ArtifactStore>>,
@@ -359,7 +384,8 @@ fn finish_failed_run(
         "error"
     };
     update_failure_state(runtime_state, &error.to_string());
-    event_sink.emit(Event::SidecarExit {
+    ensure_terminal_outcome(runtime_state, event_sink, artifact_store, Some(error));
+    event_sink.emit(Event::ModuleExit {
         ts: now_ts(),
         reason: reason.to_string(),
     });
@@ -395,7 +421,7 @@ fn validate_params_contract(
 
     if params.len() > policy.max_params_bytes {
         anyhow::bail!(
-            "sidecar params are {} bytes, exceeding the configured limit of {} bytes",
+            "mission params are {} bytes, exceeding the configured limit of {} bytes",
             params.len(),
             policy.max_params_bytes
         );
@@ -405,19 +431,8 @@ fn validate_params_contract(
         return Ok(());
     }
 
-    if module_exports_legacy_configure(module) {
-        let mode = if policy.legacy_configure_buffer {
-            "configured but disabled in this build"
-        } else {
-            "disabled"
-        };
-        anyhow::bail!(
-            "sidecar exposes legacy vzglyd_params_ptr/capacity/configure exports, but the raw configure buffer is {mode}; use vzglyd_host.params_len/params_read for production params"
-        );
-    }
-
     anyhow::bail!(
-        "sidecar params were provided, but the module does not import vzglyd_host.params_len and vzglyd_host.params_read"
+        "mission params were provided, but the module does not import brrmmmm_host.params_len and brrmmmm_host.params_read"
     );
 }
 
@@ -425,7 +440,7 @@ fn module_imports_host_params(module: &Module) -> bool {
     let mut has_len = false;
     let mut has_read = false;
     for import in module.imports() {
-        if import.module() != "vzglyd_host" {
+        if import.module() != "brrmmmm_host" {
             continue;
         }
         match import.name() {
@@ -437,23 +452,12 @@ fn module_imports_host_params(module: &Module) -> bool {
     has_len && has_read
 }
 
-fn module_exports_legacy_configure(module: &Module) -> bool {
-    [
-        "vzglyd_params_ptr",
-        "vzglyd_params_capacity",
-        "vzglyd_configure",
-    ]
-    .iter()
-    .any(|name| module.get_export(name).is_some())
-}
-
-// ── Entry point resolution ───────────────────────────────────────────
-
 fn find_entry(instance: &wasmtime::Instance, store: &mut WasmStore) -> Option<String> {
-    for name in &["vzglyd_sidecar_start", "_start", "main"] {
-        if instance.get_func(&mut *store, name).is_some() {
-            return Some(name.to_string());
-        }
+    if instance
+        .get_func(&mut *store, "brrmmmm_module_start")
+        .is_some()
+    {
+        return Some("brrmmmm_module_start".to_string());
     }
     None
 }
@@ -464,8 +468,69 @@ async fn call_describe(
     instance: &wasmtime::Instance,
     store: &mut WasmStore,
     policy: &RuntimePolicy,
-) -> Result<Option<crate::abi::SidecarDescribe>> {
+) -> Result<Option<crate::abi::MissionModuleDescribe>> {
     read_static_describe(instance, store, policy).await
+}
+
+fn ensure_terminal_outcome(
+    runtime_state: &Arc<Mutex<MissionRuntimeState>>,
+    event_sink: &EventSink,
+    artifact_store: &Arc<Mutex<ArtifactStore>>,
+    error: Option<&anyhow::Error>,
+) {
+    if lock_runtime(runtime_state, "runtime_state")
+        .last_outcome
+        .is_some()
+    {
+        return;
+    }
+
+    let artifact_kind = lock_runtime(artifact_store, "artifact_store")
+        .published_output
+        .as_ref()
+        .map(|artifact| artifact.kind.clone());
+
+    let synthesized = if let Some(error) = error {
+        if is_timeout_error(error) {
+            MissionOutcome {
+                status: MissionOutcomeStatus::RetryableFailure,
+                reason_code: "acquisition_timeout".to_string(),
+                message: format!("{error:#}"),
+                retry_after_ms: None,
+                operator_action: None,
+                primary_artifact_kind: artifact_kind,
+            }
+        } else {
+            MissionOutcome {
+                status: MissionOutcomeStatus::TerminalFailure,
+                reason_code: "runtime_error".to_string(),
+                message: format!("{error:#}"),
+                retry_after_ms: None,
+                operator_action: None,
+                primary_artifact_kind: artifact_kind,
+            }
+        }
+    } else if artifact_kind.is_some() {
+        MissionOutcome {
+            status: MissionOutcomeStatus::Published,
+            reason_code: "published_output".to_string(),
+            message: "mission module published an output artifact".to_string(),
+            retry_after_ms: None,
+            operator_action: None,
+            primary_artifact_kind: artifact_kind,
+        }
+    } else {
+        MissionOutcome {
+            status: MissionOutcomeStatus::TerminalFailure,
+            reason_code: "missing_outcome_report".to_string(),
+            message: "mission module exited without reporting a final outcome".to_string(),
+            retry_after_ms: None,
+            operator_action: None,
+            primary_artifact_kind: None,
+        }
+    };
+
+    update_mission_outcome_state(runtime_state, event_sink, synthesized, "host");
 }
 
 #[cfg(test)]
@@ -479,14 +544,14 @@ mod tests {
     use wasmtime::{Config, Engine, Module};
 
     use super::*;
-    use crate::abi::SidecarRuntimeState;
+    use crate::abi::MissionRuntimeState;
 
     fn describe_json(acquisition_timeout_secs: Option<u32>) -> String {
         let acquisition = acquisition_timeout_secs
             .map(|value| value.to_string())
             .unwrap_or_else(|| "null".to_string());
         format!(
-            r#"{{"schema_version":1,"logical_id":"test.sidecar","name":"Test Sidecar","description":"test sidecar","abi_version":2,"run_modes":["managed_polling"],"state_persistence":"volatile","required_env_vars":[],"optional_env_vars":[],"params":{{"fields":[]}},"capabilities_needed":[],"poll_strategy":null,"cooldown_policy":null,"artifact_types":["published_output"],"acquisition_timeout_secs":{acquisition}}}"#
+            r#"{{"schema_version":1,"logical_id":"test.mission","name":"Test Mission Module","description":"test mission module","abi_version":3,"run_modes":["managed_polling"],"state_persistence":"volatile","required_env_vars":[],"optional_env_vars":[],"params":{{"fields":[]}},"capabilities_needed":[],"poll_strategy":null,"cooldown_policy":null,"artifact_types":["published_output"],"acquisition_timeout_secs":{acquisition}}}"#
         )
     }
 
@@ -509,13 +574,13 @@ mod tests {
                 (memory (export "memory") 1)
                 (data (i32.const 16) "{describe_data}")
                 (data (i32.const 1024) "published_output")
-                (func (export "vzglyd_sidecar_abi_version") (result i32)
-                    i32.const 2)
-                (func (export "vzglyd_sidecar_describe_ptr") (result i32)
+                (func (export "brrmmmm_module_abi_version") (result i32)
+                    i32.const 3)
+                (func (export "brrmmmm_module_describe_ptr") (result i32)
                     i32.const 16)
-                (func (export "vzglyd_sidecar_describe_len") (result i32)
+                (func (export "brrmmmm_module_describe_len") (result i32)
                     i32.const {describe_len})
-                (func (export "vzglyd_sidecar_start")
+                (func (export "brrmmmm_module_start")
                     {start_body})
             )"#
         )
@@ -527,7 +592,7 @@ mod tests {
         policy: RuntimePolicy,
     ) -> (
         Result<()>,
-        Arc<Mutex<SidecarRuntimeState>>,
+        Arc<Mutex<MissionRuntimeState>>,
         Arc<Mutex<ArtifactStore>>,
     ) {
         let mut engine_config = Config::new();
@@ -537,7 +602,7 @@ mod tests {
         let module = Module::new(&engine, wat).expect("test module");
 
         let artifact_store = Arc::new(Mutex::new(ArtifactStore::default()));
-        let runtime_state = Arc::new(Mutex::new(SidecarRuntimeState::default()));
+        let runtime_state = Arc::new(Mutex::new(MissionRuntimeState::default()));
         let params_state = Arc::new(Mutex::new(params_bytes.clone()));
         let event_sink = EventSink::noop();
         let stop_signal = Arc::new(AtomicBool::new(false));
@@ -564,7 +629,7 @@ mod tests {
                 env_vars: Vec::new(),
                 params_bytes,
                 log_channel: false,
-                abi_version: 2,
+                abi_version: 3,
                 wasm_size_bytes: wat.len(),
                 wasm_hash: "test-wasm".to_string(),
                 module_hash: ModuleHash([0u8; 32]),
@@ -592,9 +657,9 @@ mod tests {
         let params = br#"{"location":"Daylesford"}"#.to_vec();
         let wat = wat_module(
             r#"
-                (import "vzglyd_host" "params_len" (func $params_len (result i32)))
-                (import "vzglyd_host" "params_read" (func $params_read (param i32 i32) (result i32)))
-                (import "vzglyd_host" "artifact_publish" (func $artifact_publish (param i32 i32 i32 i32) (result i32)))
+                (import "brrmmmm_host" "params_len" (func $params_len (result i32)))
+                (import "brrmmmm_host" "params_read" (func $params_read (param i32 i32) (result i32)))
+                (import "brrmmmm_host" "artifact_publish" (func $artifact_publish (param i32 i32 i32 i32) (result i32)))
             "#,
             r#"
                 (local $len i32)
@@ -628,21 +693,15 @@ mod tests {
     }
 
     #[test]
-    fn params_with_legacy_configure_exports_are_rejected() {
-        let wat = wat_module("", "", &describe_json(None)).replace(
-            "(func (export \"vzglyd_sidecar_start\")",
-            r#"(func (export "vzglyd_params_ptr") (result i32) i32.const 2048)
-                (func (export "vzglyd_params_capacity") (result i32) i32.const 64)
-                (func (export "vzglyd_configure") (param i32) (result i32) i32.const 0)
-                (func (export "vzglyd_sidecar_start")"#,
-        );
+    fn params_without_host_imports_are_rejected() {
+        let wat = wat_module("", "", &describe_json(None));
 
         let (result, runtime_state, _artifact_store) =
             run_test_wat(&wat, Some(br#"{"x":1}"#.to_vec()), RuntimePolicy::default());
 
-        let error = result.expect_err("legacy params should fail");
+        let error = result.expect_err("params should fail without host imports");
         let error_message = error.to_string();
-        assert!(error_message.contains("legacy vzglyd_params_ptr"));
+        assert!(error_message.contains("does not import brrmmmm_host.params_len"));
         assert_eq!(
             lock_runtime(&runtime_state, "runtime_state")
                 .last_error
@@ -655,7 +714,7 @@ mod tests {
     fn oversized_params_are_rejected_before_guest_execution() {
         let module = Module::new(
             &Engine::default(),
-            "(module (func (export \"vzglyd_sidecar_start\")))",
+            "(module (func (export \"brrmmmm_module_start\")))",
         )
         .expect("test module");
         let policy = RuntimePolicy {

@@ -8,33 +8,34 @@ const DESCRIBE: &[u8] = include_bytes!("describe.json");
 const STEP_DELAY_MS: i64 = 1_000;
 const FINAL_DELAY_MS: i64 = 2_500;
 
-#[link(wasm_import_module = "vzglyd_host")]
+#[link(wasm_import_module = "brrmmmm_host")]
 unsafe extern "C" {
     fn host_call(ptr: i32, len: i32) -> i32;
     fn host_response_len() -> i32;
     fn host_response_read(ptr: i32, len: i32) -> i32;
     fn artifact_publish(kind_ptr: i32, kind_len: i32, data_ptr: i32, data_len: i32) -> i32;
+    fn mission_outcome_report(ptr: i32, len: i32) -> i32;
     fn log_info(ptr: i32, len: i32) -> i32;
     fn sleep_ms(duration_ms: i64) -> i32;
 }
 
 #[no_mangle]
-pub extern "C" fn vzglyd_sidecar_abi_version() -> u32 {
-    2
+pub extern "C" fn brrmmmm_module_abi_version() -> u32 {
+    3
 }
 
 #[no_mangle]
-pub extern "C" fn vzglyd_sidecar_describe_ptr() -> i32 {
+pub extern "C" fn brrmmmm_module_describe_ptr() -> i32 {
     DESCRIBE.as_ptr() as i32
 }
 
 #[no_mangle]
-pub extern "C" fn vzglyd_sidecar_describe_len() -> i32 {
+pub extern "C" fn brrmmmm_module_describe_len() -> i32 {
     DESCRIBE.len() as i32
 }
 
 #[no_mangle]
-pub extern "C" fn vzglyd_sidecar_start() {
+pub extern "C" fn brrmmmm_module_start() {
     let page_url = data_url(concat!(
         "<style>",
         "body{font-family:Arial,sans-serif;background:#f7f7fb;display:grid;place-items:center;min-height:100vh;margin:0;}",
@@ -104,6 +105,7 @@ fn run(page_url: &str) -> Result<(), String> {
     log("done — publishing result");
     let out = format!(r#"{{"ok":true,"logged_in":true,"url":"{url}"}}"#);
     publish("published_output", out.as_bytes());
+    report_outcome("published", "published_output", "browser login fixture published output");
     Ok(())
 }
 
@@ -162,6 +164,16 @@ fn publish(kind: &str, data: &[u8]) {
 fn publish_failure(msg: &str) {
     let json = format!(r#"{{"ok":false,"error":{msg:?}}}"#);
     publish("published_output", json.as_bytes());
+    report_outcome("terminal_failure", "browser_login_failed", msg);
+}
+
+fn report_outcome(status: &str, reason_code: &str, message: &str) {
+    let outcome = format!(
+        r#"{{"status":"{status}","reason_code":"{reason_code}","message":{message:?},"primary_artifact_kind":"published_output"}}"#
+    );
+    unsafe {
+        mission_outcome_report(outcome.as_ptr() as i32, outcome.len() as i32);
+    }
 }
 
 fn log(msg: &str) {

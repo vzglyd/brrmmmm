@@ -1,6 +1,6 @@
 //! Structured runtime, configuration, and persistence errors for `brrmmmm`.
 
-use crate::abi::SidecarPhase;
+use crate::abi::MissionPhase;
 
 /// Convenience alias for results that return [`BrrmmmmError`].
 pub type BrrmmmmResult<T> = Result<T, BrrmmmmError>;
@@ -76,9 +76,9 @@ pub enum BrrmmmmError {
     #[error("invalid phase transition: {from:?} -> {to:?}")]
     InvalidTransition {
         /// Source lifecycle phase.
-        from: SidecarPhase,
+        from: MissionPhase,
         /// Target lifecycle phase.
-        to: SidecarPhase,
+        to: MissionPhase,
     },
     /// CLI params or sidecar-supplied params were invalid.
     #[error("invalid params: {0}")]

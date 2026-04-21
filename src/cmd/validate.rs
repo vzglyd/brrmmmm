@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 use std::path::Path;
 
-use brrmmmm::controller::{inspect_wasm_contract, validate_inspection};
+use brrmmmm::controller::{inspect_module_contract, validate_module_inspection};
 
 use crate::cli::OutputFormat;
 
@@ -9,9 +9,9 @@ use super::output::print_table;
 
 pub(crate) fn cmd_validate(wasm_path: &Path, output: OutputFormat) -> Result<()> {
     let wasm_str = wasm_path.to_string_lossy();
-    let inspection = inspect_wasm_contract(&wasm_str)
+    let inspection = inspect_module_contract(&wasm_str)
         .with_context(|| format!("WASM module failed to compile/validate: {wasm_str}"))?;
-    validate_inspection(&inspection)?;
+    validate_module_inspection(&inspection)?;
 
     match output {
         OutputFormat::Text => {
@@ -38,6 +38,12 @@ pub(crate) fn cmd_validate(wasm_path: &Path, output: OutputFormat) -> Result<()>
                     inspection.brrmmmm_exports.join(", ")
                 );
             }
+            if !inspection.host_imports.is_empty() {
+                eprintln!(
+                    "[brrmmmm]   host imports: {}",
+                    inspection.host_imports.join(", ")
+                );
+            }
         }
         OutputFormat::Json => {
             let describe = inspection.describe.as_ref();
@@ -50,6 +56,7 @@ pub(crate) fn cmd_validate(wasm_path: &Path, output: OutputFormat) -> Result<()>
                 "logical_id": describe.map(|value| &value.logical_id),
                 "modes": describe.map(|value| &value.run_modes),
                 "exports": inspection.brrmmmm_exports,
+                "host_imports": inspection.host_imports,
             });
             println!("{}", serde_json::to_string_pretty(&obj)?);
         }
@@ -73,6 +80,9 @@ pub(crate) fn cmd_validate(wasm_path: &Path, output: OutputFormat) -> Result<()>
             }
             if !inspection.brrmmmm_exports.is_empty() {
                 rows.push(("exports", inspection.brrmmmm_exports.join(", ")));
+            }
+            if !inspection.host_imports.is_empty() {
+                rows.push(("host_imports", inspection.host_imports.join(", ")));
             }
             print_table(&rows);
         }

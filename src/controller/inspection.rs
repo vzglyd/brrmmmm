@@ -1,4 +1,4 @@
-//! WASM sidecar inspection and contract validation.
+//! WASM mission-module inspection and contract validation.
 
 use std::sync::{Arc, Mutex, atomic::AtomicBool};
 
@@ -6,46 +6,48 @@ use anyhow::{Context, Result};
 use serde::Serialize;
 use wasmtime::{Config, Engine, Module};
 
-use crate::abi::{ABI_VERSION_V2, ActiveMode, SidecarDescribe, SidecarRuntimeState};
+use crate::abi::{ABI_VERSION_V3, ActiveMode, MissionModuleDescribe, MissionRuntimeState};
 use crate::events::EventSink;
 use crate::host::HostState;
 
-use super::host_imports::register_vzglyd_host_on_linker;
+use super::host_imports::register_brrmmmm_host_on_linker;
 use super::io::{RuntimePolicy, WasmLinker, WasmStore, build_wasm_store};
 
 // ── Inspection ───────────────────────────────────────────────────────
 
-/// Summary of the static contract discovered in a sidecar WASM module.
+/// Summary of the static contract discovered in a mission-module WASM module.
 #[derive(Debug, Clone, Serialize)]
-pub struct SidecarInspection {
+pub struct MissionInspection {
     /// Path to the inspected WASM module.
     pub wasm_path: String,
     /// WASM file size in bytes.
     pub wasm_size_bytes: usize,
-    /// ABI version exported by the sidecar.
+    /// ABI version exported by the mission module.
     pub abi_version: u32,
     /// Runtime mode inferred for inspection output.
     pub active_mode: ActiveMode,
     /// Recognized entrypoint export, when one exists.
     pub entrypoint: Option<String>,
-    /// Export names in the `brrmmmm`/`vzglyd` host namespace.
+    /// Export names in the `brrmmmm_*` namespace.
     pub brrmmmm_exports: Vec<String>,
-    /// Static describe contract when the sidecar exports one.
-    pub describe: Option<SidecarDescribe>,
+    /// Imported names from the `brrmmmm_host` namespace.
+    pub host_imports: Vec<String>,
+    /// Static describe contract when the mission module exports one.
+    pub describe: Option<MissionModuleDescribe>,
     /// Non-fatal inspection warnings and omissions.
     pub diagnostics: Vec<String>,
 }
 
-/// Inspect a sidecar WASM module without executing an acquisition mission.
-pub fn inspect_wasm_contract(wasm_path: &str) -> Result<SidecarInspection> {
+/// Inspect a mission-module WASM module without executing an acquisition mission.
+pub fn inspect_module_contract(wasm_path: &str) -> Result<MissionInspection> {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .context("build tokio runtime for inspection")?;
-    runtime.block_on(inspect_wasm_contract_async(wasm_path))
+    runtime.block_on(inspect_module_contract_async(wasm_path))
 }
 
-async fn inspect_wasm_contract_async(wasm_path: &str) -> Result<SidecarInspection> {
+async fn inspect_module_contract_async(wasm_path: &str) -> Result<MissionInspection> {
     let wasm_bytes =
         std::fs::read(wasm_path).with_context(|| format!("read WASM file: {wasm_path}"))?;
 
@@ -58,63 +60,82 @@ async fn inspect_wasm_contract_async(wasm_path: &str) -> Result<SidecarInspectio
 
     let has_abi_export = module
         .exports()
-        .any(|e| e.name() == "vzglyd_sidecar_abi_version");
+        .any(|e| e.name() == "brrmmmm_module_abi_version");
     if !has_abi_export {
         anyhow::bail!(
-            "WASM module does not export vzglyd_sidecar_abi_version; supported ABI version is {ABI_VERSION_V2}"
+            "WASM module does not export brrmmmm_module_abi_version; supported ABI version is {ABI_VERSION_V3}"
         );
     }
 
     let (mut store, instance) = instantiate_for_inspection(&engine, &module).await?;
     let exported_abi = call_exported_abi_version(&instance, &mut store).await?;
-    if exported_abi != ABI_VERSION_V2 {
+    if exported_abi != ABI_VERSION_V3 {
         anyhow::bail!(
-            "unsupported sidecar ABI version {exported_abi}; supported ABI version is {ABI_VERSION_V2}"
+            "unsupported mission-module ABI version {exported_abi}; supported ABI version is {ABI_VERSION_V3}"
         );
     }
 
     let entrypoint = find_entry_export(&module);
     let brrmmmm_exports = brrmmmm_exports(&module);
+    let host_imports = brrmmmm_host_imports(&module);
     let mut diagnostics = Vec::new();
 
     let describe =
         match read_static_describe(&instance, &mut store, &RuntimePolicy::default()).await? {
             Some(describe) => Some(describe),
             None => {
-                diagnostics
-                    .push("sidecar is missing vzglyd_sidecar_describe_ptr/len exports".to_string());
+                diagnostics.push(
+                    "mission module is missing brrmmmm_module_describe_ptr/len exports".to_string(),
+                );
                 None
             }
         };
+    if !host_imports
+        .iter()
+        .any(|name| name == "mission_outcome_report")
+    {
+        diagnostics.push(
+            "mission module is missing required brrmmmm_host.mission_outcome_report import"
+                .to_string(),
+        );
+    }
 
-    Ok(SidecarInspection {
+    Ok(MissionInspection {
         wasm_path: wasm_path.to_string(),
         wasm_size_bytes: wasm_bytes.len(),
         abi_version: exported_abi,
         active_mode: ActiveMode::ManagedPolling,
         entrypoint,
         brrmmmm_exports,
+        host_imports,
         describe,
         diagnostics,
     })
 }
 
 /// Validate that an inspection result satisfies the minimum runnable contract.
-pub fn validate_inspection(inspection: &SidecarInspection) -> Result<()> {
+pub fn validate_module_inspection(inspection: &MissionInspection) -> Result<()> {
     if inspection.entrypoint.is_none() {
-        anyhow::bail!("WASM module has no recognised entry point");
+        anyhow::bail!("WASM module must export brrmmmm_module_start");
     }
 
     let describe = inspection
         .describe
         .as_ref()
-        .context("sidecar must export a valid static describe contract")?;
+        .context("mission module must export a valid static describe contract")?;
     validate_describe_contract(describe)?;
+    if !inspection
+        .host_imports
+        .iter()
+        .any(|name| name == "mission_outcome_report")
+    {
+        anyhow::bail!("mission module must import brrmmmm_host.mission_outcome_report");
+    }
 
     Ok(())
 }
 
-fn validate_describe_contract(describe: &SidecarDescribe) -> Result<()> {
+fn validate_describe_contract(describe: &MissionModuleDescribe) -> Result<()> {
     if describe.schema_version == 0 {
         anyhow::bail!("describe.schema_version must be greater than zero");
     }
@@ -127,9 +148,9 @@ fn validate_describe_contract(describe: &SidecarDescribe) -> Result<()> {
     if describe.description.trim().is_empty() {
         anyhow::bail!("describe.description is required");
     }
-    if describe.abi_version != 0 && describe.abi_version != ABI_VERSION_V2 {
+    if describe.abi_version != 0 && describe.abi_version != ABI_VERSION_V3 {
         anyhow::bail!(
-            "describe.abi_version must be {ABI_VERSION_V2} when present, got {}",
+            "describe.abi_version must be {ABI_VERSION_V3} when present, got {}",
             describe.abi_version
         );
     }
@@ -165,9 +186,9 @@ async fn instantiate_for_inspection(
     let mut linker = WasmLinker::new(engine);
     wasmtime_wasi::preview1::add_to_linker_async(&mut linker, |state| &mut state.wasi)?;
 
-    let runtime_state = Arc::new(Mutex::new(SidecarRuntimeState::default()));
+    let runtime_state = Arc::new(Mutex::new(MissionRuntimeState::default()));
     let config = crate::config::Config::load().context("load brrmmmm config for inspection")?;
-    let _shared_host_state = register_vzglyd_host_on_linker(
+    let _shared_host_state = register_brrmmmm_host_on_linker(
         &mut linker,
         HostState::new(
             false,
@@ -196,24 +217,24 @@ async fn call_exported_abi_version(
     store: &mut WasmStore,
 ) -> Result<u32> {
     let abi_fn = instance
-        .get_typed_func::<(), u32>(&mut *store, "vzglyd_sidecar_abi_version")
-        .context("sidecar must export callable vzglyd_sidecar_abi_version() -> u32")?;
+        .get_typed_func::<(), u32>(&mut *store, "brrmmmm_module_abi_version")
+        .context("mission module must export callable brrmmmm_module_abi_version() -> u32")?;
     abi_fn
         .call_async(store, ())
         .await
-        .context("call vzglyd_sidecar_abi_version")
+        .context("call brrmmmm_module_abi_version")
 }
 
 pub(super) async fn read_static_describe(
     instance: &wasmtime::Instance,
     store: &mut WasmStore,
     policy: &RuntimePolicy,
-) -> Result<Option<SidecarDescribe>> {
+) -> Result<Option<MissionModuleDescribe>> {
     let ptr_fn = instance
-        .get_typed_func::<(), i32>(&mut *store, "vzglyd_sidecar_describe_ptr")
+        .get_typed_func::<(), i32>(&mut *store, "brrmmmm_module_describe_ptr")
         .ok();
     let len_fn = instance
-        .get_typed_func::<(), i32>(&mut *store, "vzglyd_sidecar_describe_len")
+        .get_typed_func::<(), i32>(&mut *store, "brrmmmm_module_describe_len")
         .ok();
     let (Some(ptr_fn), Some(len_fn)) = (ptr_fn, len_fn) else {
         return Ok(None);
@@ -222,47 +243,51 @@ pub(super) async fn read_static_describe(
     let ptr = ptr_fn
         .call_async(&mut *store, ())
         .await
-        .context("call vzglyd_sidecar_describe_ptr")?;
+        .context("call brrmmmm_module_describe_ptr")?;
     let len = len_fn
         .call_async(&mut *store, ())
         .await
-        .context("call vzglyd_sidecar_describe_len")?;
+        .context("call brrmmmm_module_describe_len")?;
     if ptr < 0 || len <= 0 {
         anyhow::bail!("invalid describe memory range: ptr={ptr}, len={len}");
     }
     if len as usize > policy.max_describe_bytes {
         anyhow::bail!(
-            "sidecar describe is {len} bytes, exceeding the configured limit of {} bytes",
+            "mission describe is {len} bytes, exceeding the configured limit of {} bytes",
             policy.max_describe_bytes
         );
     }
 
     let memory = instance
         .get_memory(&mut *store, "memory")
-        .context("sidecar describe requires exported memory")?;
+        .context("mission describe requires exported memory")?;
     let mut bytes = vec![0; len as usize];
     memory
         .read(&mut *store, ptr as usize, &mut bytes)
-        .context("read sidecar describe bytes")?;
-    let describe = serde_json::from_slice::<SidecarDescribe>(&bytes)
-        .context("decode sidecar describe JSON")?;
+        .context("read mission describe bytes")?;
+    let describe = serde_json::from_slice::<MissionModuleDescribe>(&bytes)
+        .context("decode mission describe JSON")?;
     Ok(Some(describe))
 }
 
 fn brrmmmm_exports(module: &Module) -> Vec<String> {
     module
         .exports()
-        .filter(|e| {
-            let n = e.name();
-            n.starts_with("vzglyd_") || n == "_start" || n == "main"
-        })
+        .filter(|e| e.name().starts_with("brrmmmm_"))
         .map(|e| e.name().to_string())
         .collect()
 }
 
+fn brrmmmm_host_imports(module: &Module) -> Vec<String> {
+    module
+        .imports()
+        .filter(|import| import.module() == "brrmmmm_host")
+        .map(|import| import.name().to_string())
+        .collect()
+}
+
 fn find_entry_export(module: &Module) -> Option<String> {
-    ["vzglyd_sidecar_start", "_start", "main"]
-        .iter()
-        .find(|name| module.get_export(name).is_some())
-        .map(|name| (*name).to_string())
+    module
+        .get_export("brrmmmm_module_start")
+        .map(|_| "brrmmmm_module_start".to_string())
 }

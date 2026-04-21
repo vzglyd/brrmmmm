@@ -1,58 +1,60 @@
 # brrmmmm frontend protocol
 
-The Rust CLI is the canonical runtime. Frontends, including the Ink TUI, talk to it through a small stdio protocol instead of scraping terminal output.
+The Rust CLI is the canonical runtime. Frontends talk to it over stdio rather
+than scraping terminal output.
 
 ## Starting the backend
 
 ```bash
-brrmmmm run sidecar.wasm --events [--env KEY=VALUE ...] [--params-json '{"key":"value"}']
+brrmmmm run mission-module.wasm --once --events [--env KEY=VALUE ...] [--params-json '{"key":"value"}']
 ```
 
-In `--events` mode, stdout is newline-delimited JSON. Stderr is reserved for process-level failures. Frontends must treat every stdout line as one JSON event.
+In `--events` mode, stdout is NDJSON. Stderr is reserved for process-level
+failures.
 
 ## Commands
 
-Frontends send commands to backend stdin:
+Frontends may write commands to stdin:
 
 | Command | Meaning |
 |---|---|
-| `force` | Skip the current sleep and poll as soon as the sidecar reaches a host-controlled sleep point. |
+| `force` | Skip the current host-controlled sleep and continue as soon as the runtime reaches the next sleep point. |
 | `params_json <json-object>` | Replace host-owned params and request a refresh. |
 
 Invalid commands are ignored unless the backend emits a `log` event.
 
 ## Events
 
-Events use the Rust `Event` enum shape in `src/events.rs`. Current frontends should handle at least:
+Frontends should handle at least these event types:
 
-| Event | Required frontend behavior |
+| Event | Meaning |
 |---|---|
-| `env_snapshot` | Show which passed env vars are present. |
-| `started` | Record WASM path, size, and ABI version. |
-| `describe` | Render the sidecar contract, params, modes, artifacts, and polling strategy. |
-| `phase` | Update canonical runtime phase. |
-| `request_start` | Add or update the current network request. |
-| `request_done` | Mark the request as completed. |
-| `request_error` | Mark the request as failed; no matching `request_done` is emitted for transport failures. |
-| `artifact_received` | Update artifact panes and published output state. |
-| `sleep_start` | Start countdown to the next poll. |
-| `log` | Append to the log strip. |
-| `sidecar_exit` | Mark the backend as stopped. |
+| `env_snapshot` | Which configured env vars are present. |
+| `started` | Loaded module path, size, and ABI version. |
+| `describe` | Static mission-module contract. |
+| `phase` | Canonical runtime phase update. |
+| `request_start` / `request_done` / `request_error` | Network request lifecycle. |
+| `artifact_received` | New `raw_source_payload`, `normalized_payload`, or `published_output`. |
+| `sleep_start` | Runtime entered a managed cooldown or backoff. |
+| `mission_outcome` | Final typed mission outcome, reported by the module or synthesized by the host. |
+| `module_exit` | Wasm execution terminated. |
+| `log` | Runtime or mission-module log line. |
 
 ## Output contract
 
-Application code should consume `published_output`.
+Application code should treat `published_output` as the primary payload.
 
-- `brrmmmm run sidecar.wasm --once` prints only `published_output` bytes to stdout.
-- `brrmmmm run sidecar.wasm --once --events` prints only NDJSON events to stdout; the payload is available inside the `artifact_received` event for `published_output`.
-- `raw_source_payload` and `normalized_payload` are debugging artifacts, not the primary consumer contract.
+- `brrmmmm run mission-module.wasm --once` prints only `published_output` bytes to stdout when no result file is configured.
+- `brrmmmm run mission-module.wasm --once --result-path mission.json` writes a durable mission record and keeps stdout empty.
+- `brrmmmm run mission-module.wasm --once --events` prints only NDJSON events to stdout.
+- `brrmmmm run mission-module.wasm --once --events --result-path mission.json` keeps stdout as NDJSON and still writes the mission record file.
+
+`raw_source_payload` and `normalized_payload` are diagnostic artifacts, not the
+primary consumer contract.
 
 ## Runtime modes
 
-| Mode | Developer expectation |
+| Mode | Meaning |
 |---|---|
-| `v1_legacy` | No reliable static manifest. Treat output as opaque JSON and validate in the consumer. **Frontend-inferred** — this state is detected by the absence of a static describe contract; sidecars do not declare it in `run_modes` (doing so would fail validation). |
-| `managed_polling` | Sidecar declares params, artifacts, polling, cooldown, and capabilities. Use `inspect` as the contract. |
-| `interactive` | Params can change while the sidecar is alive. Sidecars should read `params_len`/`params_read` each cycle. |
-
-Future frontends, including a possible Ratatui frontend, should implement this protocol rather than bind to Ink internals.
+| `managed_polling` | The module declares params, artifacts, cooldown policy, and capabilities; `inspect` is the contract source. |
+| `interactive` | Params may change while the module is alive; the module should re-read `params_len` / `params_read`. |

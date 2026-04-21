@@ -3,7 +3,7 @@ use std::sync::{Arc, Mutex, atomic::AtomicU64};
 
 use anyhow::Result;
 
-use crate::abi::SidecarRuntimeState;
+use crate::abi::MissionRuntimeState;
 use crate::events::{EventSink, diag};
 use crate::host::HostState;
 use crate::host::host_call::{HostCall, decode_call, encode_result};
@@ -20,7 +20,7 @@ pub(super) fn register(
     linker: &mut WasmLinker,
     shared: Arc<Mutex<HostState>>,
     event_sink: EventSink,
-    runtime_state: Arc<Mutex<SidecarRuntimeState>>,
+    runtime_state: Arc<Mutex<MissionRuntimeState>>,
     request_counter: Arc<AtomicU64>,
     network: Arc<NetworkSession>,
     browser: SharedBrowserSession,
@@ -34,7 +34,7 @@ pub(super) fn register(
     let call_browser = browser.clone();
     let call_ai = ai.clone();
     linker.func_wrap_async(
-        "vzglyd_host",
+        "brrmmmm_host",
         "host_call",
         move |mut caller: WasmCaller<'_>, (ptr, len): (i32, i32)| {
             let shared = call_shared.clone();
@@ -113,14 +113,14 @@ pub(super) fn register(
 
     let len_shared = shared.clone();
     linker.func_wrap(
-        "vzglyd_host",
+        "brrmmmm_host",
         "host_response_len",
         move |_caller: WasmCaller<'_>| -> i32 { pending_response_len(&len_shared).unwrap_or(0) },
     )?;
 
     let read_shared = shared.clone();
     linker.func_wrap(
-        "vzglyd_host",
+        "brrmmmm_host",
         "host_response_read",
         move |mut caller: WasmCaller<'_>, ptr: i32, len: i32| -> i32 {
             let Some(data_len) = pending_response_len(&read_shared) else {
@@ -151,7 +151,7 @@ async fn dispatch(
     call: HostCall,
     shared: &Arc<Mutex<HostState>>,
     event_sink: &EventSink,
-    runtime_state: &Arc<Mutex<SidecarRuntimeState>>,
+    runtime_state: &Arc<Mutex<MissionRuntimeState>>,
     request_counter: &Arc<AtomicU64>,
     network: &Arc<NetworkSession>,
     browser: &SharedBrowserSession,

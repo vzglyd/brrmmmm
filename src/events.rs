@@ -6,7 +6,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::Serialize;
 
-use crate::abi::{ArtifactMeta, SidecarDescribe, SidecarPhase};
+use crate::abi::{ArtifactMeta, MissionModuleDescribe, MissionOutcome, MissionPhase};
 
 // ── Timestamp helpers ────────────────────────────────────────────────
 
@@ -63,15 +63,15 @@ pub enum Event {
         wasm_path: String,
         /// Size of the loaded WASM module in bytes.
         wasm_size_bytes: usize,
-        /// ABI version reported by the sidecar.
+        /// ABI version reported by the mission module.
         abi_version: u32,
     },
-    /// Emitted when a sidecar's describe() blob is received.
+    /// Emitted when a mission module's describe() blob is received.
     Describe {
         /// Event timestamp in ISO-8601 UTC format.
         ts: String,
-        /// Full describe contract emitted by the sidecar.
-        describe: SidecarDescribe,
+        /// Full describe contract emitted by the mission module.
+        describe: MissionModuleDescribe,
     },
     /// Emitted once at startup to record which env vars are present.
     EnvSnapshot {
@@ -80,14 +80,14 @@ pub enum Event {
         /// Presence snapshot for CLI-provided environment variables.
         vars: Vec<EnvVarStatus>,
     },
-    /// Emitted when the sidecar's phase changes.
+    /// Emitted when the mission module's phase changes.
     Phase {
         /// Event timestamp in ISO-8601 UTC format.
         ts: String,
         /// Newly observed lifecycle phase.
-        phase: SidecarPhase,
+        phase: MissionPhase,
     },
-    /// Forwarded from a sidecar's take_events() ring buffer.
+    /// Forwarded from a mission module's take_events() ring buffer.
     #[allow(dead_code)]
     GuestEventFwd {
         /// Event timestamp in ISO-8601 UTC format.
@@ -99,7 +99,7 @@ pub enum Event {
         /// Guest-defined structured attributes.
         attrs: serde_json::Value,
     },
-    /// Emitted when any artifact_publish (or channel_push alias) is received.
+    /// Emitted when an artifact_publish is received.
     ArtifactReceived {
         /// Event timestamp in ISO-8601 UTC format.
         ts: String,
@@ -149,7 +149,7 @@ pub enum Event {
         /// Human-readable error message.
         message: String,
     },
-    /// Emitted when the sidecar announces it is about to sleep.
+    /// Emitted when the mission module announces it is about to sleep.
     SleepStart {
         /// Event timestamp in ISO-8601 UTC format.
         ts: String,
@@ -158,15 +158,24 @@ pub enum Event {
         /// Planned wake time in ISO-8601 UTC format.
         wake_at: String,
     },
-    /// Emitted when the sidecar produces a log_info message.
+    /// Emitted when the mission module produces a log_info message.
     Log {
         /// Event timestamp in ISO-8601 UTC format.
         ts: String,
-        /// Sidecar or runtime log message.
+        /// Mission-module or runtime log message.
         message: String,
     },
-    /// Emitted when the sidecar's WASM execution terminates.
-    SidecarExit {
+    /// Emitted when the mission module reports its final outcome.
+    MissionOutcome {
+        /// Event timestamp in ISO-8601 UTC format.
+        ts: String,
+        /// Whether the outcome came from the mission module or was synthesized by the host.
+        reported_by: String,
+        /// Structured terminal mission outcome.
+        outcome: MissionOutcome,
+    },
+    /// Emitted when the mission module's WASM execution terminates.
+    ModuleExit {
         /// Event timestamp in ISO-8601 UTC format.
         ts: String,
         /// Human-readable termination reason.
@@ -250,7 +259,7 @@ pub enum Event {
 pub struct EnvVarStatus {
     /// Environment variable name.
     pub name: String,
-    /// Whether the variable is known to be required by the sidecar.
+    /// Whether the variable is known to be required by the mission module.
     pub required: bool,
     /// Whether the variable was provided by the caller.
     pub set: bool,

@@ -11,7 +11,7 @@
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 
-use crate::abi::SidecarRuntimeState;
+use crate::abi::MissionRuntimeState;
 use crate::config::{Config, RuntimeLimits};
 use crate::error::{BrrmmmmError, BrrmmmmResult};
 
@@ -32,7 +32,7 @@ fn state_path(config: &Config, hash: &str) -> PathBuf {
 }
 
 /// Load persisted runtime state for a WASM module identified by `wasm_hash`.
-pub fn load(config: &Config, wasm_hash: &str) -> BrrmmmmResult<Option<SidecarRuntimeState>> {
+pub fn load(config: &Config, wasm_hash: &str) -> BrrmmmmResult<Option<MissionRuntimeState>> {
     let path = state_path(config, wasm_hash);
     let data = match std::fs::read(&path) {
         Ok(data) => data,
@@ -44,7 +44,7 @@ pub fn load(config: &Config, wasm_hash: &str) -> BrrmmmmResult<Option<SidecarRun
             )));
         }
     };
-    let state: SidecarRuntimeState = serde_json::from_slice(&data).map_err(|error| {
+    let state: MissionRuntimeState = serde_json::from_slice(&data).map_err(|error| {
         BrrmmmmError::StateCorruption(format!("decode {}: {error}", path.display()))
     })?;
     validate_state(&state, &config.limits)?;
@@ -52,7 +52,7 @@ pub fn load(config: &Config, wasm_hash: &str) -> BrrmmmmResult<Option<SidecarRun
 }
 
 /// Persist runtime state for a WASM module identified by `wasm_hash`.
-pub fn save(config: &Config, wasm_hash: &str, state: &SidecarRuntimeState) -> BrrmmmmResult<()> {
+pub fn save(config: &Config, wasm_hash: &str, state: &MissionRuntimeState) -> BrrmmmmResult<()> {
     validate_state(state, &config.limits)?;
     let path = state_path(config, wasm_hash);
     if let Some(dir) = path.parent() {
@@ -77,7 +77,7 @@ pub fn clear(config: &Config, wasm_hash: &str) {
 }
 
 pub(crate) fn validate_state(
-    state: &SidecarRuntimeState,
+    state: &MissionRuntimeState,
     limits: &RuntimeLimits,
 ) -> BrrmmmmResult<()> {
     let mut total = 0usize;
@@ -291,7 +291,7 @@ mod tests {
     #[test]
     fn save_then_load_roundtrips_state_atomically() {
         let config = config_with_temp_state();
-        let mut state = SidecarRuntimeState::default();
+        let mut state = MissionRuntimeState::default();
         state.kv.insert("token".to_string(), b"secret".to_vec());
 
         save(&config, "roundtrip", &state).unwrap();
@@ -305,7 +305,7 @@ mod tests {
     fn save_rejects_state_over_kv_quota() {
         let mut config = config_with_temp_state();
         config.limits.kv_max_total_bytes = 16;
-        let mut state = SidecarRuntimeState::default();
+        let mut state = MissionRuntimeState::default();
         state
             .kv
             .insert("large".to_string(), b"more-than-sixteen-bytes".to_vec());

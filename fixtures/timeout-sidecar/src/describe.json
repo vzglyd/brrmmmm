@@ -1,0 +1,22 @@
+{
+  "schema_version": 1,
+  "logical_id": "brrmmmm.fixture.timeout",
+  "name": "Timeout Fixture Sidecar",
+  "description": "Never publishes output so the runtime timeout path can be exercised.",
+  "abi_version": 3,
+  "run_modes": ["managed_polling"],
+  "state_persistence": "volatile",
+  "required_env_vars": [],
+  "optional_env_vars": [],
+  "params": {
+    "fields": []
+  },
+  "capabilities_needed": [],
+  "poll_strategy": {
+    "kind": "fixed_interval",
+    "interval_secs": 60
+  },
+  "cooldown_policy": null,
+  "artifact_types": ["published_output"],
+  "acquisition_timeout_secs": 1
+}

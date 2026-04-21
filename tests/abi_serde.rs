@@ -1,7 +1,7 @@
 use brrmmmm::abi::{
-    ActiveMode, ArtifactMeta, CooldownPolicy, EnvVarSpec, GuestEvent, PersistenceAuthority,
-    PollStrategy, SidecarDescribe, SidecarParamField, SidecarParamOption, SidecarParamType,
-    SidecarParamsSchema, SidecarPhase, SidecarRuntimeState,
+    ActiveMode, ArtifactMeta, CooldownPolicy, EnvVarSpec, GuestEvent, MissionModuleDescribe,
+    MissionParamField, MissionParamOption, MissionParamType, MissionParamsSchema, MissionPhase,
+    MissionRuntimeState, PersistenceAuthority, PollStrategy,
 };
 
 fn roundtrip<T: serde::Serialize + for<'de> serde::Deserialize<'de>>(value: &T) -> String {
@@ -13,15 +13,15 @@ fn roundtrip<T: serde::Serialize + for<'de> serde::Deserialize<'de>>(value: &T) 
 #[test]
 fn sidecar_phase_roundtrips_all_variants() {
     for phase in [
-        SidecarPhase::Idle,
-        SidecarPhase::CoolingDown,
-        SidecarPhase::Fetching,
-        SidecarPhase::Parsing,
-        SidecarPhase::Publishing,
-        SidecarPhase::Failed,
+        MissionPhase::Idle,
+        MissionPhase::CoolingDown,
+        MissionPhase::Fetching,
+        MissionPhase::Parsing,
+        MissionPhase::Publishing,
+        MissionPhase::Failed,
     ] {
         let json = roundtrip(&phase);
-        let decoded: SidecarPhase = serde_json::from_str(&json).unwrap();
+        let decoded: MissionPhase = serde_json::from_str(&json).unwrap();
         assert_eq!(decoded, phase);
     }
 }
@@ -115,9 +115,9 @@ fn cooldown_policy_roundtrip() {
 
 #[test]
 fn sidecar_runtime_state_default_roundtrip() {
-    let state = SidecarRuntimeState::default();
+    let state = MissionRuntimeState::default();
     let json = serde_json::to_string(&state).unwrap();
-    let decoded: SidecarRuntimeState = serde_json::from_str(&json).unwrap();
+    let decoded: MissionRuntimeState = serde_json::from_str(&json).unwrap();
     let json2 = serde_json::to_string(&decoded).unwrap();
     assert_eq!(json, json2);
 }
@@ -171,23 +171,23 @@ fn env_var_spec_roundtrip() {
 #[test]
 fn sidecar_param_type_serializes_as_snake_case() {
     assert_eq!(
-        serde_json::to_string(&SidecarParamType::String).unwrap(),
+        serde_json::to_string(&MissionParamType::String).unwrap(),
         r#""string""#
     );
     assert_eq!(
-        serde_json::to_string(&SidecarParamType::Integer).unwrap(),
+        serde_json::to_string(&MissionParamType::Integer).unwrap(),
         r#""integer""#
     );
     assert_eq!(
-        serde_json::to_string(&SidecarParamType::Number).unwrap(),
+        serde_json::to_string(&MissionParamType::Number).unwrap(),
         r#""number""#
     );
     assert_eq!(
-        serde_json::to_string(&SidecarParamType::Boolean).unwrap(),
+        serde_json::to_string(&MissionParamType::Boolean).unwrap(),
         r#""boolean""#
     );
     assert_eq!(
-        serde_json::to_string(&SidecarParamType::Json).unwrap(),
+        serde_json::to_string(&MissionParamType::Json).unwrap(),
         r#""json""#
     );
 }
@@ -195,35 +195,35 @@ fn sidecar_param_type_serializes_as_snake_case() {
 #[test]
 fn sidecar_param_type_roundtrips_all_variants() {
     for kind in [
-        SidecarParamType::String,
-        SidecarParamType::Integer,
-        SidecarParamType::Number,
-        SidecarParamType::Boolean,
-        SidecarParamType::Json,
+        MissionParamType::String,
+        MissionParamType::Integer,
+        MissionParamType::Number,
+        MissionParamType::Boolean,
+        MissionParamType::Json,
     ] {
         let json = roundtrip(&kind);
-        let decoded: SidecarParamType = serde_json::from_str(&json).unwrap();
+        let decoded: MissionParamType = serde_json::from_str(&json).unwrap();
         assert_eq!(decoded, kind);
     }
 }
 
 #[test]
 fn sidecar_param_option_roundtrip() {
-    let opt = SidecarParamOption {
+    let opt = MissionParamOption {
         value: serde_json::json!("us-east-1"),
         label: Some("US East (N. Virginia)".to_string()),
     };
     let json = roundtrip(&opt);
-    let decoded: SidecarParamOption = serde_json::from_str(&json).unwrap();
+    let decoded: MissionParamOption = serde_json::from_str(&json).unwrap();
     assert_eq!(decoded.value, serde_json::json!("us-east-1"));
     assert_eq!(decoded.label.as_deref(), Some("US East (N. Virginia)"));
 }
 
 #[test]
 fn sidecar_param_field_type_key_renamed_to_type_in_json() {
-    let field = SidecarParamField {
+    let field = MissionParamField {
         key: "region".to_string(),
-        kind: SidecarParamType::String,
+        kind: MissionParamType::String,
         required: true,
         label: Some("Region".to_string()),
         help: None,
@@ -239,34 +239,34 @@ fn sidecar_param_field_type_key_renamed_to_type_in_json() {
         !json.contains(r#""kind""#),
         "raw 'kind' key must not appear: {json}"
     );
-    let decoded: SidecarParamField = serde_json::from_str(&json).unwrap();
-    assert_eq!(decoded.kind, SidecarParamType::String);
+    let decoded: MissionParamField = serde_json::from_str(&json).unwrap();
+    assert_eq!(decoded.kind, MissionParamType::String);
     assert_eq!(decoded.key, "region");
     assert!(decoded.required);
 }
 
 #[test]
 fn sidecar_param_field_with_options_roundtrip() {
-    let field = SidecarParamField {
+    let field = MissionParamField {
         key: "env".to_string(),
-        kind: SidecarParamType::String,
+        kind: MissionParamType::String,
         required: false,
         label: None,
         help: Some("Deployment environment".to_string()),
         default: Some(serde_json::json!("production")),
         options: vec![
-            SidecarParamOption {
+            MissionParamOption {
                 value: serde_json::json!("production"),
                 label: Some("Production".to_string()),
             },
-            SidecarParamOption {
+            MissionParamOption {
                 value: serde_json::json!("staging"),
                 label: None,
             },
         ],
     };
     let json = roundtrip(&field);
-    let decoded: SidecarParamField = serde_json::from_str(&json).unwrap();
+    let decoded: MissionParamField = serde_json::from_str(&json).unwrap();
     assert_eq!(decoded.options.len(), 2);
     assert_eq!(decoded.default, Some(serde_json::json!("production")));
 }
@@ -274,16 +274,16 @@ fn sidecar_param_field_with_options_roundtrip() {
 #[test]
 fn sidecar_params_schema_defaults_to_empty_fields() {
     let json = r#"{}"#;
-    let decoded: SidecarParamsSchema = serde_json::from_str(json).unwrap();
+    let decoded: MissionParamsSchema = serde_json::from_str(json).unwrap();
     assert!(decoded.fields.is_empty());
 }
 
 #[test]
 fn sidecar_params_schema_roundtrip() {
-    let schema = SidecarParamsSchema {
-        fields: vec![SidecarParamField {
+    let schema = MissionParamsSchema {
+        fields: vec![MissionParamField {
             key: "timeout".to_string(),
-            kind: SidecarParamType::Integer,
+            kind: MissionParamType::Integer,
             required: false,
             label: None,
             help: None,
@@ -292,14 +292,14 @@ fn sidecar_params_schema_roundtrip() {
         }],
     };
     let json = roundtrip(&schema);
-    let decoded: SidecarParamsSchema = serde_json::from_str(&json).unwrap();
+    let decoded: MissionParamsSchema = serde_json::from_str(&json).unwrap();
     assert_eq!(decoded.fields.len(), 1);
-    assert_eq!(decoded.fields[0].kind, SidecarParamType::Integer);
+    assert_eq!(decoded.fields[0].kind, MissionParamType::Integer);
 }
 
 #[test]
 fn sidecar_describe_acquisition_timeout_defaults_to_none() {
-    let describe: SidecarDescribe = serde_json::from_value(serde_json::json!({
+    let describe: MissionModuleDescribe = serde_json::from_value(serde_json::json!({
         "schema_version": 1,
         "logical_id": "brrmmmm.test",
         "name": "Test Sidecar",
@@ -322,7 +322,7 @@ fn sidecar_describe_acquisition_timeout_defaults_to_none() {
 
 #[test]
 fn sidecar_describe_acquisition_timeout_roundtrips() {
-    let describe: SidecarDescribe = serde_json::from_value(serde_json::json!({
+    let describe: MissionModuleDescribe = serde_json::from_value(serde_json::json!({
         "schema_version": 1,
         "logical_id": "brrmmmm.test",
         "name": "Test Sidecar",
@@ -342,7 +342,7 @@ fn sidecar_describe_acquisition_timeout_roundtrips() {
     .unwrap();
 
     let json = roundtrip(&describe);
-    let decoded: SidecarDescribe = serde_json::from_str(&json).unwrap();
+    let decoded: MissionModuleDescribe = serde_json::from_str(&json).unwrap();
 
     assert_eq!(decoded.acquisition_timeout_secs, Some(90));
 }

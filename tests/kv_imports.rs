@@ -3,7 +3,7 @@ use std::process::Command;
 use std::sync::OnceLock;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use brrmmmm::abi::SidecarRuntimeState;
+use brrmmmm::abi::MissionRuntimeState;
 
 fn bin() -> PathBuf {
     PathBuf::from(env!("CARGO_BIN_EXE_brrmmmm"))
@@ -47,7 +47,7 @@ fn temp_state_dir() -> PathBuf {
 
 #[test]
 fn kv_storage_roundtrips_in_runtime_state() {
-    let mut state = SidecarRuntimeState::default();
+    let mut state = MissionRuntimeState::default();
     let key = "session_id".to_string();
     let value = b"abc-123".to_vec();
 
@@ -98,7 +98,7 @@ fn kv_sidecar_uses_imports_and_persists_host_state() {
             state_path.display()
         )
     });
-    let state: SidecarRuntimeState =
+    let state: MissionRuntimeState =
         serde_json::from_slice(&state_bytes).expect("persisted state is JSON");
 
     assert_eq!(

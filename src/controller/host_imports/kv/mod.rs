@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex};
 
 use anyhow::Result;
 
-use crate::abi::SidecarRuntimeState;
+use crate::abi::MissionRuntimeState;
 use crate::events::EventSink;
 use crate::host::HostState;
 
@@ -16,7 +16,7 @@ pub(super) fn register(
     linker: &mut WasmLinker,
     shared: Arc<Mutex<HostState>>,
     event_sink: EventSink,
-    runtime_state: Arc<Mutex<SidecarRuntimeState>>,
+    runtime_state: Arc<Mutex<MissionRuntimeState>>,
     wasm_hash: Option<String>,
 ) -> Result<()> {
     action::register(

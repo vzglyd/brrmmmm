@@ -1,0 +1,30 @@
+{
+  "schema_version": 1,
+  "logical_id": "brrmmmm.fixture.env",
+  "name": "Env Fixture Sidecar",
+  "description": "Publishes selected environment variables for CLI precedence tests.",
+  "abi_version": 3,
+  "run_modes": ["managed_polling"],
+  "state_persistence": "volatile",
+  "required_env_vars": [],
+  "optional_env_vars": [
+    {
+      "name": "FIXTURE_LABEL",
+      "description": "Primary label read by the sidecar."
+    },
+    {
+      "name": "EXTRA_LABEL",
+      "description": "Secondary label read by the sidecar."
+    }
+  ],
+  "params": {
+    "fields": []
+  },
+  "capabilities_needed": [],
+  "poll_strategy": {
+    "kind": "fixed_interval",
+    "interval_secs": 60
+  },
+  "cooldown_policy": null,
+  "artifact_types": ["published_output"]
+}

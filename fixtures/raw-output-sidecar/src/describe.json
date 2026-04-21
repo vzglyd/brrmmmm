@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "logical_id": "brrmmmm.fixture.raw_output",
+  "name": "Raw Output Fixture Sidecar",
+  "description": "Publishes non-JSON, non-UTF-8 bytes as the mission result.",
+  "abi_version": 3,
+  "run_modes": ["managed_polling"],
+  "state_persistence": "volatile",
+  "required_env_vars": [],
+  "optional_env_vars": [],
+  "params": {
+    "fields": []
+  },
+  "capabilities_needed": [],
+  "poll_strategy": {
+    "kind": "fixed_interval",
+    "interval_secs": 60
+  },
+  "cooldown_policy": null,
+  "artifact_types": ["published_output"]
+}

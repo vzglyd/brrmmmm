@@ -5,33 +5,34 @@
 
 const DESCRIBE: &[u8] = include_bytes!("describe.json");
 
-#[link(wasm_import_module = "vzglyd_host")]
+#[link(wasm_import_module = "brrmmmm_host")]
 unsafe extern "C" {
     fn host_call(ptr: i32, len: i32) -> i32;
     fn host_response_len() -> i32;
     fn host_response_read(ptr: i32, len: i32) -> i32;
     fn artifact_publish(kind_ptr: i32, kind_len: i32, data_ptr: i32, data_len: i32) -> i32;
+    fn mission_outcome_report(ptr: i32, len: i32) -> i32;
     fn log_info(ptr: i32, len: i32) -> i32;
     fn sleep_ms(duration_ms: i64) -> i32;
 }
 
 #[no_mangle]
-pub extern "C" fn vzglyd_sidecar_abi_version() -> u32 {
-    2
+pub extern "C" fn brrmmmm_module_abi_version() -> u32 {
+    3
 }
 
 #[no_mangle]
-pub extern "C" fn vzglyd_sidecar_describe_ptr() -> i32 {
+pub extern "C" fn brrmmmm_module_describe_ptr() -> i32 {
     DESCRIBE.as_ptr() as i32
 }
 
 #[no_mangle]
-pub extern "C" fn vzglyd_sidecar_describe_len() -> i32 {
+pub extern "C" fn brrmmmm_module_describe_len() -> i32 {
     DESCRIBE.len() as i32
 }
 
 #[no_mangle]
-pub extern "C" fn vzglyd_sidecar_start() {
+pub extern "C" fn brrmmmm_module_start() {
     // Inline CAPTCHA page: styled letters in a visible challenge box.
     // CSS transforms make it visually challenging while remaining legible to AI vision.
     let challenge_text = "BR7MX";
@@ -133,6 +134,7 @@ pub extern "C" fn vzglyd_sidecar_start() {
         challenge_json = json_string(challenge_text),
     );
     publish("published_output", out.as_bytes());
+    report_outcome("published", "published_output", "captcha fixture published output");
 }
 
 // -- Browser action helpers --------------------------------------------
@@ -241,6 +243,17 @@ fn publish(kind: &str, data: &[u8]) {
 fn publish_failure(msg: &str) {
     let json = format!(r#"{{"ok":false,"error":{}}}"#, json_string(msg));
     publish("published_output", json.as_bytes());
+    report_outcome("terminal_failure", "captcha_solver_failed", msg);
+}
+
+fn report_outcome(status: &str, reason_code: &str, message: &str) {
+    let outcome = format!(
+        r#"{{"status":"{status}","reason_code":"{reason_code}","message":{message_json},"primary_artifact_kind":"published_output"}}"#,
+        message_json = json_string(message),
+    );
+    unsafe {
+        mission_outcome_report(outcome.as_ptr() as i32, outcome.len() as i32);
+    }
 }
 
 fn log(msg: &str) {

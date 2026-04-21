@@ -1,575 +1,191 @@
 # brrmmmm
 
-An acquisition runtime for portable WASM sidecars.
+brrmmmm completes acquisition missions reliably, durably, and explainably.
 
----
+## Legal / ethical use
 
-## Legal / Ethical Use
-
-`brrmmmm` can run sidecars that automate network access, browser login flows,
-session refresh, and CAPTCHA remediation. That capability does not grant
-authorization, override third-party Terms of Service, or determine whether a
+`brrmmmm` can execute mission modules that automate network access, browser login
+flows, session refresh, and CAPTCHA remediation. That capability does not grant
+authorization, waive third-party Terms of Service, or determine whether a
 workflow is lawful in your jurisdiction.
 
 Legal compliance, contractual compliance, target-service authorization, and
-operator review remain solely the responsibility of the sidecar author and the
-party deploying or running the sidecar. The project documents runtime
-capabilities only; it does not provide legal advice.
+operator review remain the responsibility of the module author and the party
+running the mission. The project documents runtime behavior only; it does not
+provide legal advice.
 
----
+## What it is
 
-## What is brrmmmm?
+`brrmmmm` is an acquisition runtime for portable `wasm32-wasip1` mission
+modules.
 
-`brrmmmm` runs a sidecar and does not stop until it has obtained **one coherent unit
-of external data** — or has conclusively exhausted every strategy it knows.
+One invocation is one acquisition mission:
 
-Each invocation is a single **acquisition mission**. The sidecar encodes everything
-about how to complete that mission: which endpoints to call, how to handle failures,
-how to refresh expired credentials, how to navigate a login form, how to recover from
-a CAPTCHA. brrmmmm provides the runtime capabilities to execute those strategies and
-enforces the acquisition budget the sidecar declares.
+1. Load a mission module.
+2. Read its static contract.
+3. Provide the declared host capabilities.
+4. Run it until it reports a terminal mission outcome.
+5. Persist a durable mission record that explains what happened.
 
-The caller receives exactly one result: the data, or a structured account of what was
-tried and why it failed.
+The runtime is CLI-first on purpose. External orchestrators decide when to run a
+mission. `brrmmmm` owns the inner loop required to complete it.
 
----
+## Why not just use `wasmtime`?
 
-## Why this exists
+`wasmtime` runs Wasm modules.
 
-The internet is increasingly hostile to automated access. Services that would benefit
-from API clients don't offer them. Services that do offer APIs gate them behind login
-flows, CAPTCHAs, rate limits, and rotating tokens. This friction is friction by
-design — but it doesn't make the underlying data unavailable, it just makes obtaining
-it harder.
+`brrmmmm` adds the acquisition-runtime contract around the engine:
 
-brrmmmm exists because someone will write an automated agent to retrieve that data
-regardless. A computer is a tool built to make people's lives easier; it will always
-be used that way, whatever friction stands in the path. The question is whether the
-agent has a principled runtime to operate in, or whether it's duct-taping shell
-scripts together.
+- ABI negotiation and module validation
+- host capabilities for network, browser, AI, KV, params, sleep, tracing, and User-Agent control
+- hard acquisition budgets and payload limits
+- durable mission records and persistent mission continuity state
+- structured events for live observers
+- operator-facing defaults such as `brrmmmm.toml` discovery and file-based result delivery
 
-brrmmmm is the principled runtime. It gives sidecar authors a complete, portable
-surface for every remediation strategy that works — from simple retries to
-browser-driven login flows to AI-assisted CAPTCHA resolution — and enforces a clear
-contract between the mission and the runtime.
+If all you need is “execute this Wasm module”, use `wasmtime`.
 
----
+If you need a runtime that completes acquisition missions and leaves behind a
+durable explanation, use `brrmmmm`.
 
-## If this needs to exist, it also needs to address the concerns of those who oppose it
+## Operator model
 
-The default position is not: "I am brrmmmm, I have principles, therefore whatever I
-am doing is acceptable." The default position is: "I am brrmmmm, and because I am,
-I will adhere to all standard best-effort attempts to play nicely — consistent with
-the design principles of this framework."
+The intended integration model is a process boundary:
 
-What that means in practice:
-
-- By default, the User-Agent identifies the client honestly on first contact. Servers
-  can see it, log it, and choose to decline. That is a legitimate response and the
-  framework does not argue with it.
-- By default, signed attestation gives servers stable handles beyond first contact. They can
-  distinguish one installation, one mission, and one behavior pattern from another
-  instead of guessing from IP addresses or a mutable User-Agent string.
-- The framework respects `Retry-After` headers. A 429 is a signal to back off, not a
-  signal to retry immediately. Sidecars receive the full response including all headers
-  and are expected to honour this.
-- Requests are made at the pace the sidecar declares in its acquisition budget — not
-  at the maximum rate the host can sustain.
-- The `ua_set` import exists as a capability. Its use is the sidecar author's decision
-  and their responsibility. It is not a right earned by having announced the client
-  identity first, and it does not confer permission for anything the framework would
-  not otherwise permit.
-- The `identity_disclosure_set` import exists for exceptional compatibility cases.
-  If a sidecar suppresses brrmmmm disclosure, that choice belongs to the sidecar
-  vendor, not the runtime.
-
-Transparency about what the tool is, and restraint in how it operates, are the
-baseline. They are not a justification for anything beyond them.
-
----
-
-## Two levels of orchestration
-
-External orchestrators (Airflow, Dagu, cron) decide **when** to trigger an acquisition.
-brrmmmm is the orchestrator for **completing** it.
-
-```
+```text
 external orchestrator
-    ↓  decides when to run
-  brrmmmm
-    ↓  orchestrates the full mission to completion
-  sidecar.wasm
-    ↓  encodes what "completion" looks like for this data source
-HTTP / browser / file systems
+    -> decides when to run
+brrmmmm
+    -> completes one acquisition mission
+mission-module.wasm
+    -> declares how completion works for one source
 ```
 
-The external orchestrator never sees retries, auth flows, or browser interactions. It
-triggers a job and gets back a result. brrmmmm handles everything in between.
+That process boundary is deliberate. Browser automation, AI requests, policy
+enforcement, persistence, and Wasm execution all stay inside one small runtime
+world.
 
----
+When `--result-path` or `mission.result_path` is configured, `brrmmmm` writes a
+single atomic JSON mission record. Anything that needs the result can watch or
+poll that file. The caller does not need to parent the `brrmmmm` process.
 
-## The sidecar contract
+## Quick start
 
-A sidecar defines how to obtain one unit of data from one specific source.
-
-It must:
-
-- attempt to obtain the data using whatever means are appropriate
-- handle all recoverable failure modes internally:
-  - transient network errors → retry with backoff
-  - expired API tokens → refresh and retry
-  - expired sessions → re-authenticate (including browser-based flows)
-  - CAPTCHA or complex UI challenges → AI-assisted resolution
-- complete within its declared acquisition budget
-- publish exactly one result via `channel_push`
-
-That result is either the data, or a structured failure:
-
-```json
-{ "ok": true,  "data": { ... } }
-{ "ok": false, "error": { "kind": "service_unavailable", "message": "...", "attempts": 4 } }
-```
-
-The sidecar author decides which failure modes are worth encoding remediation for.
-Anything not covered is reported as unrecoverable.
-
----
-
-## Remediation model
-
-The full hierarchy of what a sidecar can do when an acquisition fails. The sidecar
-author decides which levels to implement; brrmmmm provides the host capabilities to
-execute each one.
-
-| Failure | Remedy | Implemented by |
-|---|---|---|
-| Network timeout / transient 5xx | Retry with exponential backoff | Sidecar logic |
-| Rate limited (429) | Inspect `Retry-After` header from response, sleep, retry | Sidecar logic (full response headers available) |
-| API token expired (401) | Call token refresh endpoint, retry | Sidecar logic |
-| Session expired, login form required | Drive browser login flow, retry | Sidecar logic via `host_call` browser actions |
-| MFA prompt | Read TOTP seed from params, compute code, submit | Sidecar logic (seed delivered via `--params-json`) |
-| CAPTCHA | Take screenshot, invoke AI vision model, submit solution | Sidecar logic via `host_call` browser + AI actions |
-| IP block / account suspended | Report unrecoverable failure | Sidecar decision |
-| Service permanently gone | Report unrecoverable failure | Sidecar decision |
-
-brrmmmm provides the host capabilities for each level: `host_call` for network,
-browser, and AI actions, and `kv_*` imports for persisting session state across
-runs. The sidecar receives
-full HTTP responses (status code, all headers, body) so it can inspect `Retry-After`,
-`WWW-Authenticate`, or any other signal and act accordingly.
-
----
-
-## Execution model
-
-Each invocation:
-
-1. Loads the sidecar WASM
-2. Negotiates ABI version and reads the sidecar's describe contract
-3. Provides the capabilities the sidecar declared it needs
-4. Runs the sidecar and waits for it to publish a result
-5. Enforces the acquisition budget declared in the describe contract
-6. Returns the result or a structured failure
-
-There is no outer polling loop. External orchestrators decide when to run brrmmmm.
-brrmmmm owns the inner loop — everything needed to complete a single mission.
-
----
-
-## 30-second demo
+Install:
 
 ```bash
-# Clone and install (the demo sidecar WASM is pre-built in demos/)
-git clone https://github.com/vzglyd/brrmmmm && cd brrmmmm
-cargo install --path .
-WASM=demos/demo_weather_sidecar.wasm
-
-# Validate, inspect, one-shot fetch
-brrmmmm validate $WASM
-brrmmmm --output table inspect $WASM
-brrmmmm --output json run $WASM --once
-```
-
-`brrmmmm run --once` prints the sidecar's published payload to stdout:
-
-```json
-{"condition":"partly cloudy","is_day":true,"location":"Berlin","ok":true,"temperature_c":14.2,"wind_speed_ms":3.1}
-```
-
-The weather sidecar calls `open-meteo.com` — a live network connection is required.
-The browser and captcha demos (`browser_login_fixture.wasm`, `captcha_solver.wasm`)
-are fully self-contained and require no external network.
-
----
-
-## Install
-
-```bash
-git clone https://github.com/vzglyd/brrmmmm && cd brrmmmm
 cargo install --path .
 ```
 
-Requires Rust stable. Verify with `brrmmmm --version`.
+Inspect and validate a mission module:
 
-The repo includes a pre-built demo sidecar at `demos/demo_weather_sidecar.wasm` — no
-additional toolchain is needed to run the demo.
+```bash
+brrmmmm validate path/to/mission-module.wasm
+brrmmmm inspect path/to/mission-module.wasm --output table
+```
 
-To build sidecars from source:
+Run once and print the published payload to stdout:
+
+```bash
+brrmmmm run path/to/mission-module.wasm --once --output json
+```
+
+Run once and write a durable mission record instead:
+
+```bash
+brrmmmm run path/to/mission-module.wasm --once --result-path mission.json
+brrmmmm explain mission.json
+```
+
+Use working-directory config discovery:
+
+```toml
+# ./brrmmmm.toml
+[mission]
+wasm = "mission-module.wasm"
+result_path = "mission.json"
+
+[mission.env]
+API_TOKEN = "..."
+```
+
+Then:
+
+```bash
+brrmmmm
+```
+
+## Durable mission records
+
+Mission records are fixed-schema JSON. They are not just payload dumps.
+
+Each record includes:
+
+- `module`: resolved module identity such as `logical_id`, `name`, `abi_version`, and `wasm_path`
+- `outcome`: typed terminal outcome such as `published`, `retryable_failure`, `terminal_failure`, or `operator_action_required`
+- `host_decision`: exit-code category plus whether the final outcome was host-synthesized
+- `explanation`: summary, message, and next action
+- `artifacts`: captured `raw_source`, `normalized`, and `published_output` payloads when present
+- `timing`: start, finish, and elapsed time
+- `stats`: consecutive failures and persisted cooldown/failure timestamps
+
+`brrmmmm explain mission.json` renders that contract back into operator-facing
+text without replaying the run.
+
+## Mission module contract
+
+The current ABI is v3.
+
+A compliant mission module exports:
+
+- `brrmmmm_module_abi_version() -> u32`
+- `brrmmmm_module_describe_ptr() -> i32`
+- `brrmmmm_module_describe_len() -> i32`
+- `brrmmmm_module_start()`
+
+The runtime exposes the `brrmmmm_host` import module.
+
+Important imports:
+
+- `artifact_publish(kind_ptr, kind_len, data_ptr, data_len)` for artifacts
+- `mission_outcome_report(ptr, len)` for the final typed mission outcome
+- `params_len()` and `params_read(ptr, len)` for host-owned params
+- `host_call(...)`, `host_response_len()`, and `host_response_read(...)` for network, browser, and AI capabilities
+- `kv_*` for persisted host-owned state
+- `sleep_ms(duration_ms)` for managed backoff or cooldown behavior
+
+`validate` rejects modules that do not export the v3 contract or do not import
+`brrmmmm_host.mission_outcome_report`.
+
+## Explainability and continuity
+
+`brrmmmm` does not treat a mission as “some bytes appeared on stdout”.
+
+It tracks:
+
+- the module contract and declared capabilities
+- structured runtime events in `--events` mode
+- a typed terminal mission outcome
+- a mission ledger keyed by logical mission ID plus module hash
+- a durable mission record for each invocation
+
+That is the core product direction: the runtime should understand mission
+completion, continuity, and failure explanation instead of acting like a thin
+Wasm launcher with extra imports.
+
+## Build mission modules
+
+Install the Wasm target:
 
 ```bash
 rustup target add wasm32-wasip1
 ```
 
----
+Useful host prerequisites:
 
-## Usage
+- Chrome or Chromium for modules that declare the `browser` capability
+- `ANTHROPIC_API_KEY` for modules that declare the `ai` capability
 
-```bash
-# Validate — check the WASM loads and resolves all imports
-brrmmmm validate sidecar.wasm
-
-# Inspect — print the sidecar's self-described contract
-brrmmmm inspect sidecar.wasm
-brrmmmm --output table inspect sidecar.wasm
-
-# Run — execute one acquisition mission and print the result to stdout
-brrmmmm run sidecar.wasm --once
-
-# Pass environment variables the sidecar expects
-brrmmmm run sidecar.wasm --once \
-  --env LASTFM_API_KEY=xxx \
-  --env LASTFM_USERNAME=rodger
-
-# Pass structured params to a sidecar that imports params_len/params_read
-brrmmmm run sidecar.wasm --once \
-  --params-json '{"location":"Daylesford, VIC"}'
-
-# Or read params from a file
-brrmmmm run sidecar.wasm --once --params-file sidecar-params.json
-
-# Debug: log each channel_push to stderr
-brrmmmm run sidecar.wasm --once --log-channel
-
-# Emit diagnostic logs as JSON lines on stderr
-brrmmmm run sidecar.wasm --once --log-format json
-```
-
-All commands accept `--output json|text|table`. The default for `run` and `validate`
-is `text`; for `inspect` it is `json`.
-
----
-
-## TUI workbench
-
-For interactive development, `brrmmmm` includes a TUI — a visual workbench for
-observing a running sidecar in real time.
-
-Invoke it by passing the WASM path directly, without a subcommand:
-
-```bash
-brrmmmm sidecar.wasm
-```
-
-The TUI shows the sidecar's lifecycle phase, published artifacts, network requests,
-sleep announcements, and the full event stream as it happens. Build the Node.js
-frontend first:
-
-```bash
-npm --prefix tui run build   # requires Node.js 20+
-```
-
-The TUI communicates with `brrmmmm` over the `--events` protocol: an NDJSON stream
-on stdout carrying typed events (`started`, `describe`, `artifact_received`,
-`request_start`, `request_done`, `sleep_start`, `log`, `sidecar_exit`, etc.).
-
----
-
-## Sidecar ABI
-
-The current ABI is version 1. A compliant sidecar exports:
-
-| Export | Purpose |
-|---|---|
-| `vzglyd_sidecar_abi_version() -> u32` | Returns `1` — used by brrmmmm for version negotiation |
-| `vzglyd_sidecar_describe_ptr() -> i32` | Pointer to a static JSON describe blob in WASM memory |
-| `vzglyd_sidecar_describe_len() -> i32` | Byte length of the describe blob |
-| `vzglyd_sidecar_start()` | Primary entry point (falls back to `_start` or `main`) |
-
-The describe blob (`SidecarDescribe`) carries the sidecar's logical ID, name,
-description, run modes, required/optional env vars, params schema, poll strategy,
-cooldown policy, declared capabilities, acquisition budget, and artifact types.
-
-`brrmmmm` refuses to load a sidecar that does not export `vzglyd_sidecar_abi_version`
-or that returns an unrecognised version number.
-
----
-
-## Artifact types
-
-A sidecar may publish multiple named artifact kinds during a single mission:
-
-| Kind | Purpose |
-|---|---|
-| `published_output` | The canonical result — what `run` prints to stdout |
-| `raw_source_payload` | Debugging artifact: the unprocessed response from the source |
-| `normalized_payload` | Debugging artifact: an intermediate parsed form |
-
-The TUI displays all artifact types. `brrmmmm run` only surfaces `published_output`.
-
----
-
-## Host ABI
-
-The runtime exposes the `vzglyd_host` module to every sidecar:
-
-| Function | Signature | Purpose |
-|---|---|---|
-| `channel_push` | `fn(ptr: i32, len: i32) -> i32` | Publish `published_output` result |
-| `channel_poll` | `fn(ptr: i32, len: i32) -> i32` | (reserved; returns -1) |
-| `channel_active` | `fn() -> i32` | Query whether a consumer is listening |
-| `artifact_publish` | `fn(kind_ptr, kind_len, data_ptr, data_len) -> i32` | Publish a named artifact |
-| `register_manifest` | `fn(ptr: i32, len: i32) -> i32` | Register the static describe blob |
-| `params_len` | `fn() -> i32` | Query size of the params buffer |
-| `params_read` | `fn(ptr: i32, len: i32) -> i32` | Read params JSON into sidecar memory |
-| `sleep_ms` | `fn(duration_ms: i64) -> i32` | Sleep; host may return early on stop signal |
-| `announce_sleep` | `fn(duration_ms: i64) -> i32` | Non-blocking: tell the host when next poll is planned |
-| `host_call` | `fn(ptr: i32, len: i32) -> i32` | Submit a host-mediated network, browser, or AI action |
-| `host_response_len` | `fn() -> i32` | Query size of the pending host-call response |
-| `host_response_read` | `fn(ptr: i32, len: i32) -> i32` | Read the host-call response into sidecar memory |
-| `kv_get` | `fn(key_ptr: i32, key_len: i32) -> i32` | Load a host-persisted byte value |
-| `kv_set` | `fn(key_ptr: i32, key_len: i32, value_ptr: i32, value_len: i32) -> i32` | Store a host-persisted byte value |
-| `kv_delete` | `fn(key_ptr: i32, key_len: i32) -> i32` | Delete a host-persisted byte value |
-| `kv_response_len` | `fn() -> i32` | Query size of the pending KV response |
-| `kv_response_read` | `fn(ptr: i32, len: i32) -> i32` | Read the KV response into sidecar memory |
-| `ua_get_len` | `fn() -> i32` | Query byte length of the current User-Agent string |
-| `ua_get` | `fn(ptr: i32, len: i32) -> i32` | Write current User-Agent into sidecar memory |
-| `ua_set` | `fn(ptr: i32, len: i32) -> i32` | Replace the active User-Agent from sidecar memory |
-| `identity_disclosure_set` | `fn(visible: i32) -> i32` | Enable or disable brrmmmm identity disclosure for subsequent host-mediated requests |
-| `trace_span_start` | `fn(...) -> i32` | Start a distributed tracing span (stub — reserved) |
-| `trace_span_end` | `fn(...) -> i32` | End a tracing span (stub — reserved) |
-| `trace_event` | `fn(ptr: i32, len: i32) -> i32` | Emit an instant trace event (stub — reserved) |
-
-Runtime params are host-owned. A sidecar that accepts `--params-json` or
-`--params-file` must import `params_len` and `params_read`; the legacy raw
-`vzglyd_params_ptr`/`vzglyd_configure` buffer is not used by the production runner.
-Params must be a JSON object, default to a 1 MiB byte limit, and are rejected if
-their JSON nesting exceeds the configured depth limit.
-
-Host calls use a unified JSON wire protocol:
-
-```json
-// Request (sidecar → host)
-{"wire_version": 2, "capability": "network", "action": "http", "method": "GET", "url": "https://api.example.com/data", "headers": []}
-
-// Response (host → sidecar)
-{"wire_version": 2, "ok": true, "capability": "network", "data": {"kind": "http", "status_code": 200, "headers": [], "body_base64": "aGVsbG8="}}
-```
-
----
-
-## Host capabilities
-
-The following host imports support the full remediation model:
-
-**`host_call` with `capability = "browser"` — browser automation (implemented)**
-brrmmmm uses existing browser automation tooling (headless Chrome via CDP) to execute
-browser sessions on behalf of sidecars — it is not a browser automation framework
-itself. Sidecars drive the session via a JSON action protocol (`navigate`, `fill`,
-`click`, `press`, `wait_for_selector`, `wait_for_url`, `current_url`, `get_cookies`,
-`get_text`, `get_html`, `evaluate_json`, `screenshot`).
-Enables login form flows, OAuth consent screens, and page scraping.
-Declare `"capabilities_needed": ["browser"]`.
-
-For local runner testing, set `BRRMMMM_BROWSER_HEADLESS=false` on the brrmmmm
-process to launch Chrome with a visible window:
-
-```sh
-BRRMMMM_BROWSER_HEADLESS=false brrmmmm run demos/browser_login_fixture.wasm --once
-```
-
-**`ai_*` — AI model invocation (implemented)**
-Sidecars submit prompts and PNG screenshots to a host-managed Anthropic Messages API
-client. Enables CAPTCHA resolution, interpretation of unstructured page content, and
-other tasks that require visual or semantic understanding. The host owns the API key
-and model selection.
-Declare `"capabilities_needed": ["ai"]`.
-
-Use `host_call` with `capability = "ai"`. Set
-`ANTHROPIC_API_KEY` on the brrmmmm process. By default brrmmmm uses
-`claude-haiku-4-5-20251001`; set `BRRMMMM_AI_MODEL` to override it.
-
-```sh
-ANTHROPIC_API_KEY=... brrmmmm run demos/captcha_solver.wasm --once
-```
-
-**`kv_*` — host-persisted sidecar state (implemented)**
-Sidecars store opaque bytes by UTF-8 key and retrieve them on later runs of the same
-WASM binary. This is intended for session continuity such as cookies, CSRF tokens, or
-last successful cursors. Declare `"state_persistence": "host_persisted"` and
-`"capabilities_needed": ["kv"]`.
-
-State is keyed by the WASM binary identity and stored under
-`~/.local/share/brrmmmm/state` by default. Set `BRRMMMM_STATE_DIR` to override that
-directory for tests or isolated runners.
-
-KV is for metadata-sized state, not blobs. Defaults are 256 bytes per key, 64 KiB
-per value, and 1 MiB total per WASM identity, with key bytes counted in the total.
-Oversized writes fail and do not mutate in-memory or persisted state. Large payloads
-belong in `artifact_publish` or `channel_push`, with KV storing only references.
-
-Persistence load distinguishes absence from corruption. A missing state file starts
-fresh; unreadable, malformed, or over-quota state fails the run so operators can
-repair or remove the bad file explicitly.
-
-Relevant limit overrides:
-
-| Variable | Default |
-|---|---:|
-| `BRRMMMM_KV_MAX_KEY_BYTES` | `256` |
-| `BRRMMMM_KV_MAX_VALUE_BYTES` | `65536` |
-| `BRRMMMM_KV_MAX_TOTAL_BYTES` | `1048576` |
-| `BRRMMMM_MAX_PARAMS_BYTES` | `1048576` |
-| `BRRMMMM_MAX_JSON_DEPTH` | `64` |
-| `BRRMMMM_MAX_HOST_PAYLOAD_BYTES` | `1048576` |
-| `BRRMMMM_MAX_ARTIFACT_BYTES` | `10485760` |
-| `BRRMMMM_MAX_HTTP_RESPONSE_BYTES` | `10485760` |
-| `BRRMMMM_MAX_AI_RESPONSE_BYTES` | `10485760` |
-
-**Remote request attestation (implemented)**
-Remote operators should not have to choose between trusting a polite User-Agent and
-blanket-blocking every automated client. brrmmmm attaches a signed, host-owned
-envelope to outbound host-controlled HTTP requests so receivers can verify that the
-identity data came from the brrmmmm transport path, correlate traffic across rotating
-IPs, and contain abuse at the narrowest useful level.
-
-The envelope is not a permission slip, and it does not prove that a request is
-harmless. It is observability and containment. A receiver can verify the signature,
-facet logs by client and mission, rate-limit one noisy mission, or deny one
-installation key while leaving other brrmmmm clients alone.
-
-In normal visible mode, brrmmmm emits the same request summary in two forms. The
-User-Agent gets a readable `brrm/1` suffix with named products such as `cid`, `mid`,
-`mod`, `seq`, `cap`, `bh`, `ts`, `nonce`, `kid`, `pk`, and `sig`, so an operator can
-understand the request from ordinary User-Agent logs. Short IDs and hashes use 16
-lowercase hex characters: enough to be useful to a tired human without turning the
-header into an opaque blob. The structured `X-Brrm-*` headers carry the full verifier
-fields for systems that want machine-friendly parsing.
-
-The signed fields identify the brrmmmm installation pseudonymously, the loaded
-sidecar mission, the concrete module hash, the per-mission request count, cumulative
-capabilities used, a rolling behavior hash, a timestamp, a nonce, the installation
-key id, the public key, and the request signature.
-
-On first run brrmmmm creates a local Ed25519 keypair and installation id under
-`~/.local/share/brrmmmm/identity`. Set `BRRMMMM_IDENTITY_DIR` to isolate that state
-for tests or separate runners. The installation id and private key never leave the
-machine. Receivers can verify `X-Brrm-Signature` with `X-Brrm-Public-Key` in self-key
-mode; issuer-bound credentials can be layered on later for managed trust and formal
-revocation.
-
-`ua_get` and `ua_set` control the sidecar-owned User-Agent value. When identity
-disclosure is visible, brrmmmm appends its own marker and readable signed suffix, and
-also emits the structured `X-Brrm-*` headers. When disclosure is not visible,
-brrmmmm sends the sidecar-owned User-Agent without adding its own marker, suffix, or
-structured attestation headers. brrmmmm always strips sidecar-supplied `User-Agent`
-and `X-Brrm-*` request headers from host-mediated requests before applying the current
-runtime policy. Set `BRRMMMM_ATTESTATION=off` only for explicit legacy mode.
-
-**`acquisition_timeout_secs` in describe (implemented)**
-Sidecars declare their expected acquisition budget. brrmmmm enforces it. The default
-is 30 seconds; a sidecar that drives a browser login flow may declare 120 seconds.
-
----
-
-## Why WASM sidecars?
-
-**Why not containers?** Cold-start time, memory overhead, and orchestration complexity
-are wrong for this use case. A WASM sidecar loads in under 5ms; a Docker container
-for the same job is 10–100× heavier.
-
-**Why not a native plugin?** Native plugins break ABI across OS versions, compiler
-versions, and architectures. A WASM binary compiles once and runs identically on
-Linux x86\_64, macOS ARM, and embedded targets.
-
-**Why ~2MB? That seems large.** Each sidecar bundles its own DNS resolver (Google DoH),
-TLS stack (rustls + rustls-rustcrypto), and HTTP/1.1 client — zero runtime dependencies
-beyond WASI sockets. The host needs no TLS library, no API knowledge, no JSON parser.
-The 2MB is a one-time cost that buys complete isolation.
-
-**Why not have the host make HTTP calls?** The host would then need to know the API
-endpoint, auth scheme, response schema, and parsing logic for every sidecar. The sidecar
-author owns everything about the data source; the host author owns the runtime.
-That separation is the entire point.
-
-**Is the ABI stable?** `vzglyd_sidecar_abi_version()` returns the ABI version the
-sidecar was compiled against. brrmmmm refuses to load mismatched versions. New ABI
-features are additive.
-
----
-
-## Design principles
-
-- **Mission-oriented** — one invocation, one acquisition mission, seen through to completion
-- **Synchronous** — the caller blocks until the mission succeeds or conclusively fails
-- **Exhaustive remediation** — the sidecar encodes every recovery strategy it knows; brrmmmm executes them
-- **Bounded** — the sidecar declares its acquisition budget; brrmmmm enforces it
-- **Portable** — sidecars are `wasm32-wasip1` binaries; they run anywhere brrmmmm runs
-- **Opaque internals** — how many retries, browser actions, or AI calls the sidecar makes is nobody else's business
-- **Capability-declared** — sidecars declare which host capabilities they need; brrmmmm validates them at load time
-
----
-
-## What brrmmmm is not
-
-- Not an external workflow engine or scheduler (that's Dagu, Airflow, cron)
-- Not a distributed system
-- Not responsible for deciding when to trigger an acquisition
-
----
-
-## Development
-
-```bash
-cargo test
-cargo doc --no-deps
-npm --prefix tui run build
-export CARGO_INCREMENTAL=0 CARGO_TARGET_DIR=/tmp/brrmmmm-coverage-target
-cargo llvm-cov --lib --package brrmmmm --no-report
-cargo llvm-cov report --html --output-dir target/coverage
-cargo llvm-cov report --lcov --output-path target/coverage/lcov.info
-```
-
-With Moonrepo:
-
-```bash
-moon run core:ci
-moon run core:docs
-moon run core:coverage
-# or without a global install:
-npx --package @moonrepo/cli@2.2.1 moon run core:ci
-npx --package @moonrepo/cli@2.2.1 moon run core:docs
-npx --package @moonrepo/cli@2.2.1 moon run core:coverage
-```
-
-The Rust coverage report is written to `target/coverage/html`. CI uploads it as the
-`rust-coverage` artifact and summarizes the User-Agent/disclosure tests in the
-workflow output. The coverage task intentionally targets the library unit tests so
-the User-Agent path is observable without rebuilding every integration target under
-coverage instrumentation. `core:ci` now includes the docs build, so missing public
-API documentation fails the normal release gate.
-
----
-
-## Requirements
-
-- Rust stable
-- `wasm32-wasip1` target for building sidecars: `rustup target add wasm32-wasip1`
-- Chrome or Chromium for sidecars that declare the `browser` capability
-- `ANTHROPIC_API_KEY` for sidecars that declare the `ai` capability
-- Node.js 20+ for the TUI frontend
-
----
-
-## License
-
-Licensed under either of [MIT](LICENSE-MIT) or [Apache-2.0](LICENSE-APACHE) at your option.
+The binary crate is the primary integration surface. The Rust library exists so
+the CLI, tests, and TUI share one runtime implementation, but the supported API
+surface is intentionally narrow.

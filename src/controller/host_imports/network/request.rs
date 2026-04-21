@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 
 use base64::Engine as _;
 
-use crate::abi::{SidecarPhase, SidecarRuntimeState};
+use crate::abi::{MissionPhase, MissionRuntimeState};
 use crate::attestation;
 use crate::events::{Event, EventSink, now_ts};
 use crate::host::HostState;
@@ -35,7 +35,7 @@ impl NetworkSession {
         action: NetworkAction,
         shared: Arc<Mutex<HostState>>,
         event_sink: EventSink,
-        runtime_state: Arc<Mutex<SidecarRuntimeState>>,
+        runtime_state: Arc<Mutex<MissionRuntimeState>>,
         request_counter: Arc<AtomicU64>,
     ) -> HostCallResult {
         let limits = lock_runtime(&shared, "host_state").config.limits.clone();
@@ -43,7 +43,7 @@ impl NetworkSession {
         let request_id = format!("r{req_id}");
         let description = describe_action(&action);
 
-        update_phase_state(&runtime_state, &event_sink, SidecarPhase::Fetching);
+        update_phase_state(&runtime_state, &event_sink, MissionPhase::Fetching);
         event_sink.emit(Event::RequestStart {
             ts: now_ts(),
             request_id: request_id.clone(),

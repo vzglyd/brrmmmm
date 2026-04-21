@@ -23,7 +23,7 @@ pub(super) fn register(
     session: Arc<Mutex<AiSession>>,
 ) -> Result<()> {
     linker.func_wrap(
-        "vzglyd_host",
+        "brrmmmm_host",
         "ai_request",
         move |mut caller: WasmCaller<'_>, ptr: i32, len: i32| -> i32 {
             let limits = lock_runtime(&shared, "host_state").config.limits.clone();

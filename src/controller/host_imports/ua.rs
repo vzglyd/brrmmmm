@@ -15,13 +15,13 @@ pub(super) fn register(linker: &mut WasmLinker, shared: Arc<Mutex<HostState>>) -
     let shared_visibility = shared;
 
     linker.func_wrap(
-        "vzglyd_host",
+        "brrmmmm_host",
         "ua_get_len",
         move |_caller: WasmCaller<'_>| -> i32 { user_agent_len(&shared_len) },
     )?;
 
     linker.func_wrap(
-        "vzglyd_host",
+        "brrmmmm_host",
         "ua_get",
         move |mut caller: WasmCaller<'_>, ptr: i32, len: i32| -> i32 {
             let ua_bytes = current_user_agent_bytes(&shared_get);
@@ -34,7 +34,7 @@ pub(super) fn register(linker: &mut WasmLinker, shared: Arc<Mutex<HostState>>) -
     )?;
 
     linker.func_wrap(
-        "vzglyd_host",
+        "brrmmmm_host",
         "ua_set",
         move |mut caller: WasmCaller<'_>, ptr: i32, len: i32| -> i32 {
             let bytes = match read_memory_from_caller(&mut caller, ptr, len) {
@@ -46,7 +46,7 @@ pub(super) fn register(linker: &mut WasmLinker, shared: Arc<Mutex<HostState>>) -
     )?;
 
     linker.func_wrap(
-        "vzglyd_host",
+        "brrmmmm_host",
         "identity_disclosure_set",
         move |visible: i32| -> i32 { set_identity_disclosure(&shared_visibility, visible != 0) },
     )?;

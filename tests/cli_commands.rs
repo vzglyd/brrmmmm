@@ -80,13 +80,18 @@ fn inspect_prints_real_contract_json() {
         String::from_utf8_lossy(&output.stderr)
     );
     let json: Value = serde_json::from_slice(&output.stdout).expect("inspect stdout is JSON");
-    assert_eq!(json["abi_version"], 2);
+    assert_eq!(json["abi_version"], 3);
     assert_eq!(
         json["describe"]["logical_id"],
         "brrmmmm.fixture.deterministic"
     );
     assert_eq!(json["describe"]["artifact_types"][2], "published_output");
-    assert_eq!(json["entrypoint"], "vzglyd_sidecar_start");
+    assert_eq!(json["entrypoint"], "brrmmmm_module_start");
+    assert!(json["host_imports"].as_array().is_some_and(|imports| {
+        imports
+            .iter()
+            .any(|value| value == "mission_outcome_report")
+    }));
 }
 
 #[test]

@@ -3,7 +3,7 @@
   "logical_id": "brrmmmm.fixture.captcha_solver",
   "name": "CAPTCHA Solver Demo",
   "description": "Screenshots a styled CAPTCHA challenge page and resolves the challenge text using AI vision. Requires Chrome/Chromium and ANTHROPIC_API_KEY on the host process.",
-  "abi_version": 2,
+  "abi_version": 3,
   "run_modes": ["managed_polling"],
   "state_persistence": "volatile",
   "required_env_vars": [],

@@ -2,7 +2,7 @@ use std::sync::{Arc, Mutex};
 
 use anyhow::Result;
 
-use crate::abi::{PersistenceAuthority, SidecarRuntimeState};
+use crate::abi::{MissionRuntimeState, PersistenceAuthority};
 use crate::config::Config;
 use crate::error::BrrmmmmResult;
 
@@ -14,13 +14,13 @@ use crate::persistence;
 use super::super::super::io::{WasmCaller, WasmLinker, lock_runtime, read_memory_from_caller};
 use super::state::{clear_pending_kv_response, store_pending_kv_response};
 
-type PersistFn = fn(&Config, &str, &SidecarRuntimeState) -> BrrmmmmResult<()>;
+type PersistFn = fn(&Config, &str, &MissionRuntimeState) -> BrrmmmmResult<()>;
 
 pub(super) fn register(
     linker: &mut WasmLinker,
     shared: Arc<Mutex<HostState>>,
     event_sink: EventSink,
-    runtime_state: Arc<Mutex<SidecarRuntimeState>>,
+    runtime_state: Arc<Mutex<MissionRuntimeState>>,
     wasm_hash: Option<String>,
 ) -> Result<()> {
     // kv_get(key_ptr, key_len) -> i32
@@ -29,7 +29,7 @@ pub(super) fn register(
         let event_sink = event_sink.clone();
         let runtime_state = runtime_state.clone();
         linker.func_wrap(
-            "vzglyd_host",
+            "brrmmmm_host",
             "kv_get",
             move |mut caller: WasmCaller<'_>, ptr: i32, len: i32| -> i32 {
                 let limits = lock_runtime(&shared, "host_state").config.limits.clone();
@@ -75,7 +75,7 @@ pub(super) fn register(
         let runtime_state = runtime_state.clone();
         let wasm_hash = wasm_hash.clone();
         linker.func_wrap(
-            "vzglyd_host",
+            "brrmmmm_host",
             "kv_set",
             move |mut caller: WasmCaller<'_>,
                   key_ptr: i32,
@@ -150,7 +150,7 @@ pub(super) fn register(
         let runtime_state = runtime_state.clone();
         let wasm_hash = wasm_hash.clone();
         linker.func_wrap(
-            "vzglyd_host",
+            "brrmmmm_host",
             "kv_delete",
             move |mut caller: WasmCaller<'_>, ptr: i32, len: i32| -> i32 {
                 let limits = lock_runtime(&shared, "host_state").config.limits.clone();
@@ -236,7 +236,7 @@ fn read_key(
 
 fn set_value(
     config: &Config,
-    runtime_state: &Arc<Mutex<SidecarRuntimeState>>,
+    runtime_state: &Arc<Mutex<MissionRuntimeState>>,
     key: String,
     value: Vec<u8>,
     wasm_hash: Option<&str>,
@@ -285,7 +285,7 @@ fn set_value(
 
 fn delete_value(
     config: &Config,
-    runtime_state: &Arc<Mutex<SidecarRuntimeState>>,
+    runtime_state: &Arc<Mutex<MissionRuntimeState>>,
     key: &str,
     wasm_hash: Option<&str>,
     persist: PersistFn,
@@ -302,7 +302,7 @@ fn delete_value(
     Ok(())
 }
 
-fn restore_value(state: &mut SidecarRuntimeState, key: String, previous: Option<Vec<u8>>) {
+fn restore_value(state: &mut MissionRuntimeState, key: String, previous: Option<Vec<u8>>) {
     if let Some(previous) = previous {
         state.kv.insert(key, previous);
     } else {
@@ -312,7 +312,7 @@ fn restore_value(state: &mut SidecarRuntimeState, key: String, previous: Option<
 
 fn persist_if_host_persisted(
     config: &Config,
-    state: &SidecarRuntimeState,
+    state: &MissionRuntimeState,
     wasm_hash: Option<&str>,
     persist: PersistFn,
 ) -> std::result::Result<(), String> {
@@ -332,11 +332,11 @@ fn persist_if_host_persisted(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::abi::SidecarDescribe;
+    use crate::abi::MissionModuleDescribe;
 
-    fn persisted_state() -> Arc<Mutex<SidecarRuntimeState>> {
-        let state = SidecarRuntimeState {
-            describe: Some(SidecarDescribe {
+    fn persisted_state() -> Arc<Mutex<MissionRuntimeState>> {
+        let state = MissionRuntimeState {
+            describe: Some(MissionModuleDescribe {
                 schema_version: 1,
                 logical_id: "brrmmmm.test.kv".to_string(),
                 name: "KV Test".to_string(),
@@ -361,7 +361,7 @@ mod tests {
     fn persist_ok(
         _config: &Config,
         _wasm_hash: &str,
-        _state: &SidecarRuntimeState,
+        _state: &MissionRuntimeState,
     ) -> BrrmmmmResult<()> {
         Ok(())
     }
@@ -369,7 +369,7 @@ mod tests {
     fn persist_err(
         _config: &Config,
         _wasm_hash: &str,
-        _state: &SidecarRuntimeState,
+        _state: &MissionRuntimeState,
     ) -> BrrmmmmResult<()> {
         Err(crate::error::BrrmmmmError::PersistenceFailure(
             "state directory is not writable".to_string(),

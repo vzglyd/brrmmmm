@@ -293,12 +293,13 @@ const TOPICS: [Topic; 50] = [
     },
 ];
 
-#[link(wasm_import_module = "vzglyd_host")]
+#[link(wasm_import_module = "brrmmmm_host")]
 unsafe extern "C" {
     fn host_call(ptr: i32, len: i32) -> i32;
     fn host_response_len() -> i32;
     fn host_response_read(ptr: i32, len: i32) -> i32;
     fn artifact_publish(kind_ptr: i32, kind_len: i32, data_ptr: i32, data_len: i32) -> i32;
+    fn mission_outcome_report(ptr: i32, len: i32) -> i32;
     fn log_info(ptr: i32, len: i32) -> i32;
 }
 
@@ -345,29 +346,35 @@ struct FailureOutput {
 }
 
 #[no_mangle]
-pub extern "C" fn vzglyd_sidecar_abi_version() -> u32 {
-    2
+pub extern "C" fn brrmmmm_module_abi_version() -> u32 {
+    3
 }
 
 #[no_mangle]
-pub extern "C" fn vzglyd_sidecar_describe_ptr() -> i32 {
+pub extern "C" fn brrmmmm_module_describe_ptr() -> i32 {
     DESCRIBE.as_ptr() as i32
 }
 
 #[no_mangle]
-pub extern "C" fn vzglyd_sidecar_describe_len() -> i32 {
+pub extern "C" fn brrmmmm_module_describe_len() -> i32 {
     DESCRIBE.len() as i32
 }
 
 #[no_mangle]
-pub extern "C" fn vzglyd_sidecar_start() {
+pub extern "C" fn brrmmmm_module_start() {
     match run() {
-        Ok(output) => publish_json(&output),
-        Err(error) => publish_json(&FailureOutput {
-            ok: false,
-            source: "google",
-            error,
-        }),
+        Ok(output) => {
+            publish_json(&output);
+            report_outcome("published", "published_output", "google fixture published output");
+        }
+        Err(error) => {
+            publish_json(&FailureOutput {
+                ok: false,
+                source: "google",
+                error: error.clone(),
+            });
+            report_outcome("terminal_failure", "google_search_failed", &error);
+        }
     }
 }
 
@@ -609,6 +616,16 @@ fn publish(kind: &str, data: &[u8]) {
             data.as_ptr() as i32,
             data.len() as i32,
         );
+    }
+}
+
+fn report_outcome(status: &str, reason_code: &str, message: &str) {
+    let outcome = format!(
+        r#"{{"status":"{status}","reason_code":"{reason_code}","message":{message_json},"primary_artifact_kind":"published_output"}}"#,
+        message_json = json_string(message),
+    );
+    unsafe {
+        mission_outcome_report(outcome.as_ptr() as i32, outcome.len() as i32);
     }
 }
 

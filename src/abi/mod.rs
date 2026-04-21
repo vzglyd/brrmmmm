@@ -1,36 +1,36 @@
-//! Sidecar contract and runtime snapshot types shared between sidecars, the CLI,
-//! and the TUI.
+//! Mission-module contract and runtime snapshot types shared between mission
+//! modules, the CLI, and the TUI.
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
-/// The sidecar ABI version supported by this release of `brrmmmm`.
-pub const ABI_VERSION_V2: u32 = 2;
+/// The mission-module ABI version supported by this release of `brrmmmm`.
+pub const ABI_VERSION_V3: u32 = 3;
 
-// ── Sidecar lifecycle phase ──────────────────────────────────────────
+// ── Mission lifecycle phase ──────────────────────────────────────────
 
-/// High-level lifecycle phase reported by a running sidecar.
+/// High-level lifecycle phase reported by a running mission module.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
-pub enum SidecarPhase {
-    /// The sidecar is idle and ready to begin work.
+pub enum MissionPhase {
+    /// The mission module is idle and ready to begin work.
     #[default]
     Idle,
-    /// The sidecar is waiting for a cooldown or retry window to expire.
+    /// The mission module is waiting for a cooldown or retry window to expire.
     CoolingDown,
-    /// The sidecar is performing acquisition work against a remote or local source.
+    /// The mission module is performing acquisition work against a remote or local source.
     Fetching,
-    /// The sidecar is transforming or validating acquired data.
+    /// The mission module is transforming or validating acquired data.
     Parsing,
-    /// The sidecar is publishing its final artifact.
+    /// The mission module is publishing its final artifact.
     Publishing,
-    /// The sidecar has reached a terminal failure state for the current mission.
+    /// The mission module has reached a terminal failure state for the current mission.
     Failed,
 }
 
 // ── Persistence / cooldown authority ────────────────────────────────
 
-/// How durable a sidecar's cooldown/rate-limit state is.
+/// How durable a mission module's cooldown/rate-limit state is.
 ///
 /// - `volatile`: lives only in RAM; a restart resets it (cooperative only)
 /// - `host_persisted`: survives restarts via host-managed storage (solves continuity, not abuse)
@@ -49,7 +49,7 @@ pub enum PersistenceAuthority {
 
 // ── Polling strategy ─────────────────────────────────────────────────
 
-/// Strategy a managed-polling sidecar asks the runtime to follow between runs.
+/// Strategy a managed-polling mission module asks the runtime to follow between runs.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum PollStrategy {
@@ -76,7 +76,7 @@ pub enum PollStrategy {
 
 // ── Cooldown policy ──────────────────────────────────────────────────
 
-/// Minimum interval policy declared by a sidecar for repeated acquisitions.
+/// Minimum interval policy declared by a mission module for repeated acquisitions.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CooldownPolicy {
     /// The persistence model that makes the cooldown durable.
@@ -87,7 +87,7 @@ pub struct CooldownPolicy {
 
 // ── Env var specification ────────────────────────────────────────────
 
-/// Metadata describing an environment variable expected by the sidecar.
+/// Metadata describing an environment variable expected by the mission module.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EnvVarSpec {
     /// The environment variable name the caller should provide.
@@ -98,22 +98,22 @@ pub struct EnvVarSpec {
 
 // ── Runtime parameter specification ─────────────────────────────────
 
-/// Schema for structured runtime parameters accepted by a sidecar.
+/// Schema for structured runtime parameters accepted by a mission module.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct SidecarParamsSchema {
+pub struct MissionParamsSchema {
     /// Declared input fields available to the operator or orchestrator.
     #[serde(default)]
-    pub fields: Vec<SidecarParamField>,
+    pub fields: Vec<MissionParamField>,
 }
 
-/// Definition of a single parameter accepted by a sidecar.
+/// Definition of a single parameter accepted by a mission module.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SidecarParamField {
+pub struct MissionParamField {
     /// Stable object key used in the JSON params payload.
     pub key: String,
     /// The value type expected for this field.
     #[serde(rename = "type")]
-    pub kind: SidecarParamType,
+    pub kind: MissionParamType,
     /// Whether callers must provide a value for this field.
     #[serde(default)]
     pub required: bool,
@@ -128,12 +128,12 @@ pub struct SidecarParamField {
     pub default: Option<serde_json::Value>,
     /// Enumerated allowed options for the field, when applicable.
     #[serde(default)]
-    pub options: Vec<SidecarParamOption>,
+    pub options: Vec<MissionParamOption>,
 }
 
 /// One selectable value for a parameter field.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SidecarParamOption {
+pub struct MissionParamOption {
     /// The JSON value that should be sent when this option is chosen.
     pub value: serde_json::Value,
     /// Optional display label for the option.
@@ -144,7 +144,7 @@ pub struct SidecarParamOption {
 /// Supported JSON-oriented parameter types.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-pub enum SidecarParamType {
+pub enum MissionParamType {
     /// UTF-8 string input.
     String,
     /// Signed integer input encoded as JSON number.
@@ -161,21 +161,21 @@ pub enum SidecarParamType {
 
 // ── Describe blob (sidecar export) ──────────────────────────────────
 
-/// Full self-description emitted by a sidecar at startup.
+/// Full self-description emitted by a mission module at startup.
 ///
 /// This is the core of the brrmmmm behavioral contract: OpenAPI describes
 /// the endpoint; this describes the behavior.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SidecarDescribe {
-    /// Version of the describe schema emitted by the sidecar.
+pub struct MissionModuleDescribe {
+    /// Version of the describe schema emitted by the mission module.
     pub schema_version: u8,
-    /// Stable logical identifier for the sidecar's mission source.
+    /// Stable logical identifier for the mission source.
     pub logical_id: String,
-    /// Human-readable sidecar name.
+    /// Human-readable mission module name.
     pub name: String,
     /// Human-readable description of the acquisition mission.
     pub description: String,
-    /// Sidecar ABI version, or `0` when omitted by older producers.
+    /// Mission-module ABI version, or `0` when omitted by older producers.
     #[serde(default)]
     pub abi_version: u32,
     /// Supported runtime modes such as `managed_polling` or `interactive`.
@@ -184,25 +184,25 @@ pub struct SidecarDescribe {
     /// Declared durability of cooldown and related continuity state.
     #[serde(default)]
     pub state_persistence: PersistenceAuthority,
-    /// Environment variables that must be supplied for the sidecar to run.
+    /// Environment variables that must be supplied for the mission module to run.
     #[serde(default)]
     pub required_env_vars: Vec<EnvVarSpec>,
-    /// Environment variables that are optional but recognized by the sidecar.
+    /// Environment variables that are optional but recognized by the mission module.
     #[serde(default)]
     pub optional_env_vars: Vec<EnvVarSpec>,
-    /// Structured runtime parameters accepted by the sidecar, when any.
+    /// Structured runtime parameters accepted by the mission module, when any.
     #[serde(default)]
-    pub params: Option<SidecarParamsSchema>,
-    /// Host capability names required by the sidecar.
+    pub params: Option<MissionParamsSchema>,
+    /// Host capability names required by the mission module.
     #[serde(default)]
     pub capabilities_needed: Vec<String>,
-    /// Managed-polling strategy requested by the sidecar.
+    /// Managed-polling strategy requested by the mission module.
     #[serde(default)]
     pub poll_strategy: Option<PollStrategy>,
-    /// Minimum interval policy requested by the sidecar.
+    /// Minimum interval policy requested by the mission module.
     #[serde(default)]
     pub cooldown_policy: Option<CooldownPolicy>,
-    /// Artifact kinds the sidecar may publish.
+    /// Artifact kinds the mission module may publish.
     #[serde(default)]
     pub artifact_types: Vec<String>,
     /// Optional hard timeout, in seconds, for completing one acquisition mission.
@@ -252,7 +252,7 @@ pub struct ArtifactMeta {
 pub struct GuestEvent {
     /// Guest-reported timestamp in Unix milliseconds.
     pub ts_ms: u64,
-    /// Sidecar-defined event kind.
+    /// Mission-module-defined event kind.
     pub kind: String,
     /// Event-specific structured attributes.
     #[serde(default)]
@@ -265,23 +265,59 @@ pub struct GuestEvent {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum ActiveMode {
-    /// The sidecar is running in the managed polling loop.
+    /// The mission module is running in the managed polling loop.
     #[default]
     ManagedPolling,
-    /// The sidecar is running in an operator-driven interactive session.
+    /// The mission module is running in an operator-driven interactive session.
     Interactive,
+}
+
+// ── Mission outcome ──────────────────────────────────────────────────
+
+/// Terminal mission outcome reported by a mission module or synthesized by the host.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum MissionOutcomeStatus {
+    /// The mission published its final artifact successfully.
+    Published,
+    /// The mission failed in a way that should be retried later.
+    RetryableFailure,
+    /// The mission failed terminally and should not be retried automatically.
+    TerminalFailure,
+    /// The mission requires an operator action before it can continue.
+    OperatorActionRequired,
+}
+
+/// Typed terminal outcome for one acquisition mission.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MissionOutcome {
+    /// Terminal outcome class for this mission.
+    pub status: MissionOutcomeStatus,
+    /// Stable machine-readable reason code.
+    pub reason_code: String,
+    /// Human-readable explanation of the outcome.
+    pub message: String,
+    /// Optional host-enforced retry delay for retryable failures.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retry_after_ms: Option<u64>,
+    /// Optional operator task required before the mission can continue.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub operator_action: Option<String>,
+    /// Optional primary artifact kind produced by the mission.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub primary_artifact_kind: Option<String>,
 }
 
 // ── Host-side runtime state snapshot ────────────────────────────────
 
-/// Canonical runtime state maintained by the host SidecarController.
+/// Canonical runtime state maintained by the host MissionController.
 /// Both the CLI and TUI read this — neither parses logs.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct SidecarRuntimeState {
+pub struct MissionRuntimeState {
     /// The currently active runtime mode.
     pub mode: ActiveMode,
     /// The current lifecycle phase.
-    pub phase: SidecarPhase,
+    pub phase: MissionPhase,
     /// Earliest time, in Unix milliseconds, that a new attempt is allowed.
     pub next_allowed_at_ms: Option<u64>,
     /// Next scheduled poll time, in Unix milliseconds, for managed polling.
@@ -302,8 +338,14 @@ pub struct SidecarRuntimeState {
     pub last_output_artifact: Option<ArtifactMeta>,
     /// Human-readable description of the last runtime error, if any.
     pub last_error: Option<String>,
+    /// Final mission outcome once the current mission reaches a terminal state.
+    pub last_outcome: Option<MissionOutcome>,
+    /// Timestamp of the most recent terminal mission outcome report.
+    pub last_outcome_at_ms: Option<u64>,
+    /// Source of the most recent terminal mission outcome report.
+    pub last_outcome_reported_by: Option<String>,
     /// Populated once describe() has been called.
-    pub describe: Option<SidecarDescribe>,
+    pub describe: Option<MissionModuleDescribe>,
     /// Persistent key-value storage for session state.
     #[serde(default)]
     pub kv: HashMap<String, Vec<u8>>,

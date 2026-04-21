@@ -5,7 +5,7 @@ mod inspection;
 mod io;
 mod runner;
 
-pub use inspection::{SidecarInspection, inspect_wasm_contract, validate_inspection};
+pub use inspection::{MissionInspection, inspect_module_contract, validate_module_inspection};
 
 use std::sync::{
     Arc, Mutex,
@@ -16,7 +16,7 @@ use std::thread;
 use anyhow::{Context, Result};
 use wasmtime::{Config as WasmtimeConfig, Engine, Module};
 
-use crate::abi::{ABI_VERSION_V2, ActiveMode, SidecarRuntimeState};
+use crate::abi::{ABI_VERSION_V3, ActiveMode, MissionOutcome, MissionPhase, MissionRuntimeState};
 use crate::config::Config;
 use crate::events::EventSink;
 use crate::host::ArtifactStore;
@@ -27,17 +27,32 @@ use io::RuntimePolicy;
 use io::lock_runtime;
 use runner::{WasmRunConfig, WasmRunContext, run_wasm_instance};
 
-// ── SidecarController ────────────────────────────────────────────────
+// ── MissionController ────────────────────────────────────────────────
 
-/// Owns a running WASM sidecar module and provides an observable runtime state.
-pub struct SidecarController {
+/// Final terminal state observed for one mission run.
+#[derive(Debug, Clone)]
+pub struct MissionCompletion {
+    /// Final typed mission outcome.
+    pub outcome: MissionOutcome,
+    /// Final runtime snapshot observed by the host.
+    pub snapshot: MissionRuntimeState,
+    /// Last raw-source artifact observed during this mission, when any.
+    pub raw_source: Option<Vec<u8>>,
+    /// Last normalized artifact observed during this mission, when any.
+    pub normalized: Option<Vec<u8>>,
+    /// Published output artifact when one was produced.
+    pub published_output: Option<Vec<u8>>,
+}
+
+/// Owns a running WASM mission module and provides an observable runtime state.
+pub struct MissionController {
     /// Canonical runtime state; read by `snapshot()`.
-    runtime_state: Arc<Mutex<SidecarRuntimeState>>,
+    runtime_state: Arc<Mutex<MissionRuntimeState>>,
     /// Named artifact store; published_output consumed by `--once` mode.
     artifact_store: Arc<Mutex<ArtifactStore>>,
-    /// Background thread running the sidecar.
+    /// Background thread running the mission module.
     thread: Option<thread::JoinHandle<()>>,
-    /// Signal to gracefully stop the sidecar thread.
+    /// Signal to gracefully stop the mission-module thread.
     stop_signal: Arc<AtomicBool>,
     /// When set, the next `announce_sleep` call returns 1 (skip sleep).
     force_refresh: Arc<AtomicBool>,
@@ -45,8 +60,8 @@ pub struct SidecarController {
     params_bytes: Arc<Mutex<Option<Vec<u8>>>>,
 }
 
-impl SidecarController {
-    /// Load a sidecar WASM module and start running it in a background thread.
+impl MissionController {
+    /// Load a mission-module WASM module and start running it in a background thread.
     pub fn new(
         wasm_path: &str,
         env_vars: Vec<(String, String)>,
@@ -60,7 +75,7 @@ impl SidecarController {
             && params.len() > policy.max_params_bytes
         {
             anyhow::bail!(
-                "sidecar params are {} bytes, exceeding the configured limit of {} bytes",
+                "mission params are {} bytes, exceeding the configured limit of {} bytes",
                 params.len(),
                 policy.max_params_bytes
             );
@@ -78,9 +93,16 @@ impl SidecarController {
                 "load or create brrmmmm attestation identity; set BRRMMMM_ATTESTATION=off for explicit legacy mode",
             )?)
         };
-        let runtime_state = persistence::load(config, &wasm_hash)
+        let mut runtime_state = persistence::load(config, &wasm_hash)
             .with_context(|| format!("load persisted runtime state for WASM {wasm_hash}"))?
             .unwrap_or_default();
+        runtime_state.phase = MissionPhase::Idle;
+        runtime_state.last_error = None;
+        runtime_state.last_outcome = None;
+        runtime_state.last_outcome_at_ms = None;
+        runtime_state.last_outcome_reported_by = None;
+        runtime_state.last_raw_artifact = None;
+        runtime_state.last_output_artifact = None;
         let runtime_state = Arc::new(Mutex::new(runtime_state));
         let stop_signal = Arc::new(AtomicBool::new(false));
 
@@ -136,7 +158,7 @@ impl SidecarController {
                 env_vars,
                 params_bytes,
                 log_channel,
-                abi_version: ABI_VERSION_V2,
+                abi_version: ABI_VERSION_V3,
                 wasm_size_bytes: wasm_bytes_for_thread.len(),
                 wasm_hash,
                 module_hash,
@@ -174,22 +196,42 @@ impl SidecarController {
     }
 
     /// Return a snapshot of the current runtime state.
-    pub fn snapshot(&self) -> SidecarRuntimeState {
+    pub fn snapshot(&self) -> MissionRuntimeState {
         lock_runtime(&self.runtime_state, "runtime_state").clone()
     }
 
-    /// Return the sidecar-declared acquisition budget once describe() has been read.
+    /// Return the mission-module-declared acquisition budget once describe() has been read.
     pub fn acquisition_timeout_secs(&self) -> Option<u32> {
         self.snapshot()
             .describe
             .and_then(|describe| describe.acquisition_timeout_secs)
     }
 
-    /// Poll for the latest published_output artifact, consuming it.
-    pub fn poll_output(&self) -> Option<Vec<u8>> {
-        lock_runtime(&self.artifact_store, "artifact_store")
-            .take_published()
-            .map(|a| a.data)
+    /// Poll for the terminal mission outcome, consuming the published output artifact if present.
+    pub fn poll_completion(&self) -> Option<MissionCompletion> {
+        let snapshot = self.snapshot();
+        let outcome = snapshot.last_outcome.clone()?;
+        let (raw_source, normalized, published_output) = {
+            let mut store = lock_runtime(&self.artifact_store, "artifact_store");
+            (
+                store
+                    .raw_source
+                    .as_ref()
+                    .map(|artifact| artifact.data.clone()),
+                store
+                    .normalized
+                    .as_ref()
+                    .map(|artifact| artifact.data.clone()),
+                store.take_published().map(|artifact| artifact.data),
+            )
+        };
+        Some(MissionCompletion {
+            outcome,
+            snapshot,
+            raw_source,
+            normalized,
+            published_output,
+        })
     }
 
     /// Return a clone of the force-refresh flag for use by the stdin command listener.
@@ -202,14 +244,14 @@ impl SidecarController {
         self.params_bytes.clone()
     }
 
-    /// Signal the sidecar to stop and detach the background thread.
+    /// Signal the mission module to stop and detach the background thread.
     pub fn stop(mut self) {
         self.stop_signal.store(true, Ordering::Relaxed);
         self.thread.take();
     }
 }
 
-impl Drop for SidecarController {
+impl Drop for MissionController {
     fn drop(&mut self) {
         self.stop_signal.store(true, Ordering::Relaxed);
         self.thread.take();

@@ -3,7 +3,7 @@
   "logical_id": "brrmmmm.fixture.google_search",
   "name": "Google Search Fixture",
   "description": "Drives google.com through the browser ABI, selects a random TREC topic, submits the query, retrieves result HTML, and publishes structured JSON.",
-  "abi_version": 2,
+  "abi_version": 3,
   "run_modes": ["managed_polling"],
   "state_persistence": "host_persisted",
   "required_env_vars": [],

@@ -5,7 +5,7 @@ use std::sync::{
 use std::thread;
 use std::time::{Duration, Instant};
 
-use crate::abi::SidecarRuntimeState;
+use crate::abi::MissionRuntimeState;
 use crate::events::{Event, EventSink, ms_to_iso8601, now_ms, now_ts};
 
 use super::super::io::{WasmCaller, WasmLinker, update_sleep_state};
@@ -13,7 +13,7 @@ use super::super::io::{WasmCaller, WasmLinker, update_sleep_state};
 pub(super) fn register(
     linker: &mut WasmLinker,
     event_sink: EventSink,
-    runtime_state: Arc<Mutex<SidecarRuntimeState>>,
+    runtime_state: Arc<Mutex<MissionRuntimeState>>,
     stop_signal: Arc<AtomicBool>,
     force_refresh: Arc<AtomicBool>,
 ) -> anyhow::Result<()> {
@@ -22,7 +22,7 @@ pub(super) fn register(
     let stop_host_sleep = stop_signal;
     let runtime_host_sleep = runtime_state.clone();
     linker.func_wrap(
-        "vzglyd_host",
+        "brrmmmm_host",
         "sleep_ms",
         move |_caller: WasmCaller<'_>, duration_ms: i64| -> i32 {
             if duration_ms <= 0 {
@@ -60,7 +60,7 @@ pub(super) fn register(
     let force_refresh_sleep = force_refresh;
     let runtime_sleep = runtime_state;
     linker.func_wrap(
-        "vzglyd_host",
+        "brrmmmm_host",
         "announce_sleep",
         move |_caller: WasmCaller<'_>, duration_ms: i64| -> i32 {
             if force_refresh_sleep.swap(false, Ordering::Relaxed) {

@@ -4,6 +4,7 @@ mod browser;
 mod host_call;
 mod kv;
 mod network;
+mod outcome;
 mod params;
 mod sleep;
 mod tracing;
@@ -16,18 +17,18 @@ use std::sync::{
 
 use anyhow::Result;
 
-use crate::abi::SidecarRuntimeState;
+use crate::abi::MissionRuntimeState;
 use crate::events::EventSink;
 use crate::host::HostState;
 
 use super::io::WasmLinker;
 
 #[allow(clippy::too_many_arguments)]
-pub(super) fn register_vzglyd_host_on_linker(
+pub(super) fn register_brrmmmm_host_on_linker(
     linker: &mut WasmLinker,
     host_state: HostState,
     event_sink: EventSink,
-    runtime_state: Arc<Mutex<SidecarRuntimeState>>,
+    runtime_state: Arc<Mutex<MissionRuntimeState>>,
     stop_signal: Arc<AtomicBool>,
     force_refresh: Arc<AtomicBool>,
     wasm_hash: Option<String>,
@@ -43,6 +44,12 @@ pub(super) fn register_vzglyd_host_on_linker(
         runtime_state.clone(),
     )?;
     params::register(linker, shared.clone(), event_sink.clone())?;
+    outcome::register(
+        linker,
+        shared.clone(),
+        event_sink.clone(),
+        runtime_state.clone(),
+    )?;
     sleep::register(
         linker,
         event_sink.clone(),

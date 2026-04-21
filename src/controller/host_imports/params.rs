@@ -13,7 +13,7 @@ pub(super) fn register(
     event_sink: EventSink,
 ) -> anyhow::Result<()> {
     let s_params_len = shared.clone();
-    linker.func_wrap("vzglyd_host", "params_len", move || -> i32 {
+    linker.func_wrap("brrmmmm_host", "params_len", move || -> i32 {
         let hs = lock_runtime(&s_params_len, "host_state");
         let pb = lock_runtime(&*hs.params_bytes, "params_bytes");
         pb.as_ref().map_or(0, |params| params.len() as i32)
@@ -22,7 +22,7 @@ pub(super) fn register(
     let s_params_read = shared.clone();
     let sink_params_read = event_sink.clone();
     linker.func_wrap(
-        "vzglyd_host",
+        "brrmmmm_host",
         "params_read",
         move |mut caller: WasmCaller<'_>, ptr: i32, len: i32| -> i32 {
             if ptr < 0 || len < 0 {
@@ -51,7 +51,7 @@ pub(super) fn register(
 
     let sink_log = event_sink;
     linker.func_wrap(
-        "vzglyd_host",
+        "brrmmmm_host",
         "log_info",
         move |mut caller: WasmCaller<'_>, ptr: i32, len: i32| -> i32 {
             if let Ok(data) = read_memory_from_caller(&mut caller, ptr, len)

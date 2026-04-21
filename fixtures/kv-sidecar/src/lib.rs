@@ -5,7 +5,7 @@ const PERSISTED_KEY: &[u8] = b"persisted_token";
 const PERSISTED_VALUE: &[u8] = b"secret-token";
 const PUBLISHED_KIND: &[u8] = b"published_output";
 
-#[link(wasm_import_module = "vzglyd_host")]
+#[link(wasm_import_module = "brrmmmm_host")]
 extern "C" {
     fn kv_get(key_ptr: i32, key_len: i32) -> i32;
     fn kv_set(key_ptr: i32, key_len: i32, value_ptr: i32, value_len: i32) -> i32;
@@ -13,28 +13,32 @@ extern "C" {
     fn kv_response_len() -> i32;
     fn kv_response_read(ptr: i32, len: i32) -> i32;
     fn artifact_publish(kind_ptr: i32, kind_len: i32, data_ptr: i32, data_len: i32) -> i32;
+    fn mission_outcome_report(ptr: i32, len: i32) -> i32;
 }
 
 #[no_mangle]
-pub extern "C" fn vzglyd_sidecar_abi_version() -> u32 {
-    2
+pub extern "C" fn brrmmmm_module_abi_version() -> u32 {
+    3
 }
 
 #[no_mangle]
-pub extern "C" fn vzglyd_sidecar_describe_ptr() -> i32 {
+pub extern "C" fn brrmmmm_module_describe_ptr() -> i32 {
     DESCRIBE.as_ptr() as i32
 }
 
 #[no_mangle]
-pub extern "C" fn vzglyd_sidecar_describe_len() -> i32 {
+pub extern "C" fn brrmmmm_module_describe_len() -> i32 {
     DESCRIBE.len() as i32
 }
 
 #[no_mangle]
-pub extern "C" fn vzglyd_sidecar_start() {
+pub extern "C" fn brrmmmm_module_start() {
     if let Err(error) = run() {
         publish_json(&format!(r#"{{"ok":false,"error":"{error}"}}"#));
+        report_outcome("terminal_failure", "kv_roundtrip_failed", error);
+        return;
     }
+    report_outcome("published", "published_output", "fixture published KV payload");
 }
 
 fn run() -> Result<(), &'static str> {
@@ -108,5 +112,14 @@ fn publish_json(json: &str) {
             json.as_ptr() as i32,
             json.len() as i32,
         );
+    }
+}
+
+fn report_outcome(status: &str, reason_code: &str, message: &str) {
+    let outcome = format!(
+        r#"{{"status":"{status}","reason_code":"{reason_code}","message":"{message}","primary_artifact_kind":"published_output"}}"#
+    );
+    unsafe {
+        mission_outcome_report(outcome.as_ptr() as i32, outcome.len() as i32);
     }
 }

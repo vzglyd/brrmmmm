@@ -1,6 +1,6 @@
 use std::sync::{Arc, Mutex};
 
-use crate::abi::{ArtifactMeta, SidecarDescribe, SidecarPhase, SidecarRuntimeState};
+use crate::abi::{ArtifactMeta, MissionModuleDescribe, MissionPhase, MissionRuntimeState};
 use crate::events::{Event, EventSink, diag, now_ms, now_ts};
 use crate::host::{Artifact, HostState};
 
@@ -13,92 +13,13 @@ pub(super) fn register(
     linker: &mut WasmLinker,
     shared: Arc<Mutex<HostState>>,
     event_sink: EventSink,
-    runtime_state: Arc<Mutex<SidecarRuntimeState>>,
+    runtime_state: Arc<Mutex<MissionRuntimeState>>,
 ) -> anyhow::Result<()> {
-    let s_push = shared.clone();
-    let sink_push = event_sink.clone();
-    let runtime_push = runtime_state.clone();
-    linker.func_wrap(
-        "vzglyd_host",
-        "channel_push",
-        move |mut caller: WasmCaller<'_>, ptr: i32, len: i32| -> i32 {
-            let limits = lock_runtime(&s_push, "host_state").config.limits.clone();
-            let data = match read_limited_memory_from_caller(
-                &mut caller,
-                ptr,
-                len,
-                limits.max_artifact_bytes,
-                "channel_push payload",
-            ) {
-                Ok(d) => d,
-                Err(e) => {
-                    diag(
-                        &sink_push,
-                        &format!("[brrmmmm] channel_push memory error: {e}"),
-                    );
-                    return -1;
-                }
-            };
-            let size = data.len();
-            let received_at = now_ms();
-            let preview = preview_string(&data, limits.max_artifact_preview_chars);
-
-            let artifact = Artifact {
-                kind: "published_output".to_string(),
-                data,
-                received_at_ms: received_at,
-            };
-            let meta = ArtifactMeta {
-                kind: "published_output".to_string(),
-                size_bytes: size,
-                received_at_ms: received_at,
-            };
-
-            {
-                let guard = lock_runtime(&s_push, "host_state");
-                if guard.log_channel {
-                    diag(&sink_push, &format!("[brrmmmm] channel_push: {size} bytes"));
-                    diag(
-                        &sink_push,
-                        &format!(
-                            "[brrmmmm]   payload: {}",
-                            &preview.chars().take(200).collect::<String>()
-                        ),
-                    );
-                }
-                lock_runtime(&*guard.artifact_store, "artifact_store").store(artifact);
-            }
-
-            update_artifact_state(&runtime_push, &meta);
-            update_phase_state(&runtime_push, &sink_push, SidecarPhase::Publishing);
-            sink_push.emit(Event::ArtifactReceived {
-                ts: now_ts(),
-                kind: "published_output".to_string(),
-                size_bytes: size,
-                preview,
-                artifact: meta,
-            });
-            0
-        },
-    )?;
-
-    linker.func_wrap(
-        "vzglyd_host",
-        "channel_poll",
-        |_caller: WasmCaller<'_>, _ptr: i32, _len: i32| -> i32 { -1 },
-    )?;
-
-    linker.func_wrap(
-        "vzglyd_host",
-        "channel_active",
-        |_caller: WasmCaller<'_>| -> i32 { 1 },
-    )?;
-
     let s_artifact = shared.clone();
     let sink_artifact = event_sink.clone();
     let runtime_artifact = runtime_state.clone();
     linker.func_wrap(
-        "vzglyd_host",
+        "brrmmmm_host",
         "artifact_publish",
         move |mut caller: WasmCaller<'_>,
               kind_ptr: i32,
@@ -155,11 +76,24 @@ pub(super) fn register(
 
             {
                 let hs = lock_runtime(&s_artifact, "host_state");
+                if hs.log_channel && kind == "published_output" {
+                    diag(
+                        &sink_artifact,
+                        &format!("[brrmmmm] published_output: {size} bytes"),
+                    );
+                    diag(
+                        &sink_artifact,
+                        &format!(
+                            "[brrmmmm]   payload: {}",
+                            &preview.chars().take(200).collect::<String>()
+                        ),
+                    );
+                }
                 lock_runtime(&*hs.artifact_store, "artifact_store").store(artifact);
             }
 
             update_artifact_state(&runtime_artifact, &meta);
-            update_phase_state(&runtime_artifact, &sink_artifact, SidecarPhase::Publishing);
+            update_phase_state(&runtime_artifact, &sink_artifact, MissionPhase::Publishing);
             sink_artifact.emit(Event::ArtifactReceived {
                 ts: now_ts(),
                 kind,
@@ -174,7 +108,7 @@ pub(super) fn register(
     let sink_manifest = event_sink;
     let runtime_manifest = runtime_state;
     linker.func_wrap(
-        "vzglyd_host",
+        "brrmmmm_host",
         "register_manifest",
         move |mut caller: WasmCaller<'_>, ptr: i32, len: i32| -> i32 {
             if let Ok(data) = read_limited_memory_from_caller(
@@ -182,8 +116,8 @@ pub(super) fn register(
                 ptr,
                 len,
                 1024 * 1024,
-                "sidecar manifest",
-            ) && let Ok(describe) = serde_json::from_slice::<SidecarDescribe>(&data)
+                "mission manifest",
+            ) && let Ok(describe) = serde_json::from_slice::<MissionModuleDescribe>(&data)
             {
                 lock_runtime(&runtime_manifest, "runtime_state").describe = Some(describe.clone());
                 sink_manifest.emit(Event::Describe {

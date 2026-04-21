@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "logical_id": "brrmmmm.fixture.params",
+  "name": "Params Fixture Sidecar",
+  "description": "Reads host-owned params and republishes them for CLI precedence tests.",
+  "abi_version": 3,
+  "run_modes": ["managed_polling"],
+  "state_persistence": "volatile",
+  "required_env_vars": [],
+  "optional_env_vars": [],
+  "params": {
+    "fields": []
+  },
+  "capabilities_needed": [],
+  "poll_strategy": {
+    "kind": "fixed_interval",
+    "interval_secs": 60
+  },
+  "cooldown_policy": null,
+  "artifact_types": ["published_output"]
+}

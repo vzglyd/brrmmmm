@@ -2,7 +2,7 @@
 
 use sha2::{Digest, Sha256};
 
-use crate::abi::SidecarDescribe;
+use crate::abi::MissionModuleDescribe;
 use crate::identity::{BehaviorHash, MissionId, ModuleHash};
 
 bitflags::bitflags! {
@@ -51,7 +51,7 @@ impl MissionState {
     }
 
     /// Replace the fallback mission ID with one derived from the describe contract.
-    pub fn set_describe(&mut self, describe: &SidecarDescribe) {
+    pub fn set_describe(&mut self, describe: &MissionModuleDescribe) {
         self.mission_id = mission_id_from_describe(self.module_hash, describe);
     }
 
@@ -115,7 +115,10 @@ pub fn mission_id_without_describe(module_hash: ModuleHash) -> MissionId {
 /// hashing so the result is insensitive to ordering differences in the describe
 /// payload. Complexity is `O(c log c + m log m)`, where `c` is the number of
 /// declared capabilities and `m` is the number of declared run modes.
-pub fn mission_id_from_describe(module_hash: ModuleHash, describe: &SidecarDescribe) -> MissionId {
+pub fn mission_id_from_describe(
+    module_hash: ModuleHash,
+    describe: &MissionModuleDescribe,
+) -> MissionId {
     let mut capabilities = describe.capabilities_needed.clone();
     capabilities.sort();
     let mut modes = describe.run_modes.clone();
@@ -235,8 +238,8 @@ mod tests {
 
     use super::*;
 
-    fn describe(capabilities: Vec<String>) -> SidecarDescribe {
-        SidecarDescribe {
+    fn describe(capabilities: Vec<String>) -> MissionModuleDescribe {
+        MissionModuleDescribe {
             schema_version: 1,
             logical_id: "brrmmmm.test".to_string(),
             name: "Test".to_string(),

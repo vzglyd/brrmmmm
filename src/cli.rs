@@ -19,15 +19,18 @@ pub(crate) enum LogFormat {
 #[derive(Parser)]
 #[command(
     name = "brrmmmm",
-    about = "Synchronous acquisition runtime for portable WASM sidecars",
+    about = "Acquisition runtime for portable WASM mission modules",
     after_help = "\
 EXAMPLES:
-  brrmmmm sidecar.wasm              # launches TUI
-  brrmmmm run      sidecar.wasm --once
-  brrmmmm run      sidecar.wasm --once --output json
-  brrmmmm inspect  sidecar.wasm --output table
-  brrmmmm validate sidecar.wasm
-  brrmmmm validate sidecar.wasm --output table",
+  brrmmmm mission-module.wasm       # launches TUI
+  brrmmmm                          # runs ./brrmmmm.toml when present
+  brrmmmm run      mission-module.wasm --once
+  brrmmmm run      --once --result-path mission.json
+  brrmmmm run      mission-module.wasm --once --output json
+  brrmmmm inspect  mission-module.wasm --output table
+  brrmmmm validate mission-module.wasm
+  brrmmmm validate mission-module.wasm --output table
+  brrmmmm explain  mission.json",
     version
 )]
 pub(crate) struct Cli {
@@ -47,18 +50,18 @@ pub(crate) struct Cli {
     #[command(subcommand)]
     pub(crate) command: Option<Commands>,
 
-    /// Path to the sidecar .wasm file (launches TUI if provided without a subcommand)
+    /// Path to the mission-module `.wasm` file (launches TUI if provided without a subcommand)
     #[arg(value_name = "WASM", value_hint = ValueHint::FilePath)]
     pub(crate) wasm: Option<PathBuf>,
 }
 
 #[derive(Subcommand)]
 pub(crate) enum Commands {
-    /// Run a sidecar WASM module
+    /// Run a mission-module WASM module
     Run {
-        /// Path to the sidecar .wasm file
+        /// Path to the mission-module `.wasm` file. Falls back to mission.wasm in ./brrmmmm.toml.
         #[arg(value_name = "WASM", value_hint = ValueHint::FilePath)]
-        wasm_path: PathBuf,
+        wasm_path: Option<PathBuf>,
 
         /// Run a single acquisition and exit (default and currently the only mode)
         #[arg(long)]
@@ -68,35 +71,54 @@ pub(crate) enum Commands {
         #[arg(short = 'e', long, value_name = "KEY=VALUE", value_parser = parse_key_val)]
         env: Vec<String>,
 
-        /// JSON object exposed through the sidecar params_len/params_read imports
+        /// JSON object exposed through the mission-module params_len/params_read imports
         #[arg(short = 'j', long, conflicts_with = "params_file")]
         params_json: Option<String>,
 
-        /// Path to a JSON file exposed through the sidecar params_len/params_read imports
+        /// Path to a JSON file exposed through the mission-module params_len/params_read imports
         #[arg(short = 'f', long, value_name = "PATH", value_hint = ValueHint::FilePath)]
         params_file: Option<PathBuf>,
+
+        /// Path to a durable mission-result JSON file
+        #[arg(long, value_name = "PATH", value_hint = ValueHint::FilePath)]
+        result_path: Option<PathBuf>,
 
         /// Log channel pushes to stderr
         #[arg(long)]
         log_channel: bool,
 
+        /// Disable log channel pushes configured by default
+        #[arg(long = "no-log-channel", conflicts_with = "log_channel")]
+        no_log_channel: bool,
+
         /// Emit structured NDJSON event stream to stdout (for TUI subprocess mode)
         #[arg(long)]
         events: bool,
+
+        /// Disable structured NDJSON events configured by default
+        #[arg(long = "no-events", conflicts_with = "events")]
+        no_events: bool,
     },
 
-    /// Inspect a sidecar WASM module and print its contract
+    /// Inspect a mission-module WASM module and print its contract
     Inspect {
-        /// Path to the sidecar .wasm file
+        /// Path to the mission-module `.wasm` file. Falls back to mission.wasm in ./brrmmmm.toml.
         #[arg(value_name = "WASM", value_hint = ValueHint::FilePath)]
-        wasm_path: PathBuf,
+        wasm_path: Option<PathBuf>,
     },
 
-    /// Validate that a sidecar WASM module loads correctly
+    /// Validate that a mission-module WASM module loads correctly
     Validate {
-        /// Path to the sidecar .wasm file
+        /// Path to the mission-module `.wasm` file. Falls back to mission.wasm in ./brrmmmm.toml.
         #[arg(value_name = "WASM", value_hint = ValueHint::FilePath)]
-        wasm_path: PathBuf,
+        wasm_path: Option<PathBuf>,
+    },
+
+    /// Explain a durable mission record
+    Explain {
+        /// Path to the mission record JSON file.
+        #[arg(value_name = "PATH", value_hint = ValueHint::FilePath)]
+        record_path: PathBuf,
     },
 }
 

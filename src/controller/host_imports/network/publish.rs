@@ -2,7 +2,7 @@ use std::sync::{Arc, Mutex};
 
 use base64::Engine as _;
 
-use crate::abi::{ArtifactMeta, SidecarRuntimeState};
+use crate::abi::{ArtifactMeta, MissionRuntimeState};
 use crate::events::{Event, EventSink, now_ms, now_ts};
 use crate::host::host_request::NetworkResponseData;
 use crate::host::{Artifact, HostState};
@@ -13,7 +13,7 @@ use super::super::super::io::update_artifact_state;
 pub(super) fn publish_raw_source_payload(
     response: &NetworkResponseData,
     shared: &Arc<Mutex<HostState>>,
-    runtime_state: &Arc<Mutex<SidecarRuntimeState>>,
+    runtime_state: &Arc<Mutex<MissionRuntimeState>>,
     sink: &EventSink,
 ) {
     let NetworkResponseData::Http {

@@ -10,14 +10,14 @@ use super::state::{pending_kv_response_len, take_pending_kv_response};
 pub(super) fn register(linker: &mut WasmLinker, shared: Arc<Mutex<HostState>>) -> Result<()> {
     let len_shared = shared.clone();
     linker.func_wrap(
-        "vzglyd_host",
+        "brrmmmm_host",
         "kv_response_len",
         move |_caller: WasmCaller<'_>| -> i32 { pending_kv_response_len(&len_shared) },
     )?;
 
     let peek_shared = shared.clone();
     linker.func_wrap(
-        "vzglyd_host",
+        "brrmmmm_host",
         "kv_response_read",
         move |mut caller: WasmCaller<'_>, ptr: i32, len: i32| -> i32 {
             let data_len = pending_kv_response_len(&peek_shared);

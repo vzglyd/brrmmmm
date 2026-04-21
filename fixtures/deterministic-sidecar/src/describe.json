@@ -3,7 +3,7 @@
   "logical_id": "brrmmmm.fixture.deterministic",
   "name": "Deterministic Fixture Sidecar",
   "description": "A stable sidecar used to prove brrmmmm contract and output behavior.",
-  "abi_version": 2,
+  "abi_version": 3,
   "run_modes": ["managed_polling", "interactive"],
   "state_persistence": "host_persisted",
   "required_env_vars": [],

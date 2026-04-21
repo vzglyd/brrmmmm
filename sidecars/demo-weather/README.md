@@ -1,6 +1,6 @@
-# demo-weather-sidecar
+# demo-weather mission module
 
-Fetches current weather conditions from [Open-Meteo](https://open-meteo.com/) (free, no API key) and publishes a structured payload via the `vzglyd_host` ABI. Defaults to Berlin. Override the location with environment variables.
+Fetches current weather conditions from [Open-Meteo](https://open-meteo.com/) (free, no API key) and publishes a structured payload via the `brrmmmm_host` ABI. Defaults to Berlin. Override the location with environment variables.
 
 ## Build
 
@@ -31,7 +31,7 @@ WASM=target/wasm32-wasip1/release/demo_weather_sidecar.wasm
 # 1. Validate: check imports resolve and ABI version matches
 brrmmmm validate $WASM
 
-# 2. Inspect: show sidecar manifest (name, capabilities, poll strategy)
+# 2. Inspect: show the mission-module contract (name, capabilities, poll strategy)
 brrmmmm inspect $WASM
 
 # 3. One-shot fetch: print published_output to stdout
@@ -62,13 +62,13 @@ brrmmmm run $WASM --once \
 
 ## Sample output
 
-`brrmmmm inspect` shows the manifest:
+`brrmmmm inspect` shows the contract:
 
 ```
 logical_id:   brrmmmm.demo.weather
-name:         Demo Weather Sidecar
-abi_version:  2
-poll:         fixed_interval 300s
+name:         Demo Weather Mission Module
+abi_version:  3
+poll_strategy: fixed_interval 300s
 artifacts:    raw_source_payload, normalized_payload, published_output
 ```
 
@@ -88,6 +88,6 @@ artifacts:    raw_source_payload, normalized_payload, published_output
 
 ## How it works
 
-The sidecar uses `vzglyd_host::host_call` with `capability = "network"` to call the Open-Meteo `/v1/forecast` endpoint. The host runtime (brrmmmm) makes the actual network call and returns the response via `host_response_len` / `host_response_read`. The sidecar decodes the base64 body, parses the JSON inside WASM, and publishes three artifact kinds via `artifact_publish`.
+The mission module uses `brrmmmm_host::host_call` with `capability = "network"` to call the Open-Meteo `/v1/forecast` endpoint. The host runtime makes the actual network call and returns the response via `host_response_len` / `host_response_read`. The module decodes the base64 body, parses the JSON inside Wasm, publishes artifacts via `artifact_publish`, and reports the terminal mission outcome via `mission_outcome_report`.
 
 No networking code runs inside the WASM sandbox — all TCP/TLS is delegated to the host.

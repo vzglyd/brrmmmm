@@ -3,7 +3,7 @@
   "logical_id": "brrmmmm.fixture.browser_login",
   "name": "Browser Login Fixture",
   "description": "Exercises the full browser action protocol using an inline data: URL login form. No external network required.",
-  "abi_version": 2,
+  "abi_version": 3,
   "run_modes": ["managed_polling"],
   "state_persistence": "host_persisted",
   "required_env_vars": [],

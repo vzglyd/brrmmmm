@@ -1,23 +1,24 @@
 use anyhow::{Context, Result};
 use std::path::Path;
 
+use brrmmmm::abi::MissionOutcomeStatus;
 use brrmmmm::config::Config;
-use brrmmmm::controller::SidecarController;
+use brrmmmm::controller::MissionController;
+use brrmmmm::error::BrrmmmmError;
 use brrmmmm::events::{EnvVarStatus, Event, EventSink, now_ts};
 
 use crate::cli::OutputFormat;
+use crate::mission_result::MissionRecorder;
 
-use super::params;
 use super::output::write_payload;
 
 pub(crate) struct RunOptions<'a> {
     pub(crate) wasm_path: &'a Path,
-    pub(crate) env: &'a [String],
-    pub(crate) params_json: Option<&'a str>,
-    pub(crate) params_file: Option<&'a Path>,
+    pub(crate) env_vars: Vec<(String, String)>,
+    pub(crate) params_bytes: Option<Vec<u8>>,
+    pub(crate) mission_recorder: Option<MissionRecorder>,
     pub(crate) log_channel: bool,
     pub(crate) events_mode: bool,
-    pub(crate) verbose: bool,
     pub(crate) output: OutputFormat,
     pub(crate) config: &'a Config,
 }
@@ -25,18 +26,14 @@ pub(crate) struct RunOptions<'a> {
 pub(crate) fn cmd_run(options: RunOptions<'_>) -> Result<()> {
     let RunOptions {
         wasm_path,
-        env,
-        params_json,
-        params_file,
+        env_vars,
+        params_bytes,
+        mission_recorder,
         log_channel,
         events_mode,
-        verbose: _verbose,
         output,
         config,
     } = options;
-
-    let env_vars = params::parse_env_vars(env);
-    let params_bytes = params::parse_params_bytes(params_json, params_file, &config.limits)?;
 
     let sink = if events_mode {
         EventSink::for_stdout()
@@ -55,6 +52,7 @@ pub(crate) fn cmd_run(options: RunOptions<'_>) -> Result<()> {
         wasm_path,
         env_vars,
         params_bytes,
+        mission_recorder,
         log_channel,
         events_mode,
         output,
@@ -67,6 +65,7 @@ struct RunOnceOptions<'a> {
     wasm_path: &'a Path,
     env_vars: Vec<(String, String)>,
     params_bytes: Option<Vec<u8>>,
+    mission_recorder: Option<MissionRecorder>,
     log_channel: bool,
     events_mode: bool,
     output: OutputFormat,
@@ -79,6 +78,7 @@ fn run_once(options: RunOnceOptions<'_>) -> Result<()> {
         wasm_path,
         env_vars,
         params_bytes,
+        mission_recorder,
         log_channel,
         events_mode,
         output,
@@ -90,10 +90,10 @@ fn run_once(options: RunOnceOptions<'_>) -> Result<()> {
 
     if !events_mode {
         eprintln!("[brrmmmm] running {wasm_str} in --once mode");
-        eprintln!("[brrmmmm] starting sidecar, waiting for first channel_push...");
+        eprintln!("[brrmmmm] starting mission module, waiting for a terminal outcome...");
     }
 
-    let controller = SidecarController::new(
+    let controller = MissionController::new(
         &wasm_str,
         env_vars,
         params_bytes.clone(),
@@ -101,7 +101,8 @@ fn run_once(options: RunOnceOptions<'_>) -> Result<()> {
         sink,
         config,
     )
-    .with_context(|| format!("failed to load sidecar: {wasm_str}"))?;
+    .with_context(|| format!("failed to load mission module: {wasm_str}"))
+    .map_err(|error| record_failure(mission_recorder.as_ref(), error))?;
 
     let mut timeout = std::time::Duration::from_secs(30);
     let start = std::time::Instant::now();
@@ -114,29 +115,63 @@ fn run_once(options: RunOnceOptions<'_>) -> Result<()> {
             timeout = std::time::Duration::from_secs(timeout_secs as u64);
         }
 
-        if let Some(data) = controller.poll_output() {
-            if !events_mode {
-                write_payload(&data, output)?;
+        if let Some(completion) = controller.poll_completion() {
+            if let Some(recorder) = mission_recorder.as_ref() {
+                recorder
+                    .write_completion(&completion)
+                    .map_err(|error| record_failure(mission_recorder.as_ref(), error))?;
+            } else if !events_mode
+                && completion.outcome.status == MissionOutcomeStatus::Published
+                && let Some(data) = completion.published_output.as_deref()
+            {
+                write_payload(data, output)?;
                 eprintln!(
-                    "[brrmmmm] payload received ({} bytes), stopping",
+                    "[brrmmmm] published output received ({} bytes), stopping",
                     data.len()
                 );
             }
             controller.stop();
-            return Ok(());
+            return match completion.outcome.status {
+                MissionOutcomeStatus::Published => Ok(()),
+                MissionOutcomeStatus::RetryableFailure => {
+                    if completion.outcome.reason_code == "acquisition_timeout" {
+                        Err(BrrmmmmError::Timeout(completion.outcome.message).into())
+                    } else {
+                        Err(BrrmmmmError::RuntimeFailure(completion.outcome.message).into())
+                    }
+                }
+                MissionOutcomeStatus::TerminalFailure
+                | MissionOutcomeStatus::OperatorActionRequired => {
+                    Err(BrrmmmmError::RuntimeFailure(completion.outcome.message).into())
+                }
+            };
         }
 
         if start.elapsed() > timeout {
             if !events_mode {
                 eprintln!(
-                    "[brrmmmm] timeout waiting for channel_push ({}s)",
+                    "[brrmmmm] timeout waiting for a terminal mission outcome ({}s)",
                     timeout.as_secs()
                 );
             }
             controller.stop();
-            anyhow::bail!("timeout waiting for sidecar payload");
+            let error = BrrmmmmError::Timeout(format!(
+                "waiting for mission outcome after {}s",
+                timeout.as_secs()
+            ));
+            return Err(record_failure(mission_recorder.as_ref(), error.into()));
         }
 
         std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+}
+
+fn record_failure(recorder: Option<&MissionRecorder>, error: anyhow::Error) -> anyhow::Error {
+    let Some(recorder) = recorder else {
+        return error;
+    };
+    match recorder.write_runtime_error(&error) {
+        Ok(()) => error,
+        Err(write_error) => write_error.context(format!("original run error: {error:#}")),
     }
 }
