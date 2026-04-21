@@ -78,6 +78,8 @@ struct RunOnceOptions<'a> {
 }
 
 fn run_once(options: RunOnceOptions<'_>) -> Result<()> {
+    const WATCHDOG_GRACE_MS: u64 = 250;
+
     let RunOnceOptions {
         wasm_path,
         env_vars,
@@ -149,13 +151,22 @@ fn run_once(options: RunOnceOptions<'_>) -> Result<()> {
                 MissionOutcomeStatus::TerminalFailure => {
                     Err(BrrmmmmError::RuntimeFailure(completion.outcome.message).into())
                 }
-                MissionOutcomeStatus::OperatorActionRequired => Err(
-                    BrrmmmmError::OperatorActionRequired(completion.outcome.message).into(),
-                ),
+                MissionOutcomeStatus::OperatorActionRequired => {
+                    Err(BrrmmmmError::OperatorActionRequired(completion.outcome.message).into())
+                }
             };
         }
 
-        if start.elapsed() > timeout {
+        let snapshot = controller.snapshot();
+        let remaining_cooldown_ms = snapshot
+            .cooldown_until_ms
+            .map(|until_ms| until_ms.saturating_sub(brrmmmm::events::now_ms()))
+            .unwrap_or(0);
+        let watchdog_timeout = timeout.saturating_add(std::time::Duration::from_millis(
+            remaining_cooldown_ms.saturating_add(WATCHDOG_GRACE_MS),
+        ));
+
+        if start.elapsed() > watchdog_timeout {
             if !events_mode {
                 eprintln!(
                     "[brrmmmm] timeout waiting for a terminal mission outcome ({}s)",

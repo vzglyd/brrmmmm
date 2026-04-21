@@ -4,8 +4,8 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use brrmmmm::abi::{
-    DecisionBasisTag, HostDecisionState, MissionOutcome, MissionOutcomeStatus,
-    MissionRiskPosture, NextAttemptPolicy, OperatorEscalationState, OperatorTimeoutOutcome,
+    DecisionBasisTag, HostDecisionState, MissionOutcome, MissionOutcomeStatus, MissionRiskPosture,
+    NextAttemptPolicy, OperatorEscalationState, OperatorTimeoutOutcome,
 };
 use brrmmmm::controller::MissionCompletion;
 use brrmmmm::error::BrrmmmmError;
@@ -67,7 +67,9 @@ impl MissionRecorder {
                         .snapshot
                         .last_host_decision
                         .clone()
-                        .unwrap_or_else(|| fallback_host_decision(&completion.outcome, synthesized)),
+                        .unwrap_or_else(|| {
+                            fallback_host_decision(&completion.outcome, synthesized)
+                        }),
                     &completion.outcome,
                     true,
                 ),
@@ -305,12 +307,7 @@ pub(crate) fn explain_record(record: &MissionRecord, now_ms: u64) -> MissionExpl
         synthesized: analysis.host_decision.synthesized,
         risk_posture: enum_name(&analysis.host_decision.risk_posture),
         next_attempt_policy: enum_name(&analysis.host_decision.next_attempt_policy),
-        basis: analysis
-            .host_decision
-            .basis
-            .iter()
-            .map(enum_name)
-            .collect(),
+        basis: analysis.host_decision.basis.iter().map(enum_name).collect(),
         deadline_at: record
             .escalation
             .as_ref()
@@ -479,7 +476,8 @@ fn explain_analysis(
                 };
                 let mut effective_host_decision = host_decision.clone();
                 effective_host_decision.exit_code = exit_code_for_status(effective_status);
-                effective_host_decision.category = category_for_status(effective_status).to_string();
+                effective_host_decision.category =
+                    category_for_status(effective_status).to_string();
                 effective_host_decision.risk_posture = MissionRiskPosture::ClosedSafe;
                 effective_host_decision.next_attempt_policy = match effective_status {
                     MissionOutcomeStatus::RetryableFailure => NextAttemptPolicy::AfterCooldown,
@@ -567,7 +565,8 @@ pub(crate) fn fallback_host_decision(
                     NextAttemptPolicy::ManualOnly,
                 )
             } else {
-                if outcome.retry_after_ms.is_some() || outcome.reason_code == "acquisition_timeout" {
+                if outcome.retry_after_ms.is_some() || outcome.reason_code == "acquisition_timeout"
+                {
                     basis.push(DecisionBasisTag::CooldownApplied);
                 }
                 (

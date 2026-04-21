@@ -1,0 +1,42 @@
+use std::collections::HashMap;
+
+use anyhow::Result;
+
+use crate::daemon::{DaemonClient, DaemonCommand, DaemonResponse, socket_path};
+
+pub(crate) fn cmd_launch(
+    wasm: String,
+    name: Option<String>,
+    env: Vec<String>,
+    params: Option<String>,
+) -> Result<()> {
+    let sock = socket_path();
+    let rt = tokio::runtime::Runtime::new()?;
+    rt.block_on(async {
+        let mut client = DaemonClient::connect(&sock).await?;
+        let env_map: HashMap<String, String> = env
+            .iter()
+            .filter_map(|s| {
+                let (k, v) = s.split_once('=')?;
+                Some((k.to_string(), v.to_string()))
+            })
+            .collect();
+        let resp = client
+            .send(&DaemonCommand::Launch {
+                wasm,
+                name,
+                env: env_map,
+                params,
+            })
+            .await?;
+        match resp {
+            DaemonResponse::Launched { mission } => {
+                println!("{mission} launched");
+                Ok(())
+            }
+            DaemonResponse::Full { message } => anyhow::bail!("{message}"),
+            DaemonResponse::Error { message } => anyhow::bail!("{message}"),
+            _ => anyhow::bail!("unexpected response from daemon"),
+        }
+    })
+}

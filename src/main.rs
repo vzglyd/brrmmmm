@@ -1,14 +1,16 @@
 mod app_config;
 mod cli;
 mod cmd;
+mod daemon;
 mod mission_result;
+mod names;
 mod tui;
 
 use anyhow::Result;
 use clap::Parser;
 use tracing_subscriber::EnvFilter;
 
-use cli::{Cli, Commands, LogFormat, OutputFormat};
+use cli::{Cli, Commands, DaemonAction, LogFormat, OutputFormat, RescueActionArg};
 
 fn main() {
     let cli = Cli::parse();
@@ -34,17 +36,17 @@ fn run(cli: Cli) -> Result<()> {
         }
         (None, None) => {
             if let Some(discovered_config) = discovered_config.as_ref() {
-                let resolved = discovered_config.resolve_run(
-                    None,
-                    &[],
-                    None,
-                    None,
-                    None,
-                    None,
-                    None,
-                    false,
-                    &config.limits,
-                )?;
+                let resolved = discovered_config.resolve_run(app_config::RunResolveRequest {
+                    wasm_path: None,
+                    env: &[],
+                    params_json: None,
+                    params_file: None,
+                    result_path: None,
+                    events_override: None,
+                    log_channel_override: None,
+                    override_retry_gate: false,
+                    limits: &config.limits,
+                })?;
                 execute_run(resolved, cli.output.unwrap_or(OutputFormat::Text), &config)
             } else {
                 use clap::CommandFactory;
@@ -68,15 +70,17 @@ fn run(cli: Cli) -> Result<()> {
             } => {
                 let resolved = resolve_run(
                     discovered_config.as_ref(),
-                    wasm_path.as_deref(),
-                    &env,
-                    params_json.as_deref(),
-                    params_file.as_deref(),
-                    result_path.as_deref(),
-                    bool_override(events, no_events),
-                    bool_override(log_channel, no_log_channel),
-                    override_retry_gate,
-                    &config.limits,
+                    app_config::RunResolveRequest {
+                        wasm_path: wasm_path.as_deref(),
+                        env: &env,
+                        params_json: params_json.as_deref(),
+                        params_file: params_file.as_deref(),
+                        result_path: result_path.as_deref(),
+                        events_override: bool_override(events, no_events),
+                        log_channel_override: bool_override(log_channel, no_log_channel),
+                        override_retry_gate,
+                        limits: &config.limits,
+                    },
                 )?;
                 execute_run(resolved, cli.output.unwrap_or(OutputFormat::Text), &config)
             }
@@ -96,6 +100,42 @@ fn run(cli: Cli) -> Result<()> {
             ),
             Commands::Explain { record_path } => {
                 cmd::cmd_explain(&record_path, cli.output.unwrap_or(OutputFormat::Text))
+            }
+            Commands::Daemon { action } => match action {
+                DaemonAction::Install => cmd::cmd_daemon_install(),
+                DaemonAction::Run => cmd::cmd_daemon_run(),
+                DaemonAction::Start => cmd::cmd_daemon_start(),
+                DaemonAction::Stop => cmd::cmd_daemon_stop(),
+                DaemonAction::Restart => cmd::cmd_daemon_restart(),
+                DaemonAction::Status => cmd::cmd_daemon_status(),
+                DaemonAction::Uninstall => cmd::cmd_daemon_uninstall(),
+            },
+            Commands::Launch {
+                wasm_path,
+                name,
+                env,
+                params_json,
+            } => cmd::cmd_launch(
+                wasm_path.to_string_lossy().into_owned(),
+                name,
+                env,
+                params_json,
+            ),
+            Commands::Missions => cmd::cmd_missions(),
+            Commands::Hold { mission, reason } => cmd::cmd_hold(mission, reason),
+            Commands::Resume { mission } => cmd::cmd_resume(mission),
+            Commands::Abort { mission, reason } => cmd::cmd_abort(mission, reason),
+            Commands::Rescue {
+                mission,
+                action,
+                reason,
+            } => {
+                use daemon::RescueAction;
+                let action = match action {
+                    RescueActionArg::Retry => RescueAction::Retry,
+                    RescueActionArg::Abort => RescueAction::Abort,
+                };
+                cmd::cmd_rescue(mission, action, reason)
             }
         },
     }
@@ -134,40 +174,12 @@ fn resolve_wasm_path(
 
 fn resolve_run(
     discovered_config: Option<&app_config::LoadedWorkingDirConfig>,
-    wasm_path: Option<&std::path::Path>,
-    env: &[String],
-    params_json: Option<&str>,
-    params_file: Option<&std::path::Path>,
-    result_path: Option<&std::path::Path>,
-    events_override: Option<bool>,
-    log_channel_override: Option<bool>,
-    override_retry_gate: bool,
-    limits: &brrmmmm::config::RuntimeLimits,
+    request: app_config::RunResolveRequest<'_>,
 ) -> Result<app_config::ResolvedRun> {
     if let Some(discovered_config) = discovered_config {
-        discovered_config.resolve_run(
-            wasm_path,
-            env,
-            params_json,
-            params_file,
-            result_path,
-            events_override,
-            log_channel_override,
-            override_retry_gate,
-            limits,
-        )
+        discovered_config.resolve_run(request)
     } else {
-        app_config::resolve_run_without_config(
-            wasm_path,
-            env,
-            params_json,
-            params_file,
-            result_path,
-            events_override,
-            log_channel_override,
-            override_retry_gate,
-            limits,
-        )
+        app_config::resolve_run_without_config(request)
     }
 }
 

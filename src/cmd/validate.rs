@@ -24,6 +24,8 @@ pub(crate) fn cmd_validate(wasm_path: &Path, output: OutputFormat) -> Result<()>
             eprintln!("[brrmmmm]   ABI: v{}", inspection.abi_version);
             eprintln!("[brrmmmm]   size: {} bytes", inspection.wasm_size_bytes);
             if let Some(describe) = &inspection.describe {
+                let persistence = serde_json::to_string(&describe.state_persistence)?;
+                let persistence = persistence.trim_matches('"');
                 eprintln!(
                     "[brrmmmm]   contract: {} ({})",
                     describe.name, describe.logical_id
@@ -31,23 +33,15 @@ pub(crate) fn cmd_validate(wasm_path: &Path, output: OutputFormat) -> Result<()>
                 if !describe.run_modes.is_empty() {
                     eprintln!("[brrmmmm]   modes: {}", describe.run_modes.join(", "));
                 }
-                eprintln!(
-                    "[brrmmmm]   persistence: {}",
-                    serde_json::to_string(&describe.state_persistence)?
-                        .trim_matches('"')
-                        .to_string()
-                );
+                eprintln!("[brrmmmm]   persistence: {}", persistence);
                 if let Some(timeout_secs) = describe.acquisition_timeout_secs {
                     eprintln!("[brrmmmm]   acquisition timeout: {timeout_secs}s");
                 }
                 if let Some(fallback) = &describe.operator_fallback {
+                    let timeout_outcome = serde_json::to_string(&fallback.on_timeout)?;
+                    let timeout_outcome = timeout_outcome.trim_matches('"');
                     eprintln!("[brrmmmm]   operator timeout: {} ms", fallback.timeout_ms);
-                    eprintln!(
-                        "[brrmmmm]   operator timeout outcome: {}",
-                        serde_json::to_string(&fallback.on_timeout)?
-                            .trim_matches('"')
-                            .to_string()
-                    );
+                    eprintln!("[brrmmmm]   operator timeout outcome: {}", timeout_outcome);
                 }
             }
             if !inspection.brrmmmm_exports.is_empty() {

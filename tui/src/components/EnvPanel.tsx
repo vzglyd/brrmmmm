@@ -29,6 +29,10 @@ export function EnvPanel({
   const [selectedIndex, setSelectedIndex] = React.useState(0);
   const selectedField = paramFields[selectedIndex] ?? null;
 
+  const missingRequired = vars.filter((v) => v.required && !v.set).length;
+  const goStatus = missingRequired === 0 ? "GO" : `NO-GO: ${missingRequired} MISSING`;
+  const goColor = missingRequired === 0 ? "green" : "red";
+
   React.useEffect(() => {
     if (selectedIndex >= paramFields.length) {
       setSelectedIndex(Math.max(0, paramFields.length - 1));
@@ -67,40 +71,45 @@ export function EnvPanel({
       paddingX={1}
       flexGrow={1}
     >
-      <Text bold color={AMBER}>Parameters</Text>
+      <Text bold color={AMBER}>PRE-FLIGHT</Text>
       {manifestPending ? (
         <Text dimColor>Waiting for module contract...</Text>
-      ) : declared.length === 0 && extras.length === 0 && paramFields.length === 0 ? (
-        <Text dimColor>No parameters declared · use --env KEY=VALUE or --params-json</Text>
       ) : (
         <>
-          {paramFields.map((field) => (
-            <Box key={`param:${field.key}`} flexDirection="column">
-              <Text color={isFocused && selectedField?.key === field.key ? AMBER : "white"}>
-                {isFocused && selectedField?.key === field.key ? ">" : field.required ? "!" : "•"}{" "}
-                {field.key} ({field.type}) = {values[field.key] ?? ""}
-                {isFocused && selectedField?.key === field.key ? "█" : ""}
-                {field.required ? " required" : ""}
-              </Text>
-            </Box>
-          ))}
-          {declared.map((v) => (
-            <Box key={v.name} flexDirection="row" gap={1}>
-              <Text color={v.set ? AMBER : v.required ? "red" : "gray"}>
-                {v.set ? "✓" : "✗"}
-              </Text>
-              <Text bold={v.required}>{v.name}</Text>
-              {v.required && !v.set && <Text color="red">(required)</Text>}
-              {v.description ? <Text dimColor>— {v.description}</Text> : null}
-            </Box>
-          ))}
-          {extras.map((v) => (
-            <Box key={v.name} flexDirection="row" gap={1}>
-              <Text color={AMBER}>✓</Text>
-              <Text dimColor>{v.name}</Text>
-              <Text dimColor>— via --env</Text>
-            </Box>
-          ))}
+          <Text bold color={goColor}>{goStatus}</Text>
+          {declared.length === 0 && extras.length === 0 && paramFields.length === 0 ? (
+            <Text dimColor>No parameters declared · use --env KEY=VALUE or --params-json</Text>
+          ) : (
+            <>
+              {paramFields.map((field) => (
+                <Box key={`param:${field.key}`} flexDirection="column">
+                  <Text color={isFocused && selectedField?.key === field.key ? AMBER : "white"}>
+                    {isFocused && selectedField?.key === field.key ? ">" : field.required ? "!" : "•"}{" "}
+                    {field.key} ({field.type}) = {values[field.key] ?? ""}
+                    {isFocused && selectedField?.key === field.key ? "█" : ""}
+                    {field.required ? " required" : ""}
+                  </Text>
+                </Box>
+              ))}
+              {declared.map((v) => (
+                <Box key={v.name} flexDirection="row" gap={1}>
+                  <Text color={v.set ? AMBER : v.required ? "red" : "gray"}>
+                    {v.set ? "✓" : "✗"}
+                  </Text>
+                  <Text bold={v.required}>{v.name}</Text>
+                  {v.required && !v.set && <Text color="red">(required)</Text>}
+                  {v.description ? <Text dimColor>— {v.description}</Text> : null}
+                </Box>
+              ))}
+              {extras.map((v) => (
+                <Box key={v.name} flexDirection="row" gap={1}>
+                  <Text color={AMBER}>✓</Text>
+                  <Text dimColor>{v.name}</Text>
+                  <Text dimColor>— via --env</Text>
+                </Box>
+              ))}
+            </>
+          )}
         </>
       )}
     </Box>

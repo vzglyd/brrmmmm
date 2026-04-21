@@ -4,8 +4,8 @@ use wasmtime::{Caller, Engine, Linker, Store, StoreLimits, StoreLimitsBuilder};
 
 use crate::abi::{
     ArtifactMeta, DecisionBasisTag, HostDecisionState, MissionModuleDescribe, MissionOutcome,
-    MissionOutcomeStatus, MissionPhase, MissionRiskPosture, MissionRuntimeState,
-    NextAttemptPolicy, OperatorEscalationState,
+    MissionOutcomeStatus, MissionPhase, MissionRiskPosture, MissionRuntimeState, NextAttemptPolicy,
+    OperatorEscalationState, PollStrategy,
 };
 use crate::config::{RuntimeAssurance, RuntimeLimits};
 use crate::events::{Event, EventSink, diag, now_ms, now_ts};
@@ -256,7 +256,12 @@ pub(super) fn update_mission_outcome_state(
                 state.cooldown_until_ms = None;
                 state.backoff_ms = None;
                 state.pending_operator_action = None;
-                if let Some(retry_after_ms) = resolved_retry_after_ms(&outcome, assurance) {
+                if let Some(retry_after_ms) = resolved_retry_after_ms(
+                    &outcome,
+                    assurance,
+                    state.describe.as_ref(),
+                    state.consecutive_failures,
+                ) {
                     let wake_at = now.saturating_add(retry_after_ms);
                     state.next_allowed_at_ms = Some(wake_at);
                     state.cooldown_until_ms = Some(wake_at);
@@ -306,9 +311,42 @@ pub(super) fn update_mission_outcome_state(
     Ok(())
 }
 
+/// Compute a minimum backoff duration from the declared poll strategy and how
+/// many consecutive failures have accumulated. This is the floor the runtime
+/// enforces regardless of what the module requested via `retry_after_ms`.
+pub(crate) fn compute_strategy_backoff_ms(
+    strategy: &PollStrategy,
+    consecutive_failures: u32,
+) -> u64 {
+    match strategy {
+        PollStrategy::FixedInterval { interval_secs } => *interval_secs as u64 * 1_000,
+        PollStrategy::ExponentialBackoff {
+            base_secs,
+            max_secs,
+        } => {
+            // failures=1 → base, failures=2 → 2*base, failures=3 → 4*base, …
+            let shift = consecutive_failures.saturating_sub(1);
+            let factor = 1u64.checked_shl(shift).unwrap_or(u64::MAX);
+            (*base_secs as u64)
+                .saturating_mul(factor)
+                .min(*max_secs as u64)
+                * 1_000
+        }
+        PollStrategy::Jittered {
+            base_secs,
+            jitter_secs,
+        } => {
+            // Deterministic lower bound; the module may add jitter on top.
+            (*base_secs).saturating_sub(*jitter_secs) as u64 * 1_000
+        }
+    }
+}
+
 pub(super) fn resolved_retry_after_ms(
     outcome: &MissionOutcome,
     assurance: &RuntimeAssurance,
+    describe: Option<&MissionModuleDescribe>,
+    consecutive_failures: u32,
 ) -> Option<u64> {
     if outcome.status != MissionOutcomeStatus::RetryableFailure {
         return None;
@@ -316,9 +354,17 @@ pub(super) fn resolved_retry_after_ms(
     if outcome.reason_code == "changed_conditions_required" {
         return None;
     }
-    outcome
-        .retry_after_ms
-        .or(Some(assurance.default_retry_after_ms))
+    if outcome.reason_code == "acquisition_timeout" {
+        return outcome
+            .retry_after_ms
+            .or(Some(assurance.default_retry_after_ms));
+    }
+    outcome.retry_after_ms.or_else(|| {
+        describe
+            .and_then(|d| d.poll_strategy.as_ref())
+            .map(|s| compute_strategy_backoff_ms(s, consecutive_failures))
+            .or(Some(assurance.default_retry_after_ms))
+    })
 }
 
 pub(super) fn category_for_outcome(outcome: &MissionOutcome) -> &'static str {
@@ -376,7 +422,10 @@ pub(super) fn host_decision_for_outcome(
         MissionOutcomeStatus::TerminalFailure => {
             basis.push(DecisionBasisTag::ObjectiveNotMet);
             basis.push(DecisionBasisTag::SafeStateEntered);
-            (MissionRiskPosture::ClosedSafe, NextAttemptPolicy::ManualOnly)
+            (
+                MissionRiskPosture::ClosedSafe,
+                NextAttemptPolicy::ManualOnly,
+            )
         }
         MissionOutcomeStatus::OperatorActionRequired => {
             basis.push(DecisionBasisTag::ObjectiveNotMet);
@@ -560,5 +609,97 @@ mod tests {
             &MissionPhase::Parsing,
             &MissionPhase::Fetching
         ));
+    }
+
+    #[test]
+    fn backoff_fixed_interval_ignores_failure_count() {
+        let s = PollStrategy::FixedInterval { interval_secs: 60 };
+        assert_eq!(compute_strategy_backoff_ms(&s, 0), 60_000);
+        assert_eq!(compute_strategy_backoff_ms(&s, 5), 60_000);
+        assert_eq!(compute_strategy_backoff_ms(&s, 100), 60_000);
+    }
+
+    #[test]
+    fn backoff_exponential_doubles_per_failure() {
+        let s = PollStrategy::ExponentialBackoff {
+            base_secs: 30,
+            max_secs: 300,
+        };
+        assert_eq!(compute_strategy_backoff_ms(&s, 1), 30_000);
+        assert_eq!(compute_strategy_backoff_ms(&s, 2), 60_000);
+        assert_eq!(compute_strategy_backoff_ms(&s, 3), 120_000);
+        assert_eq!(compute_strategy_backoff_ms(&s, 4), 240_000);
+        assert_eq!(compute_strategy_backoff_ms(&s, 5), 300_000); // capped at max_secs
+        assert_eq!(compute_strategy_backoff_ms(&s, 6), 300_000); // stays at cap
+    }
+
+    #[test]
+    fn backoff_exponential_clamps_on_overflow() {
+        let s = PollStrategy::ExponentialBackoff {
+            base_secs: 30,
+            max_secs: 300,
+        };
+        // Large failure counts must not panic or produce nonsense.
+        assert_eq!(compute_strategy_backoff_ms(&s, u32::MAX), 300_000);
+    }
+
+    #[test]
+    fn backoff_jittered_returns_lower_bound() {
+        let s = PollStrategy::Jittered {
+            base_secs: 60,
+            jitter_secs: 15,
+        };
+        assert_eq!(compute_strategy_backoff_ms(&s, 0), 45_000);
+        assert_eq!(compute_strategy_backoff_ms(&s, 10), 45_000);
+    }
+
+    #[test]
+    fn backoff_jittered_saturates_when_jitter_exceeds_base() {
+        let s = PollStrategy::Jittered {
+            base_secs: 10,
+            jitter_secs: 30,
+        };
+        assert_eq!(compute_strategy_backoff_ms(&s, 1), 0); // saturating_sub clamps at 0
+    }
+
+    #[test]
+    fn acquisition_timeout_uses_assurance_default_over_poll_strategy() {
+        let outcome = MissionOutcome {
+            status: MissionOutcomeStatus::RetryableFailure,
+            reason_code: "acquisition_timeout".to_string(),
+            message: "timed out".to_string(),
+            retry_after_ms: None,
+            operator_action: None,
+            operator_timeout_ms: None,
+            operator_timeout_outcome: None,
+            primary_artifact_kind: None,
+        };
+        let describe = MissionModuleDescribe {
+            schema_version: 1,
+            logical_id: "test.mission".to_string(),
+            name: "Test".to_string(),
+            description: "Test".to_string(),
+            abi_version: 4,
+            run_modes: vec!["managed_polling".to_string()],
+            state_persistence: crate::abi::PersistenceAuthority::Volatile,
+            required_env_vars: Vec::new(),
+            optional_env_vars: Vec::new(),
+            params: Some(crate::abi::MissionParamsSchema { fields: Vec::new() }),
+            capabilities_needed: Vec::new(),
+            poll_strategy: Some(PollStrategy::FixedInterval { interval_secs: 60 }),
+            cooldown_policy: None,
+            artifact_types: Vec::new(),
+            acquisition_timeout_secs: Some(1),
+            operator_fallback: None,
+        };
+        let assurance = RuntimeAssurance {
+            same_reason_retry_limit: 3,
+            default_retry_after_ms: 50,
+        };
+
+        assert_eq!(
+            resolved_retry_after_ms(&outcome, &assurance, Some(&describe), 1),
+            Some(50)
+        );
     }
 }

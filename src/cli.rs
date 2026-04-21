@@ -16,6 +16,12 @@ pub(crate) enum LogFormat {
     Json,
 }
 
+#[derive(ValueEnum, Clone, Debug)]
+pub(crate) enum RescueActionArg {
+    Retry,
+    Abort,
+}
+
 #[derive(Parser)]
 #[command(
     name = "brrmmmm",
@@ -31,7 +37,15 @@ EXAMPLES:
   brrmmmm validate mission-module.wasm
   brrmmmm validate mission-module.wasm --output table
   brrmmmm rehearse mission-module.wasm
-  brrmmmm explain  mission.json",
+  brrmmmm explain  mission.json
+  brrmmmm daemon install
+  brrmmmm daemon start
+  brrmmmm launch   mission-module.wasm
+  brrmmmm missions
+  brrmmmm hold     solar-wind --reason \"maintenance window\"
+  brrmmmm resume   solar-wind
+  brrmmmm abort    solar-wind --reason \"shutting down\"
+  brrmmmm rescue   solar-wind --action retry --reason \"fixed API key\"",
     version
 )]
 pub(crate) struct Cli {
@@ -132,6 +146,92 @@ pub(crate) enum Commands {
         #[arg(value_name = "PATH", value_hint = ValueHint::FilePath)]
         record_path: PathBuf,
     },
+
+    /// Manage the brrmmmm mission daemon
+    Daemon {
+        #[command(subcommand)]
+        action: DaemonAction,
+    },
+
+    /// Launch a mission in the daemon
+    Launch {
+        /// Path to the mission-module `.wasm` file
+        #[arg(value_name = "WASM", value_hint = ValueHint::FilePath)]
+        wasm_path: PathBuf,
+
+        /// Assign a specific mission name instead of a generated one
+        #[arg(long)]
+        name: Option<String>,
+
+        /// Set environment variable (KEY=VALUE)
+        #[arg(short = 'e', long, value_name = "KEY=VALUE", value_parser = parse_key_val)]
+        env: Vec<String>,
+
+        /// JSON params object
+        #[arg(short = 'j', long)]
+        params_json: Option<String>,
+    },
+
+    /// List all missions in the daemon
+    Missions,
+
+    /// Pause a running mission
+    Hold {
+        /// Mission name (e.g. solar-wind)
+        mission: String,
+
+        /// Reason for holding the mission
+        #[arg(long)]
+        reason: String,
+    },
+
+    /// Resume a held mission
+    Resume {
+        /// Mission name
+        mission: String,
+    },
+
+    /// Abort a running mission permanently
+    Abort {
+        /// Mission name
+        mission: String,
+
+        /// Reason for aborting
+        #[arg(long)]
+        reason: String,
+    },
+
+    /// Rescue a mission that is stuck or gate-blocked
+    Rescue {
+        /// Mission name
+        mission: String,
+
+        /// retry: clear gate and restart; abort: terminate permanently
+        #[arg(long, value_enum)]
+        action: RescueActionArg,
+
+        /// Reason for the rescue
+        #[arg(long)]
+        reason: String,
+    },
+}
+
+#[derive(Subcommand)]
+pub(crate) enum DaemonAction {
+    /// Generate and enable the systemd/launchd service unit
+    Install,
+    /// Run the daemon in the foreground (called by the service manager)
+    Run,
+    /// Start the daemon via the service manager
+    Start,
+    /// Stop the daemon via the service manager
+    Stop,
+    /// Restart the daemon via the service manager
+    Restart,
+    /// Show daemon status
+    Status,
+    /// Disable and remove the service unit
+    Uninstall,
 }
 
 fn parse_key_val(s: &str) -> Result<String, String> {

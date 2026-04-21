@@ -146,7 +146,7 @@ export function RequestPanel({ request, requests, artifacts, describe, isFocused
       overflow="hidden"
     >
       <Box flexDirection="row" justifyContent="space-between">
-        <Text bold color={AMBER}>Pipeline</Text>
+        <Text bold color={AMBER}>COMMS</Text>
         {scrollHint && <Text dimColor>{scrollHint}</Text>}
       </Box>
 

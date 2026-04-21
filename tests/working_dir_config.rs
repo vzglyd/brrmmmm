@@ -387,7 +387,10 @@ fn timeout_writes_failure_mission_record() {
     assert_eq!(record["host_decision"]["category"], "timeout");
     assert_eq!(record["host_decision"]["exit_code"], 124);
     assert_eq!(record["host_decision"]["risk_posture"], "degraded");
-    assert_eq!(record["host_decision"]["next_attempt_policy"], "after_cooldown");
+    assert_eq!(
+        record["host_decision"]["next_attempt_policy"],
+        "after_cooldown"
+    );
     assert!(record["artifacts"]["published_output"].is_null());
 }
 
@@ -406,27 +409,24 @@ default_retry_after_ms = 50
 "#,
     );
 
-    let first = run_brr_in(
-        &dir,
-        &["run", "--once", "--result-path", "mission.json"],
-    );
+    let first = run_brr_in(&dir, &["run", "--once", "--result-path", "mission.json"]);
     assert_eq!(first.status.code(), Some(124));
     let first_record = read_json(&dir.join("mission.json"));
-    assert_eq!(first_record["outcome"]["reason_code"], "acquisition_timeout");
-
-    let second = run_brr_in(
-        &dir,
-        &["run", "--once", "--result-path", "mission.json"],
+    assert_eq!(
+        first_record["outcome"]["reason_code"],
+        "acquisition_timeout"
     );
+
+    let second = run_brr_in(&dir, &["run", "--once", "--result-path", "mission.json"]);
     assert_eq!(second.status.code(), Some(124));
 
-    let gated = run_brr_in(
-        &dir,
-        &["run", "--once", "--result-path", "mission.json"],
-    );
+    let gated = run_brr_in(&dir, &["run", "--once", "--result-path", "mission.json"]);
     assert_eq!(gated.status.code(), Some(75));
     let gated_record = read_json(&dir.join("mission.json"));
-    assert_eq!(gated_record["outcome"]["reason_code"], "changed_conditions_required");
+    assert_eq!(
+        gated_record["outcome"]["reason_code"],
+        "changed_conditions_required"
+    );
     assert_eq!(
         gated_record["host_decision"]["risk_posture"],
         "awaiting_changed_conditions"
@@ -444,9 +444,11 @@ default_retry_after_ms = 50
         String::from_utf8_lossy(&explain.stderr)
     );
     let explain_view: Value = serde_json::from_slice(&explain.stdout).unwrap();
-    assert!(explain_view["next_action"]
-        .as_str()
-        .is_some_and(|value| value.contains("Change the inputs")));
+    assert!(
+        explain_view["next_action"]
+            .as_str()
+            .is_some_and(|value| value.contains("Change the inputs"))
+    );
 
     let override_attempt = run_brr_in(
         &dir,
@@ -460,7 +462,10 @@ default_retry_after_ms = 50
     );
     assert_eq!(override_attempt.status.code(), Some(124));
     let override_record = read_json(&dir.join("mission.json"));
-    assert_eq!(override_record["outcome"]["reason_code"], "acquisition_timeout");
+    assert_eq!(
+        override_record["outcome"]["reason_code"],
+        "acquisition_timeout"
+    );
 }
 
 #[test]

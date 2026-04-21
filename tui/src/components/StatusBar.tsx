@@ -14,12 +14,12 @@ export function StatusBar({ isRunning, error, focusPane, isHelpOpen }: Props) {
       <Text dimColor>
         {isHelpOpen
           ? "help | Up/Down/PgUp/PgDn scroll | h/?/Esc close | Ctrl+C quit"
-          : `focus: ${focusPane} | Tab focus | ? help | type params | f refresh outside params | q quit`}
+          : `focus: ${focusPane} | Tab focus | ? help | type params | f relaunch outside params | q quit`}
       </Text>
       {error ? (
         <Text color="red">{error}</Text>
       ) : !isRunning ? (
-        <Text color="yellow">Sidecar stopped</Text>
+        <Text color="yellow">MODULE STOPPED</Text>
       ) : null}
     </Box>
   );

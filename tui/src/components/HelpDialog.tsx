@@ -138,7 +138,7 @@ function buildHelpLines(describe: ModuleDescribe | null): string[] {
     "# Keys",
     "Tab changes focus between params, pipeline, raw, and output.",
     "In params: Up/Down chooses a field; typing edits its value.",
-    "Outside params: f sends params and forces a refresh.",
+    "Outside params: f relaunches the daemon mission with current params.",
     "In pipeline/raw/output: Up/Down/PgUp/PgDn scrolls focused content.",
     "In raw/output: Left/Right scrolls wide lines.",
     "? opens help from anywhere; h opens help outside params; q quits outside params.",

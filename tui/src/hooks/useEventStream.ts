@@ -3,9 +3,9 @@ import { spawnEventStream, type StreamHandle } from "../stream.js";
 import { type BrrmmmmEvent } from "../types.js";
 
 /**
- * Spawn the Rust binary event stream and dispatch events.
- * Returns a `sendCommand` callback for writing to the subprocess stdin.
- * Cleans up (kills the process) when the component unmounts.
+ * Connect to the daemon-backed event stream and dispatch mission events.
+ * Returns a `sendCommand` callback for mission control actions.
+ * Cleans up the watch connection when the component unmounts.
  */
 export function useEventStream(
   rustBin: string,

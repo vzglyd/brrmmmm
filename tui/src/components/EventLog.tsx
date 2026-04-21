@@ -11,7 +11,7 @@ export function EventLog({ logs }: Props) {
   return (
     <Box borderStyle="single" borderColor="gray" flexDirection="column" paddingX={1}>
       <Text dimColor bold>
-        Logs
+        FLIGHT LOG
       </Text>
       {recent.length === 0 ? (
         <Text dimColor>No log messages yet</Text>

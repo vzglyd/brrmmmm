@@ -48,12 +48,9 @@ pub(crate) fn cmd_inspect(wasm_path: &Path, output: OutputFormat, config: &Confi
                 println!("host_imports:   {}", inspection.host_imports.join(", "));
             }
             if let Some(describe) = describe {
-                println!(
-                    "persistence:   {}",
-                    serde_json::to_string(&describe.state_persistence)?
-                        .trim_matches('"')
-                        .to_string()
-                );
+                let persistence = serde_json::to_string(&describe.state_persistence)?;
+                let persistence = persistence.trim_matches('"');
+                println!("persistence:   {}", persistence);
                 println!(
                     "acq_timeout:   {}",
                     describe
@@ -62,13 +59,10 @@ pub(crate) fn cmd_inspect(wasm_path: &Path, output: OutputFormat, config: &Confi
                         .unwrap_or_else(|| "-".to_string())
                 );
                 if let Some(fallback) = &describe.operator_fallback {
+                    let timeout_outcome = serde_json::to_string(&fallback.on_timeout)?;
+                    let timeout_outcome = timeout_outcome.trim_matches('"');
                     println!("operator_ttl:  {} ms", fallback.timeout_ms);
-                    println!(
-                        "operator_on:   {}",
-                        serde_json::to_string(&fallback.on_timeout)?
-                            .trim_matches('"')
-                            .to_string()
-                    );
+                    println!("operator_on:   {}", timeout_outcome);
                 }
                 if let Some(poll) = &describe.poll_strategy {
                     println!("poll_strategy:  {poll}");

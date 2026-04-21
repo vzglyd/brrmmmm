@@ -124,7 +124,10 @@ fn explain_tracks_operator_rescue_window_before_and_after_expiry() {
     assert_eq!(record["outcome"]["status"], "operator_action_required");
     assert_eq!(record["escalation"]["timeout_outcome"], "retryable_failure");
     assert_eq!(record["host_decision"]["risk_posture"], "awaiting_operator");
-    assert_eq!(record["host_decision"]["next_attempt_policy"], "operator_rescue");
+    assert_eq!(
+        record["host_decision"]["next_attempt_policy"],
+        "operator_rescue"
+    );
 
     let explain_open = run_brr_in(&dir, &["explain", "mission.json", "--output", "json"]);
     assert!(
@@ -157,9 +160,11 @@ fn explain_tracks_operator_rescue_window_before_and_after_expiry() {
     assert_eq!(expired_view["rescue_window_open"], false);
     assert_eq!(expired_view["risk_posture"], "closed_safe");
     assert_eq!(expired_view["next_attempt_policy"], "after_cooldown");
-    assert!(expired_view["basis"].as_array().is_some_and(|basis| {
-        basis.iter().any(|value| value == "rescue_window_expired")
-    }));
+    assert!(
+        expired_view["basis"]
+            .as_array()
+            .is_some_and(|basis| { basis.iter().any(|value| value == "rescue_window_expired") })
+    );
     assert!(
         expired_view["summary"]
             .as_str()

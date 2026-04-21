@@ -30,6 +30,19 @@ pub(crate) struct ResolvedRun {
     pub(crate) override_retry_gate: bool,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct RunResolveRequest<'a> {
+    pub(crate) wasm_path: Option<&'a Path>,
+    pub(crate) env: &'a [String],
+    pub(crate) params_json: Option<&'a str>,
+    pub(crate) params_file: Option<&'a Path>,
+    pub(crate) result_path: Option<&'a Path>,
+    pub(crate) events_override: Option<bool>,
+    pub(crate) log_channel_override: Option<bool>,
+    pub(crate) override_retry_gate: bool,
+    pub(crate) limits: &'a RuntimeLimits,
+}
+
 #[derive(Debug)]
 struct LoadedMissionConfig {
     wasm: Option<PathBuf>,
@@ -147,10 +160,7 @@ impl LoadedWorkingDirConfig {
             .runtime
             .map(|runtime| normalize_runtime(&dir, runtime))
             .transpose()?;
-        let assurance = raw
-            .assurance
-            .map(normalize_assurance)
-            .transpose()?;
+        let assurance = raw.assurance.map(normalize_assurance).transpose()?;
 
         if let Some(limits) = &raw.limits {
             validate_limits(limits)?;
@@ -216,46 +226,20 @@ impl LoadedWorkingDirConfig {
             })
     }
 
-    pub(crate) fn resolve_run(
-        &self,
-        wasm_path: Option<&Path>,
-        env: &[String],
-        params_json: Option<&str>,
-        params_file: Option<&Path>,
-        result_path: Option<&Path>,
-        events_override: Option<bool>,
-        log_channel_override: Option<bool>,
-        override_retry_gate: bool,
-        limits: &RuntimeLimits,
-    ) -> Result<ResolvedRun> {
-        resolve_run_inner(
-            Some(self),
-            wasm_path,
-            env,
-            params_json,
-            params_file,
-            result_path,
-            events_override,
-            log_channel_override,
-            override_retry_gate,
-            limits,
-        )
+    pub(crate) fn resolve_run(&self, request: RunResolveRequest<'_>) -> Result<ResolvedRun> {
+        resolve_run_inner(Some(self), request)
     }
 }
 
-pub(crate) fn resolve_run_without_config(
-    wasm_path: Option<&Path>,
-    env: &[String],
-    params_json: Option<&str>,
-    params_file: Option<&Path>,
-    result_path: Option<&Path>,
-    events_override: Option<bool>,
-    log_channel_override: Option<bool>,
-    override_retry_gate: bool,
-    limits: &RuntimeLimits,
+pub(crate) fn resolve_run_without_config(request: RunResolveRequest<'_>) -> Result<ResolvedRun> {
+    resolve_run_inner(None, request)
+}
+
+fn resolve_run_inner(
+    loaded: Option<&LoadedWorkingDirConfig>,
+    request: RunResolveRequest<'_>,
 ) -> Result<ResolvedRun> {
-    resolve_run_inner(
-        None,
+    let RunResolveRequest {
         wasm_path,
         env,
         params_json,
@@ -265,21 +249,7 @@ pub(crate) fn resolve_run_without_config(
         log_channel_override,
         override_retry_gate,
         limits,
-    )
-}
-
-fn resolve_run_inner(
-    loaded: Option<&LoadedWorkingDirConfig>,
-    wasm_path: Option<&Path>,
-    env: &[String],
-    params_json: Option<&str>,
-    params_file: Option<&Path>,
-    result_path: Option<&Path>,
-    events_override: Option<bool>,
-    log_channel_override: Option<bool>,
-    override_retry_gate: bool,
-    limits: &RuntimeLimits,
-) -> Result<ResolvedRun> {
+    } = request;
     let mission = loaded.and_then(|loaded| loaded.mission.as_ref());
     let resolved_wasm_path = wasm_path
         .map(Path::to_path_buf)

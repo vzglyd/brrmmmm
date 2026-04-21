@@ -70,7 +70,7 @@ describe("terminal rendering", () => {
       />,
     );
 
-    expect(output).toContain("Pipeline");
+    expect(output).toContain("COMMS");
     expect(output).toContain("published_output");
     expect(output).toContain("11B");
   });

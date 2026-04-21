@@ -1,5 +1,6 @@
 import React, { useReducer, useCallback, useEffect, useState } from "react";
 import { Box, useApp, useInput } from "ink";
+import { existsSync, readFileSync } from "node:fs";
 
 import { type BrrmmmmEvent, type ModuleParamField } from "./types.js";
 import { initialState, reducer } from "./store.js";
@@ -30,6 +31,7 @@ export function App({ wasmPath, rustBin, extraArgs }: AppProps) {
   const [state, dispatch] = useReducer(reducer, initialState(wasmPath));
   const [focusPane, setFocusPane] = useState<FocusPane>("params");
   const [showHelp, setShowHelp] = useState(false);
+  const [startTimeMs] = useState(() => Date.now());
   const [paramValues, setParamValues] = useState<Record<string, string>>(() =>
     initialParamValuesFromArgs(extraArgs),
   );
@@ -74,7 +76,7 @@ export function App({ wasmPath, rustBin, extraArgs }: AppProps) {
     });
   }, [paramFieldKey]);
 
-  // q = quit outside text entry, f = force refresh (skip current sleep and poll immediately)
+  // q = quit outside text entry, f = relaunch the daemon mission with current params
   useInput((input, key) => {
     if (key.ctrl && input === "c") {
       exit();
@@ -116,6 +118,7 @@ export function App({ wasmPath, rustBin, extraArgs }: AppProps) {
         wasmPath={state.wasmPath}
         abiVersion={state.abiVersion}
         describe={describe}
+        startTimeMs={startTimeMs}
       />
 
       {showHelp ? (
@@ -186,9 +189,7 @@ function pipelineHeightForRows(rows: number): number {
 }
 
 function initialParamValuesFromArgs(extraArgs: string[]): Record<string, string> {
-  const index = extraArgs.indexOf("--params-json");
-  if (index < 0) return {};
-  const raw = extraArgs[index + 1];
+  const raw = readInitialParams(extraArgs);
   if (!raw) return {};
   try {
     const value = JSON.parse(raw);
@@ -199,6 +200,23 @@ function initialParamValuesFromArgs(extraArgs: string[]): Record<string, string>
   } catch {
     return {};
   }
+}
+
+function readInitialParams(extraArgs: string[]): string | null {
+  for (let index = 0; index < extraArgs.length; index += 1) {
+    const arg = extraArgs[index];
+    if (arg === "-j" || arg === "--params-json") {
+      return extraArgs[index + 1] ?? null;
+    }
+    if (arg === "-f" || arg === "--params-file") {
+      const path = extraArgs[index + 1];
+      if (path && existsSync(path)) {
+        return readFileSync(path, "utf8");
+      }
+      return null;
+    }
+  }
+  return null;
 }
 
 function paramDefaultText(value: unknown): string {

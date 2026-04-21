@@ -1,6 +1,7 @@
 import React from "react";
 import { Box, Text } from "ink";
 import { type ModuleDescribe } from "../types.js";
+import { useMissionClock } from "../hooks/useMissionClock.js";
 
 // ── 8×8 bitmap pixel font (half-block encoded) ───────────────────────
 //
@@ -35,11 +36,13 @@ interface Props {
   wasmPath: string;
   abiVersion: number;
   describe: ModuleDescribe | null;
+  startTimeMs: number;
 }
 
 const AMBER = "#FFB300";
 
-export function Header({ wasmPath, abiVersion, describe }: Props) {
+export function Header({ wasmPath, abiVersion, describe, startTimeMs }: Props) {
+  const met = useMissionClock(startTimeMs);
   const name = describe?.name ?? wasmPath.split("/").pop() ?? wasmPath;
   const desc = describe?.description ?? "waiting for module contract";
   const modes = describe?.run_modes?.join(", ") ?? "starting";
@@ -68,6 +71,7 @@ export function Header({ wasmPath, abiVersion, describe }: Props) {
           {name}
         </Text>
         <Text dimColor>{desc}</Text>
+        <Text color={AMBER}>{met}</Text>
         <Text dimColor>
           ABI v{abiVersion}{"  "}
           <Text color={AMBER}>{modes}</Text>

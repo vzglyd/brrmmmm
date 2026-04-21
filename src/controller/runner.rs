@@ -7,8 +7,11 @@ use anyhow::{Context, Result};
 use futures::FutureExt as _;
 use wasmtime::{Engine, Module};
 
-use crate::abi::{MissionModuleDescribe, MissionOutcome, MissionOutcomeStatus, MissionRuntimeState, PersistenceAuthority};
-use crate::events::{Event, EventSink, diag, now_ts};
+use crate::abi::{
+    MissionModuleDescribe, MissionOutcome, MissionOutcomeStatus, MissionRuntimeState,
+    PersistenceAuthority,
+};
+use crate::events::{Event, EventSink, diag, ms_to_iso8601, now_ms, now_ts};
 use crate::host::{ArtifactStore, HostState};
 use crate::identity::{InstallationIdentity, ModuleHash};
 use crate::mission_ledger;
@@ -178,8 +181,12 @@ pub(super) async fn run_wasm_instance(
                 .filter(|timeout_secs| *timeout_secs > 0)
                 .map(u64::from)
                 .unwrap_or(policy.default_acquisition_timeout_secs);
-            let fingerprint =
-                compute_input_fingerprint(module_hash, params_bytes.as_deref(), &describe, &env_vars);
+            let fingerprint = compute_input_fingerprint(
+                module_hash,
+                params_bytes.as_deref(),
+                &describe,
+                &env_vars,
+            );
             event_sink.emit(Event::Describe {
                 ts: now_ts(),
                 describe: describe.clone(),
@@ -192,7 +199,7 @@ pub(super) async fn run_wasm_instance(
                 let mut state = lock_runtime(&runtime_state, "runtime_state");
                 state.describe = Some(describe.clone());
                 if let Some(ledger) = ledger.as_ref() {
-                    mission_ledger::apply_to_runtime_state(&mut state, &ledger);
+                    mission_ledger::apply_to_runtime_state(&mut state, ledger);
                 }
             }
             prior_ledger = ledger;
@@ -247,6 +254,29 @@ pub(super) async fn run_wasm_instance(
             prior_ledger.as_ref(),
         );
         return Ok(());
+    }
+
+    // Enforce host-side cooldown before the module runs a single instruction.
+    // The epoch deadline is set below, so this sleep does not consume the
+    // acquisition budget — the timer starts only after we finish waiting.
+    {
+        let cooldown_until_ms = lock_runtime(&runtime_state, "runtime_state").cooldown_until_ms;
+        if let Some(until_ms) = cooldown_until_ms {
+            let now = now_ms();
+            if until_ms > now {
+                let wait_ms = until_ms - now;
+                diag(
+                    &event_sink,
+                    &format!("[brrmmmm] pre-flight cooldown: waiting {wait_ms}ms before starting"),
+                );
+                event_sink.emit(Event::SleepStart {
+                    ts: now_ts(),
+                    duration_ms: wait_ms as i64,
+                    wake_at: ms_to_iso8601(until_ms),
+                });
+                tokio::time::sleep(std::time::Duration::from_millis(wait_ms)).await;
+            }
+        }
     }
 
     {
@@ -426,7 +456,13 @@ fn finish_failed_run(
     } else {
         "error"
     };
-    ensure_terminal_outcome(runtime_state, event_sink, artifact_store, Some(error), assurance);
+    ensure_terminal_outcome(
+        runtime_state,
+        event_sink,
+        artifact_store,
+        Some(error),
+        assurance,
+    );
     event_sink.emit(Event::ModuleExit {
         ts: now_ts(),
         reason: reason.to_string(),
@@ -581,13 +617,8 @@ fn ensure_terminal_outcome(
         }
     };
 
-    if let Err(error) = update_mission_outcome_state(
-        runtime_state,
-        event_sink,
-        synthesized,
-        "host",
-        assurance,
-    )
+    if let Err(error) =
+        update_mission_outcome_state(runtime_state, event_sink, synthesized, "host", assurance)
     {
         diag(
             event_sink,
@@ -681,7 +712,12 @@ fn changed_conditions_required_outcome(
         .repeat_failure_gate
         .as_ref()
         .map(|gate| gate.reason_code.as_str())
-        .or_else(|| ledger.last_outcome.as_ref().map(|outcome| outcome.reason_code.as_str()))
+        .or_else(|| {
+            ledger
+                .last_outcome
+                .as_ref()
+                .map(|outcome| outcome.reason_code.as_str())
+        })
         .unwrap_or("repeated_failure");
 
     MissionOutcome {

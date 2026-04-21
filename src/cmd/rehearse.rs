@@ -128,9 +128,8 @@ pub(crate) fn cmd_rehearse(wasm_path: &Path, output: OutputFormat, config: &Conf
             MissionOutcome {
                 status: MissionOutcomeStatus::OperatorActionRequired,
                 reason_code: "operator_rescue_rehearsal".to_string(),
-                message:
-                    "rehearsal: automation exhausted and the operator rescue window expired"
-                        .to_string(),
+                message: "rehearsal: automation exhausted and the operator rescue window expired"
+                    .to_string(),
                 retry_after_ms: None,
                 operator_action: Some(
                     "Complete the upstream recovery action before another attempt.".to_string(),
@@ -140,8 +139,7 @@ pub(crate) fn cmd_rehearse(wasm_path: &Path, output: OutputFormat, config: &Conf
                 primary_artifact_kind: None,
             },
             Some(MissionEscalationRecord {
-                action: "Complete the upstream recovery action before another attempt."
-                    .to_string(),
+                action: "Complete the upstream recovery action before another attempt.".to_string(),
                 deadline_at: ms_to_iso8601(deadline_at_ms),
                 deadline_at_ms,
                 timeout_outcome: fallback.on_timeout,
@@ -197,7 +195,8 @@ fn rehearsal_scenario(
     escalation: Option<MissionEscalationRecord>,
     now_ms: u64,
 ) -> RehearsalScenario {
-    let host_decision = host_decision_record(fallback_host_decision(&outcome, true), &outcome, false);
+    let host_decision =
+        host_decision_record(fallback_host_decision(&outcome, true), &outcome, false);
     let record = MissionRecord {
         schema_version: 4,
         module,

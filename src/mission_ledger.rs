@@ -110,8 +110,6 @@ pub(crate) fn apply_to_runtime_state(
     runtime_state: &mut MissionRuntimeState,
     ledger: &MissionLedgerRecord,
 ) {
-    runtime_state.last_outcome = ledger.last_outcome.clone();
-    runtime_state.last_host_decision = ledger.last_host_decision.clone();
     runtime_state.consecutive_failures = ledger.consecutive_failures;
     runtime_state.last_success_at_ms = ledger.last_success_at_ms;
     runtime_state.last_failure_at_ms = ledger.last_failure_at_ms;
@@ -137,8 +135,11 @@ fn ledger_retry_state(
     let fingerprint = input_fingerprint.map(ToOwned::to_owned);
     let Some(outcome) = runtime_state.last_outcome.as_ref() else {
         return (
-            fingerprint.or_else(|| prior_ledger.and_then(|ledger| ledger.last_input_fingerprint.clone())),
-            prior_ledger.map(|ledger| ledger.same_reason_streak).unwrap_or(0),
+            fingerprint
+                .or_else(|| prior_ledger.and_then(|ledger| ledger.last_input_fingerprint.clone())),
+            prior_ledger
+                .map(|ledger| ledger.same_reason_streak)
+                .unwrap_or(0),
             prior_ledger.and_then(|ledger| ledger.repeat_failure_gate.clone()),
         );
     };
@@ -151,18 +152,22 @@ fn ledger_retry_state(
         let gate = prior_ledger
             .and_then(|ledger| ledger.repeat_failure_gate.clone())
             .or_else(|| {
-                fingerprint.as_ref().map(|fingerprint| RepeatFailureGateRecord {
-                    reason_code: prior_ledger
-                        .and_then(|ledger| ledger.last_outcome.as_ref())
-                        .map(|outcome| outcome.reason_code.clone())
-                        .unwrap_or_else(|| "repeated_failure".to_string()),
-                    input_fingerprint: fingerprint.clone(),
-                    triggered_at_ms: runtime_state.last_outcome_at_ms.unwrap_or_default(),
-                })
+                fingerprint
+                    .as_ref()
+                    .map(|fingerprint| RepeatFailureGateRecord {
+                        reason_code: prior_ledger
+                            .and_then(|ledger| ledger.last_outcome.as_ref())
+                            .map(|outcome| outcome.reason_code.clone())
+                            .unwrap_or_else(|| "repeated_failure".to_string()),
+                        input_fingerprint: fingerprint.clone(),
+                        triggered_at_ms: runtime_state.last_outcome_at_ms.unwrap_or_default(),
+                    })
             });
         return (
             fingerprint,
-            prior_ledger.map(|ledger| ledger.same_reason_streak).unwrap_or(0),
+            prior_ledger
+                .map(|ledger| ledger.same_reason_streak)
+                .unwrap_or(0),
             gate,
         );
     }
@@ -170,7 +175,8 @@ fn ledger_retry_state(
     let previous_reason = prior_ledger
         .and_then(|ledger| ledger.last_outcome.as_ref())
         .map(|outcome| outcome.reason_code.as_str());
-    let previous_fingerprint = prior_ledger.and_then(|ledger| ledger.last_input_fingerprint.as_deref());
+    let previous_fingerprint =
+        prior_ledger.and_then(|ledger| ledger.last_input_fingerprint.as_deref());
     let streak = if previous_reason == Some(outcome.reason_code.as_str())
         && previous_fingerprint == input_fingerprint
     {
@@ -182,11 +188,13 @@ fn ledger_retry_state(
         1
     };
     let gate = if streak >= same_reason_retry_limit {
-        fingerprint.as_ref().map(|fingerprint| RepeatFailureGateRecord {
-            reason_code: outcome.reason_code.clone(),
-            input_fingerprint: fingerprint.clone(),
-            triggered_at_ms: runtime_state.last_outcome_at_ms.unwrap_or_default(),
-        })
+        fingerprint
+            .as_ref()
+            .map(|fingerprint| RepeatFailureGateRecord {
+                reason_code: outcome.reason_code.clone(),
+                input_fingerprint: fingerprint.clone(),
+                triggered_at_ms: runtime_state.last_outcome_at_ms.unwrap_or_default(),
+            })
     } else {
         None
     };

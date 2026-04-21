@@ -105,8 +105,7 @@ fn reject_outcome_report(
         protocol_failure,
         "host",
         assurance,
-    )
-    {
+    ) {
         diag(
             event_sink,
             &format!("[brrmmmm] failed to persist mission protocol error outcome: {error}"),

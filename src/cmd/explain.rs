@@ -83,9 +83,18 @@ pub(crate) fn cmd_explain(record_path: &Path, output: OutputFormat) -> Result<()
             if let Some(rescue_window_open) = view.rescue_window_open {
                 rows.push(("rescue_open", rescue_window_open.to_string()));
             }
-            rows.push(("consecutive_failures", view.consecutive_failures.to_string()));
-            rows.push(("last_success_at", view.last_success_at.unwrap_or_else(|| "(none)".to_string())));
-            rows.push(("cooldown_until", view.cooldown_until.unwrap_or_else(|| "(none)".to_string())));
+            rows.push((
+                "consecutive_failures",
+                view.consecutive_failures.to_string(),
+            ));
+            rows.push((
+                "last_success_at",
+                view.last_success_at.unwrap_or_else(|| "(none)".to_string()),
+            ));
+            rows.push((
+                "cooldown_until",
+                view.cooldown_until.unwrap_or_else(|| "(none)".to_string()),
+            ));
             print_table(&rows);
         }
     }
