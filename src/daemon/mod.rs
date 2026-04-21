@@ -14,23 +14,24 @@ use tokio::sync::{Mutex, broadcast, mpsc};
 use tokio::time::Duration;
 
 use mission::{
-    BROADCAST_CAPACITY, MAX_MISSIONS, MissionCleanup, MissionCtrl, MissionHandle, MissionState,
+    BROADCAST_CAPACITY, MAX_MISSIONS, MissionCleanup, MissionCtrl, MissionEvent, MissionHandle,
+    MissionHistory, MissionState,
 };
 use protocol::{Command, Response};
 
-pub(crate) use client::DaemonClient;
-pub(crate) use protocol::{Command as DaemonCommand, RescueAction, Response as DaemonResponse};
-pub(crate) use service::{
+pub use client::DaemonClient;
+pub use protocol::{Command as DaemonCommand, RescueAction, Response as DaemonResponse};
+pub use service::{
     daemon_install, daemon_restart, daemon_start, daemon_status, daemon_stop, daemon_uninstall,
 };
 
-pub(crate) fn brrmmmm_home() -> PathBuf {
+pub fn brrmmmm_home() -> PathBuf {
     dirs::home_dir()
         .unwrap_or_else(|| PathBuf::from("/tmp"))
         .join(".brrmmmm")
 }
 
-pub(crate) fn socket_path() -> PathBuf {
+pub fn socket_path() -> PathBuf {
     socket_path_in(&brrmmmm_home())
 }
 
@@ -46,12 +47,24 @@ fn mission_events_file(home: &Path, mission: &str) -> PathBuf {
     mission_dir(home, mission).join("events.ndjson")
 }
 
+fn prepare_mission_storage(home: &Path, mission: &str) -> Result<()> {
+    let dir = mission_dir(home, mission);
+    std::fs::create_dir_all(&dir)?;
+
+    let events_file = mission_events_file(home, mission);
+    if events_file.exists() {
+        std::fs::remove_file(&events_file)?;
+    }
+
+    Ok(())
+}
+
 struct Registry {
     missions: HashMap<String, MissionHandle>,
     taken_names: HashSet<String>,
 }
 
-pub(crate) async fn run() -> Result<()> {
+pub async fn run() -> Result<()> {
     run_in(brrmmmm_home()).await
 }
 
@@ -64,11 +77,7 @@ async fn run_in(home: PathBuf) -> Result<()> {
     tokio::fs::write(&pid_path, std::process::id().to_string()).await?;
 
     let sock_path = socket_path_in(home.as_ref());
-    if sock_path.exists() {
-        tokio::fs::remove_file(&sock_path).await?;
-    }
-
-    let listener = UnixListener::bind(&sock_path)?;
+    let listener = prepare_listener(&sock_path).await?;
     let registry = Arc::new(Mutex::new(Registry {
         missions: HashMap::new(),
         taken_names: HashSet::new(),
@@ -86,6 +95,8 @@ async fn run_in(home: PathBuf) -> Result<()> {
     let (shutdown_tx, mut shutdown_rx) = tokio::sync::oneshot::channel::<()>();
     let shutdown_cell: Arc<Mutex<Option<tokio::sync::oneshot::Sender<()>>>> =
         Arc::new(Mutex::new(Some(shutdown_tx)));
+    let shutdown_signal = daemon_shutdown_signal();
+    tokio::pin!(shutdown_signal);
 
     loop {
         tokio::select! {
@@ -105,12 +116,86 @@ async fn run_in(home: PathBuf) -> Result<()> {
                 eprintln!("[brrmmmm daemon] shutting down");
                 break;
             }
+            () = &mut shutdown_signal => {
+                eprintln!("[brrmmmm daemon] received shutdown signal");
+                break;
+            }
         }
     }
 
+    shutdown_missions(&registry).await;
     let _ = tokio::fs::remove_file(&sock_path).await;
     let _ = tokio::fs::remove_file(&pid_path).await;
     Ok(())
+}
+
+async fn prepare_listener(sock_path: &Path) -> Result<UnixListener> {
+    if tokio::fs::try_exists(sock_path).await.unwrap_or(false) {
+        if daemon_is_responding(sock_path).await {
+            anyhow::bail!(
+                "brrmmmm daemon is already running at {}",
+                sock_path.display()
+            );
+        }
+        tokio::fs::remove_file(sock_path).await?;
+    }
+    Ok(UnixListener::bind(sock_path)?)
+}
+
+async fn daemon_is_responding(sock_path: &Path) -> bool {
+    let Ok(mut client) = DaemonClient::connect(sock_path).await else {
+        return false;
+    };
+    matches!(client.send(&Command::Ping).await, Ok(Response::Pong))
+}
+
+async fn daemon_shutdown_signal() {
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{SignalKind, signal};
+
+        match signal(SignalKind::terminate()) {
+            Ok(mut terminate) => {
+                tokio::select! {
+                    _ = tokio::signal::ctrl_c() => {}
+                    _ = terminate.recv() => {}
+                }
+            }
+            Err(_) => {
+                let _ = tokio::signal::ctrl_c().await;
+            }
+        }
+    }
+
+    #[cfg(not(unix))]
+    {
+        let _ = tokio::signal::ctrl_c().await;
+    }
+}
+
+async fn shutdown_missions(registry: &Arc<Mutex<Registry>>) {
+    let controls = {
+        let reg = registry.lock().await;
+        reg.missions
+            .iter()
+            .map(|(name, handle)| (name.clone(), handle.ctrl_tx.clone()))
+            .collect::<Vec<_>>()
+    };
+
+    for (name, ctrl_tx) in controls {
+        if ctrl_tx.send(MissionCtrl::Abort).await.is_err() {
+            eprintln!("[brrmmmm daemon] failed to stop mission '{name}' during shutdown");
+        }
+    }
+
+    for _ in 0..100 {
+        if registry.lock().await.missions.is_empty() {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+
+    eprintln!("[brrmmmm daemon] shutdown timed out waiting for missions to stop");
 }
 
 async fn handle_connection(
@@ -144,8 +229,11 @@ async fn handle_connection(
             }
             Command::Shutdown => {
                 let _ = write_resp(&mut writer, &Response::Bye).await;
-                let mut cell = shutdown_cell.lock().await;
-                if let Some(tx) = cell.take() {
+                let tx = {
+                    let mut cell = shutdown_cell.lock().await;
+                    cell.take()
+                };
+                if let Some(tx) = tx {
                     let _ = tx.send(());
                 }
                 return;
@@ -251,15 +339,15 @@ async fn cmd_launch(
         }
     };
 
-    let missions_dir = mission_dir(home, &mission_name);
-    if let Err(e) = std::fs::create_dir_all(&missions_dir) {
+    if let Err(e) = prepare_mission_storage(home, &mission_name) {
         return Response::Error {
-            message: format!("create mission dir: {e}"),
+            message: format!("prepare mission storage: {e}"),
         };
     }
 
-    let (event_tx, _) = broadcast::channel::<String>(BROADCAST_CAPACITY);
+    let (event_tx, _) = broadcast::channel::<MissionEvent>(BROADCAST_CAPACITY);
     let (ctrl_tx, ctrl_rx) = mpsc::channel::<MissionCtrl>(32);
+    let history = Arc::new(Mutex::new(MissionHistory::default()));
 
     let state = Arc::new(Mutex::new(MissionState {
         name: mission_name.clone(),
@@ -275,6 +363,7 @@ async fn cmd_launch(
         mission_name.clone(),
         MissionHandle {
             state: Arc::clone(&state),
+            history: Arc::clone(&history),
             event_tx: event_tx.clone(),
             ctrl_tx,
         },
@@ -289,6 +378,7 @@ async fn cmd_launch(
         env,
         params,
         state,
+        history,
         event_tx,
         ctrl_rx,
         cleanup_tx,
@@ -299,7 +389,7 @@ async fn cmd_launch(
     }
 }
 
-fn rescue_control(action: RescueAction) -> MissionCtrl {
+const fn rescue_control(action: RescueAction) -> MissionCtrl {
     match action {
         RescueAction::Retry => MissionCtrl::Retry,
         RescueAction::Abort => MissionCtrl::Abort,
@@ -337,14 +427,14 @@ async fn cmd_watch(
     mission: &str,
     writer: &mut (impl AsyncWrite + Unpin),
 ) {
-    let event_rx = {
+    let active_watch = {
         let reg = registry.lock().await;
         reg.missions
             .get(mission)
-            .map(|handle| handle.event_tx.subscribe())
+            .map(|handle| (Arc::clone(&handle.history), handle.event_tx.subscribe()))
     };
     let events_file = mission_events_file(home, mission);
-    if event_rx.is_none() && !tokio::fs::try_exists(&events_file).await.unwrap_or(false) {
+    if active_watch.is_none() && !tokio::fs::try_exists(&events_file).await.unwrap_or(false) {
         let _ = write_resp(
             writer,
             &Response::Error {
@@ -357,7 +447,51 @@ async fn cmd_watch(
 
     let name = mission.to_string();
 
-    // Drain historical events from file first, then stream live events.
+    if let Some((history, mut event_rx)) = active_watch {
+        let (snapshot, cutoff_seq) = history.lock().await.snapshot();
+        for event in snapshot {
+            if write_resp(
+                writer,
+                &Response::Event {
+                    mission: name.clone(),
+                    line: event.line,
+                },
+            )
+            .await
+            .is_err()
+            {
+                return;
+            }
+        }
+
+        loop {
+            match event_rx.recv().await {
+                Ok(event) => {
+                    if event.seq < cutoff_seq {
+                        continue;
+                    }
+                    if write_resp(
+                        writer,
+                        &Response::Event {
+                            mission: name.clone(),
+                            line: event.line,
+                        },
+                    )
+                    .await
+                    .is_err()
+                    {
+                        return;
+                    }
+                }
+                Err(broadcast::error::RecvError::Lagged(n)) => {
+                    eprintln!("[brrmmmm daemon] watch '{name}' lagged by {n} events");
+                }
+                Err(broadcast::error::RecvError::Closed) => break,
+            }
+        }
+        return;
+    }
+
     if let Ok(content) = tokio::fs::read_to_string(&events_file).await {
         for line in content.lines() {
             if line.is_empty() {
@@ -375,33 +509,6 @@ async fn cmd_watch(
             {
                 return;
             }
-        }
-    }
-
-    let Some(mut event_rx) = event_rx else {
-        return;
-    };
-
-    loop {
-        match event_rx.recv().await {
-            Ok(line) => {
-                if write_resp(
-                    writer,
-                    &Response::Event {
-                        mission: name.clone(),
-                        line,
-                    },
-                )
-                .await
-                .is_err()
-                {
-                    return;
-                }
-            }
-            Err(broadcast::error::RecvError::Lagged(n)) => {
-                eprintln!("[brrmmmm daemon] watch '{name}' lagged by {n} events");
-            }
-            Err(broadcast::error::RecvError::Closed) => break,
         }
     }
 }
@@ -427,9 +534,15 @@ struct MissionLoopArgs {
     env: HashMap<String, String>,
     params: Option<String>,
     state: Arc<Mutex<MissionState>>,
-    event_tx: broadcast::Sender<String>,
+    history: Arc<Mutex<MissionHistory>>,
+    event_tx: broadcast::Sender<MissionEvent>,
     ctrl_rx: mpsc::Receiver<MissionCtrl>,
     cleanup_tx: mpsc::UnboundedSender<String>,
+}
+
+enum MissionChildDirective {
+    Continue,
+    Abort,
 }
 
 async fn mission_loop(args: MissionLoopArgs) {
@@ -440,6 +553,7 @@ async fn mission_loop(args: MissionLoopArgs) {
         env,
         params,
         state,
+        history,
         event_tx,
         mut ctrl_rx,
         cleanup_tx,
@@ -449,39 +563,12 @@ async fn mission_loop(args: MissionLoopArgs) {
     let mut override_retry_gate = false;
 
     loop {
-        // If terminal, exit loop.
-        {
-            if state.lock().await.terminal {
-                return;
-            }
+        if state.lock().await.terminal {
+            return;
         }
 
-        // If held without a running process, wait for Resume or Abort.
-        {
-            let held = state.lock().await.held;
-            if held {
-                loop {
-                    match ctrl_rx.recv().await {
-                        Some(MissionCtrl::Resume) => {
-                            state.lock().await.held = false;
-                            break;
-                        }
-                        Some(MissionCtrl::Abort) => {
-                            let mut state = state.lock().await;
-                            state.terminal = true;
-                            state.held = false;
-                            return;
-                        }
-                        Some(MissionCtrl::Retry) => {
-                            override_retry_gate = true;
-                            state.lock().await.held = false;
-                            break;
-                        }
-                        Some(MissionCtrl::Hold) => {} // already held
-                        None => return,
-                    }
-                }
-            }
+        if wait_while_held(&state, &mut ctrl_rx, &mut override_retry_gate).await {
+            return;
         }
 
         let mut child = match spawn_child(&wasm, &env, params.as_deref(), override_retry_gate) {
@@ -501,6 +588,7 @@ async fn mission_loop(args: MissionLoopArgs) {
             tokio::spawn(pipe_events(
                 stdout,
                 events_file.clone(),
+                Arc::clone(&history),
                 event_tx.clone(),
                 Arc::clone(&state),
             ));
@@ -514,37 +602,16 @@ async fn mission_loop(args: MissionLoopArgs) {
                     break;
                 }
                 ctrl = ctrl_rx.recv() => {
-                    match ctrl {
-                        Some(MissionCtrl::Hold) => {
-                            send_signal(pid, "STOP");
-                            state.lock().await.held = true;
-                        }
-                        Some(MissionCtrl::Resume) => {
-                            send_signal(pid, "CONT");
-                            state.lock().await.held = false;
-                        }
-                        Some(MissionCtrl::Abort) => {
-                            let _ = child.start_kill();
-                            {
-                                let mut state = state.lock().await;
-                                state.terminal = true;
-                                state.held = false;
-                            }
-                            let _ = child.wait().await;
-                            state.lock().await.pid = None;
-                            return;
-                        }
-                        Some(MissionCtrl::Retry) => {
-                            override_retry_gate = true;
-                            state.lock().await.held = false;
-                            let _ = child.start_kill();
-                            // child.wait() will fire on next loop iteration
-                        }
-                        None => {
-                            // ctrl channel closed; daemon shutting down
-                            let _ = child.start_kill();
-                            return;
-                        }
+                    match handle_child_control(
+                        ctrl,
+                        pid,
+                        &state,
+                        &mut child,
+                        &mut override_retry_gate,
+                    )
+                    .await {
+                        MissionChildDirective::Continue => {}
+                        MissionChildDirective::Abort => return,
                     }
                 }
             }
@@ -558,10 +625,86 @@ async fn mission_loop(args: MissionLoopArgs) {
     }
 }
 
+async fn wait_while_held(
+    state: &Arc<Mutex<MissionState>>,
+    ctrl_rx: &mut mpsc::Receiver<MissionCtrl>,
+    override_retry_gate: &mut bool,
+) -> bool {
+    if !state.lock().await.held {
+        return false;
+    }
+
+    loop {
+        match ctrl_rx.recv().await {
+            Some(MissionCtrl::Resume) => {
+                state.lock().await.held = false;
+                return false;
+            }
+            Some(MissionCtrl::Abort) => {
+                let mut state = state.lock().await;
+                state.terminal = true;
+                state.held = false;
+                drop(state);
+                return true;
+            }
+            Some(MissionCtrl::Retry) => {
+                *override_retry_gate = true;
+                state.lock().await.held = false;
+                return false;
+            }
+            Some(MissionCtrl::Hold) => {}
+            None => return true,
+        }
+    }
+}
+
+async fn handle_child_control(
+    ctrl: Option<MissionCtrl>,
+    pid: u32,
+    state: &Arc<Mutex<MissionState>>,
+    child: &mut tokio::process::Child,
+    override_retry_gate: &mut bool,
+) -> MissionChildDirective {
+    match ctrl {
+        Some(MissionCtrl::Hold) => {
+            send_signal(pid, "STOP");
+            state.lock().await.held = true;
+            MissionChildDirective::Continue
+        }
+        Some(MissionCtrl::Resume) => {
+            send_signal(pid, "CONT");
+            state.lock().await.held = false;
+            MissionChildDirective::Continue
+        }
+        Some(MissionCtrl::Abort) => {
+            let _ = child.start_kill();
+            {
+                let mut state = state.lock().await;
+                state.terminal = true;
+                state.held = false;
+            }
+            let _ = child.wait().await;
+            state.lock().await.pid = None;
+            MissionChildDirective::Abort
+        }
+        Some(MissionCtrl::Retry) => {
+            *override_retry_gate = true;
+            state.lock().await.held = false;
+            let _ = child.start_kill();
+            MissionChildDirective::Continue
+        }
+        None => {
+            let _ = child.start_kill();
+            MissionChildDirective::Abort
+        }
+    }
+}
+
 async fn pipe_events(
     stdout: tokio::process::ChildStdout,
     events_file: PathBuf,
-    event_tx: broadcast::Sender<String>,
+    history: Arc<Mutex<MissionHistory>>,
+    event_tx: broadcast::Sender<MissionEvent>,
     state: Arc<Mutex<MissionState>>,
 ) {
     use tokio::io::AsyncWriteExt as _;
@@ -579,7 +722,8 @@ async fn pipe_events(
             let _ = f.write_all(format!("{line}\n").as_bytes()).await;
         }
         update_state_from_event(&state, &line).await;
-        let _ = event_tx.send(line);
+        let event = history.lock().await.append(line);
+        let _ = event_tx.send(event);
     }
 }
 
@@ -618,7 +762,8 @@ fn spawn_child(
 ) -> Result<tokio::process::Child> {
     #[cfg(test)]
     {
-        if let Some(hook) = *SPAWN_CHILD_HOOK.lock().expect("spawn hook mutex poisoned") {
+        let hook = *SPAWN_CHILD_HOOK.lock().expect("spawn hook mutex poisoned");
+        if let Some(hook) = hook {
             return hook(wasm, env, params, override_retry_gate);
         }
     }
@@ -631,7 +776,7 @@ fn spawn_child(
         .arg("--no-log-channel")
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null())
-        .kill_on_drop(false);
+        .kill_on_drop(true);
 
     for (k, v) in env {
         cmd.arg("-e").arg(format!("{k}={v}"));
@@ -654,221 +799,4 @@ fn send_signal(pid: u32, sig: &str) {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    use std::collections::HashMap;
-    use std::path::{Path, PathBuf};
-    use std::time::{Duration as StdDuration, SystemTime, UNIX_EPOCH};
-
-    use anyhow::Result;
-    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-
-    static TEST_LOCK: std::sync::LazyLock<tokio::sync::Mutex<()>> =
-        std::sync::LazyLock::new(|| tokio::sync::Mutex::new(()));
-
-    #[tokio::test(flavor = "current_thread")]
-    async fn rescue_abort_cleans_up_registry_and_preserves_watch_history() {
-        let _serial = TEST_LOCK.lock().await;
-        let _spawn_hook = SpawnHookGuard::set(spawn_fake_child);
-        let home = unique_home();
-
-        let daemon = tokio::spawn(run_in(home.clone()));
-        wait_for_socket(&home).await;
-
-        let sock = socket_path_in(&home);
-        let mission = "solar-wind";
-
-        let launched = send_command(
-            &sock,
-            &Command::Launch {
-                wasm: "fake.wasm".to_string(),
-                name: Some(mission.to_string()),
-                env: HashMap::new(),
-                params: None,
-            },
-        )
-        .await;
-        assert!(matches!(
-            launched,
-            Response::Launched { mission: ref name } if name == mission
-        ));
-
-        wait_for_status_len(&sock, 1).await;
-        wait_for_event_file(&home, mission).await;
-
-        let watched = watch_first_response(&sock, mission).await;
-        assert!(matches!(
-            watched,
-            Response::Event { mission: ref name, ref line }
-                if name == mission && line.contains("\"message\":\"mission boot\"")
-        ));
-
-        let rescue = send_command(
-            &sock,
-            &Command::Rescue {
-                mission: mission.to_string(),
-                action: RescueAction::Abort,
-                reason: "operator requested stop".to_string(),
-            },
-        )
-        .await;
-        assert!(matches!(rescue, Response::Ok { mission: ref name } if name == mission));
-
-        wait_for_status_len(&sock, 0).await;
-
-        let historical = watch_first_response(&sock, mission).await;
-        assert!(matches!(
-            historical,
-            Response::Event { mission: ref name, ref line }
-                if name == mission && line.contains("\"message\":\"mission boot\"")
-        ));
-
-        let relaunched = send_command(
-            &sock,
-            &Command::Launch {
-                wasm: "fake.wasm".to_string(),
-                name: Some(mission.to_string()),
-                env: HashMap::new(),
-                params: None,
-            },
-        )
-        .await;
-        assert!(matches!(
-            relaunched,
-            Response::Launched { mission: ref name } if name == mission
-        ));
-
-        let abort = send_command(
-            &sock,
-            &Command::Abort {
-                mission: mission.to_string(),
-                reason: "shutdown".to_string(),
-            },
-        )
-        .await;
-        assert!(matches!(abort, Response::Ok { mission: ref name } if name == mission));
-        wait_for_status_len(&sock, 0).await;
-
-        let bye = send_command(&sock, &Command::Shutdown).await;
-        assert!(matches!(bye, Response::Bye));
-        daemon
-            .await
-            .expect("daemon task panicked")
-            .expect("daemon returned error");
-        let _ = std::fs::remove_dir_all(home);
-    }
-
-    struct SpawnHookGuard;
-
-    impl SpawnHookGuard {
-        fn set(hook: SpawnChildHook) -> Self {
-            *SPAWN_CHILD_HOOK.lock().expect("spawn hook mutex poisoned") = Some(hook);
-            Self
-        }
-    }
-
-    impl Drop for SpawnHookGuard {
-        fn drop(&mut self) {
-            *SPAWN_CHILD_HOOK.lock().expect("spawn hook mutex poisoned") = None;
-        }
-    }
-
-    fn spawn_fake_child(
-        _wasm: &str,
-        _env: &HashMap<String, String>,
-        _params: Option<&str>,
-        _override_retry_gate: bool,
-    ) -> Result<tokio::process::Child> {
-        let mut cmd = tokio::process::Command::new("sh");
-        cmd.arg("-c")
-            .arg(
-                "printf '%s\n' '{\"type\":\"log\",\"ts\":\"2026-04-21T00:00:00.000Z\",\"message\":\"mission boot\"}'; \
-                 trap 'exit 0' TERM INT; \
-                 while :; do sleep 1; done",
-            )
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::null())
-            .kill_on_drop(false);
-        Ok(cmd.spawn()?)
-    }
-
-    fn unique_home() -> PathBuf {
-        let stamp = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_else(|_| StdDuration::from_secs(0))
-            .as_nanos();
-        std::env::temp_dir().join(format!(
-            "brrmmmm-daemon-test-{}-{stamp}",
-            std::process::id()
-        ))
-    }
-
-    async fn wait_for_socket(home: &Path) {
-        let sock = socket_path_in(home);
-        for _ in 0..120 {
-            if tokio::fs::try_exists(&sock).await.unwrap_or(false) {
-                return;
-            }
-            tokio::time::sleep(Duration::from_millis(25)).await;
-        }
-        panic!("socket did not appear at {}", sock.display());
-    }
-
-    async fn wait_for_event_file(home: &Path, mission: &str) {
-        let path = mission_events_file(home, mission);
-        for _ in 0..120 {
-            if let Ok(contents) = tokio::fs::read_to_string(&path).await
-                && contents.contains("mission boot")
-            {
-                return;
-            }
-            tokio::time::sleep(Duration::from_millis(25)).await;
-        }
-        panic!(
-            "event file did not contain mission output: {}",
-            path.display()
-        );
-    }
-
-    async fn wait_for_status_len(sock: &Path, expected: usize) {
-        for _ in 0..120 {
-            if let Response::Status { missions } = send_command(sock, &Command::Status).await
-                && missions.len() == expected
-            {
-                return;
-            }
-            tokio::time::sleep(Duration::from_millis(25)).await;
-        }
-        panic!("daemon never reached expected mission count {expected}");
-    }
-
-    async fn send_command(sock: &Path, cmd: &Command) -> Response {
-        let mut client = DaemonClient::connect(sock)
-            .await
-            .expect("connect daemon client");
-        client.send(cmd).await.expect("send daemon command")
-    }
-
-    async fn watch_first_response(sock: &Path, mission: &str) -> Response {
-        let mut stream = UnixStream::connect(sock)
-            .await
-            .expect("connect watch socket");
-        let command = serde_json::to_string(&Command::Watch {
-            mission: mission.to_string(),
-        })
-        .expect("serialize watch command");
-        stream
-            .write_all(format!("{command}\n").as_bytes())
-            .await
-            .expect("write watch command");
-        let mut reader = BufReader::new(stream);
-        let mut line = String::new();
-        let count = reader
-            .read_line(&mut line)
-            .await
-            .expect("read watch response");
-        assert!(count > 0, "watch returned no data");
-        serde_json::from_str(line.trim_end()).expect("parse watch response")
-    }
-}
+mod tests;

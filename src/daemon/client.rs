@@ -6,7 +6,7 @@ use tokio::net::UnixStream;
 
 use super::protocol::{Command, Response};
 
-pub(crate) struct DaemonClient {
+pub struct DaemonClient {
     reader: BufReader<tokio::net::unix::OwnedReadHalf>,
     writer: tokio::net::unix::OwnedWriteHalf,
 }

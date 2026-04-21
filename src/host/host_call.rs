@@ -13,7 +13,7 @@ pub enum HostCall {
 }
 
 impl HostCall {
-    pub fn capability(&self) -> &'static str {
+    pub const fn capability(&self) -> &'static str {
         match self {
             Self::Network(_) => "network",
             Self::Browser(_) => "browser",
@@ -41,10 +41,12 @@ pub type HostCallResult = Result<Value, HostCallError>;
 
 pub fn decode_call(bytes: &[u8]) -> anyhow::Result<HostCall> {
     let val: Value = serde_json::from_slice(bytes)?;
-    let version = val
-        .get("wire_version")
-        .and_then(|v| v.as_u64())
-        .unwrap_or(0) as u32;
+    let version = u32::try_from(
+        val.get("wire_version")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(0),
+    )
+    .unwrap_or(u32::MAX);
     anyhow::ensure!(
         version == WIRE_VERSION,
         "unsupported host_call wire_version {version}; expected {WIRE_VERSION}"
@@ -63,7 +65,7 @@ pub fn decode_call(bytes: &[u8]) -> anyhow::Result<HostCall> {
     }
 }
 
-pub fn encode_ok(capability: &str, data: Value) -> anyhow::Result<Vec<u8>> {
+pub fn encode_ok(capability: &str, data: &Value) -> anyhow::Result<Vec<u8>> {
     Ok(serde_json::to_vec(&serde_json::json!({
         "wire_version": WIRE_VERSION,
         "ok": true,
@@ -90,7 +92,7 @@ pub fn encode_error(
 
 pub fn encode_result(capability: &str, result: HostCallResult) -> anyhow::Result<Vec<u8>> {
     match result {
-        Ok(data) => encode_ok(capability, data),
+        Ok(data) => encode_ok(capability, &data),
         Err(error) => encode_error(capability, error.kind, error.message),
     }
 }
@@ -171,10 +173,10 @@ mod tests {
         };
         let data = serde_json::to_value(response).unwrap();
 
-        let bytes = encode_ok("network", data).unwrap();
+        let bytes = encode_ok("network", &data).unwrap();
         let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
 
-        assert_eq!(json["wire_version"], WIRE_VERSION as u64);
+        assert_eq!(json["wire_version"], u64::from(WIRE_VERSION));
         assert_eq!(json["ok"], true);
         assert_eq!(json["capability"], "network");
         assert_eq!(json["data"]["kind"], "http");
@@ -192,7 +194,7 @@ mod tests {
         .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
 
-        assert_eq!(json["wire_version"], WIRE_VERSION as u64);
+        assert_eq!(json["wire_version"], u64::from(WIRE_VERSION));
         assert_eq!(json["ok"], false);
         assert_eq!(json["capability"], "network");
         assert_eq!(json["error"]["kind"], "timeout");

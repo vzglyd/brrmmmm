@@ -27,7 +27,7 @@ pub(super) async fn handle(
     let action_kind = action.kind().to_string();
     let prompt_len = action.prompt_len();
 
-    event_sink.emit(Event::AiRequest {
+    event_sink.emit(&Event::AiRequest {
         ts: now_ts(),
         action: action_kind.clone(),
         prompt_len,
@@ -59,6 +59,7 @@ pub(super) async fn handle(
         let event = mission_state::ai_event(&action_kind);
         let envelope = host.signed_envelope_for_request(Capabilities::AI, "ai", &event, &binding);
         let ua = host.full_user_agent(envelope.as_ref());
+        drop(host);
         let headers = envelope
             .map(|envelope| envelope.headers)
             .unwrap_or_default();
@@ -69,13 +70,13 @@ pub(super) async fn handle(
     let response = session
         .execute_prepared(body, ua, attestation_headers)
         .await;
-    let elapsed_ms = start.elapsed().as_millis() as u64;
+    let elapsed_ms = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
     emit_done(&event_sink, action_kind, elapsed_ms, &response);
     ai_response_to_result(response)
 }
 
 fn emit_done(event_sink: &EventSink, action: String, elapsed_ms: u64, response: &AiActionResponse) {
-    event_sink.emit(Event::AiRequestDone {
+    event_sink.emit(&Event::AiRequestDone {
         ts: now_ts(),
         action,
         elapsed_ms,

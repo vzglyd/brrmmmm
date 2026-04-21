@@ -3,7 +3,7 @@ use std::path::Path;
 use brrmmmm::config::RuntimeLimits;
 use brrmmmm::error::{BrrmmmmError, BrrmmmmResult};
 
-pub(crate) fn parse_env_vars(raw: &[String]) -> Vec<(String, String)> {
+pub fn parse_env_vars(raw: &[String]) -> Vec<(String, String)> {
     raw.iter()
         .filter_map(|value| {
             value
@@ -13,7 +13,7 @@ pub(crate) fn parse_env_vars(raw: &[String]) -> Vec<(String, String)> {
         .collect()
 }
 
-pub(crate) fn parse_params_bytes(
+pub fn parse_params_bytes(
     params_json: Option<&str>,
     params_file: Option<&Path>,
     limits: &RuntimeLimits,
@@ -48,7 +48,7 @@ pub(crate) fn parse_params_bytes(
         .map_err(|error| BrrmmmmError::ParamsInvalid(format!("serialize mission params: {error}")))
 }
 
-pub(crate) fn parse_params_value(
+pub fn parse_params_value(
     value: &serde_json::Value,
     limits: &RuntimeLimits,
 ) -> BrrmmmmResult<Vec<u8>> {

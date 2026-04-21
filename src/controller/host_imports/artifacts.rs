@@ -15,9 +15,16 @@ pub(super) fn register(
     event_sink: EventSink,
     runtime_state: Arc<Mutex<MissionRuntimeState>>,
 ) -> anyhow::Result<()> {
-    let s_artifact = shared.clone();
-    let sink_artifact = event_sink.clone();
-    let runtime_artifact = runtime_state.clone();
+    register_artifact_publish(linker, shared, event_sink.clone(), runtime_state.clone())?;
+    register_manifest(linker, event_sink, runtime_state)
+}
+
+fn register_artifact_publish(
+    linker: &mut WasmLinker,
+    shared: Arc<Mutex<HostState>>,
+    event_sink: EventSink,
+    runtime_state: Arc<Mutex<MissionRuntimeState>>,
+) -> anyhow::Result<()> {
     linker.func_wrap(
         "brrmmmm_host",
         "artifact_publish",
@@ -27,19 +34,15 @@ pub(super) fn register(
               data_ptr: i32,
               data_len: i32|
               -> i32 {
-            let limits = lock_runtime(&s_artifact, "host_state")
-                .config
-                .limits
-                .clone();
-            let kind_bytes = match read_limited_memory_from_caller(
+            let limits = lock_runtime(&shared, "host_state").config.limits.clone();
+            let Ok(kind_bytes) = read_limited_memory_from_caller(
                 &mut caller,
                 kind_ptr,
                 kind_len,
                 256,
                 "artifact kind",
-            ) {
-                Ok(b) => b,
-                Err(_) => return -1,
+            ) else {
+                return -1;
             };
             let kind = String::from_utf8_lossy(&kind_bytes).into_owned();
 
@@ -53,7 +56,7 @@ pub(super) fn register(
                 Ok(d) => d,
                 Err(e) => {
                     diag(
-                        &sink_artifact,
+                        &event_sink,
                         &format!("[brrmmmm] artifact_publish memory error: {e}"),
                     );
                     return -1;
@@ -74,27 +77,28 @@ pub(super) fn register(
                 received_at_ms: received_at,
             };
 
-            {
-                let hs = lock_runtime(&s_artifact, "host_state");
+            let artifact_store = {
+                let hs = lock_runtime(&shared, "host_state");
                 if hs.log_channel && kind == "published_output" {
                     diag(
-                        &sink_artifact,
+                        &event_sink,
                         &format!("[brrmmmm] published_output: {size} bytes"),
                     );
                     diag(
-                        &sink_artifact,
+                        &event_sink,
                         &format!(
                             "[brrmmmm]   payload: {}",
                             &preview.chars().take(200).collect::<String>()
                         ),
                     );
                 }
-                lock_runtime(&*hs.artifact_store, "artifact_store").store(artifact);
-            }
+                hs.artifact_store.clone()
+            };
+            lock_runtime(&artifact_store, "artifact_store").store(artifact);
 
-            update_artifact_state(&runtime_artifact, &meta);
-            update_phase_state(&runtime_artifact, &sink_artifact, MissionPhase::Publishing);
-            sink_artifact.emit(Event::ArtifactReceived {
+            update_artifact_state(&runtime_state, &meta);
+            update_phase_state(&runtime_state, &event_sink, MissionPhase::Publishing);
+            event_sink.emit(&Event::ArtifactReceived {
                 ts: now_ts(),
                 kind,
                 size_bytes: size,
@@ -104,9 +108,14 @@ pub(super) fn register(
             0
         },
     )?;
+    Ok(())
+}
 
-    let sink_manifest = event_sink;
-    let runtime_manifest = runtime_state;
+fn register_manifest(
+    linker: &mut WasmLinker,
+    event_sink: EventSink,
+    runtime_state: Arc<Mutex<MissionRuntimeState>>,
+) -> anyhow::Result<()> {
     linker.func_wrap(
         "brrmmmm_host",
         "register_manifest",
@@ -119,8 +128,8 @@ pub(super) fn register(
                 "mission manifest",
             ) && let Ok(describe) = serde_json::from_slice::<MissionModuleDescribe>(&data)
             {
-                lock_runtime(&runtime_manifest, "runtime_state").describe = Some(describe.clone());
-                sink_manifest.emit(Event::Describe {
+                lock_runtime(&runtime_state, "runtime_state").describe = Some(describe.clone());
+                event_sink.emit(&Event::Describe {
                     ts: now_ts(),
                     describe,
                 });
@@ -128,7 +137,6 @@ pub(super) fn register(
             0
         },
     )?;
-
     Ok(())
 }
 

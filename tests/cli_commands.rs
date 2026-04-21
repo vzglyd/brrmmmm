@@ -88,7 +88,10 @@ fn inspect_prints_real_contract_json() {
     assert_eq!(json["describe"]["artifact_types"][2], "published_output");
     assert_eq!(json["entrypoint"], "brrmmmm_module_start");
     assert_eq!(json["assurance_defaults"]["same_reason_retry_limit"], 3);
-    assert_eq!(json["assurance_defaults"]["default_retry_after_ms"], 300000);
+    assert_eq!(
+        json["assurance_defaults"]["default_retry_after_ms"],
+        300_000
+    );
     assert!(json["host_imports"].as_array().is_some_and(|imports| {
         imports
             .iter()

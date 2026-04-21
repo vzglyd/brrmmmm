@@ -9,7 +9,7 @@ use brrmmmm::events::now_ms;
 
 use super::output::print_table;
 
-pub(crate) fn cmd_explain(record_path: &Path, output: OutputFormat) -> Result<()> {
+pub fn cmd_explain(record_path: &Path, output: OutputFormat) -> Result<()> {
     let record = load_record(record_path)?;
     let view = explain_record(&record, now_ms());
 

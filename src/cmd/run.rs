@@ -12,7 +12,7 @@ use crate::mission_result::MissionRecorder;
 
 use super::output::write_payload;
 
-pub(crate) struct RunOptions<'a> {
+pub struct RunOptions<'a> {
     pub(crate) wasm_path: &'a Path,
     pub(crate) env_vars: Vec<(String, String)>,
     pub(crate) params_bytes: Option<Vec<u8>>,
@@ -24,7 +24,7 @@ pub(crate) struct RunOptions<'a> {
     pub(crate) config: &'a Config,
 }
 
-pub(crate) fn cmd_run(options: RunOptions<'_>) -> Result<()> {
+pub fn cmd_run(options: RunOptions<'_>) -> Result<()> {
     let RunOptions {
         wasm_path,
         env_vars,
@@ -44,7 +44,7 @@ pub(crate) fn cmd_run(options: RunOptions<'_>) -> Result<()> {
     };
 
     if events_mode {
-        sink.emit(Event::EnvSnapshot {
+        sink.emit(&Event::EnvSnapshot {
             ts: now_ts(),
             vars: EnvVarStatus::from_raw_env(&env_vars),
         });
@@ -103,7 +103,7 @@ fn run_once(options: RunOnceOptions<'_>) -> Result<()> {
     let controller = MissionController::new(
         &wasm_str,
         env_vars,
-        params_bytes.clone(),
+        params_bytes,
         log_channel,
         override_retry_gate,
         sink,
@@ -120,7 +120,7 @@ fn run_once(options: RunOnceOptions<'_>) -> Result<()> {
             .acquisition_timeout_secs()
             .filter(|timeout_secs| *timeout_secs > 0)
         {
-            timeout = std::time::Duration::from_secs(timeout_secs as u64);
+            timeout = std::time::Duration::from_secs(u64::from(timeout_secs));
         }
 
         if let Some(completion) = controller.poll_completion() {
@@ -158,10 +158,9 @@ fn run_once(options: RunOnceOptions<'_>) -> Result<()> {
         }
 
         let snapshot = controller.snapshot();
-        let remaining_cooldown_ms = snapshot
-            .cooldown_until_ms
-            .map(|until_ms| until_ms.saturating_sub(brrmmmm::events::now_ms()))
-            .unwrap_or(0);
+        let remaining_cooldown_ms = snapshot.cooldown_until_ms.map_or(0, |until_ms| {
+            until_ms.saturating_sub(brrmmmm::events::now_ms())
+        });
         let watchdog_timeout = timeout.saturating_add(std::time::Duration::from_millis(
             remaining_cooldown_ms.saturating_add(WATCHDOG_GRACE_MS),
         ));

@@ -17,7 +17,7 @@ macro_rules! define_id_type {
         pub struct $name(pub [u8; $size]);
 
         impl $name {
-            pub fn as_bytes(&self) -> &[u8; $size] {
+            pub const fn as_bytes(&self) -> &[u8; $size] {
                 &self.0
             }
         }
@@ -94,7 +94,7 @@ pub struct IdentitySigner {
 }
 
 impl IdentitySigner {
-    fn new(signing_key: SigningKey) -> Self {
+    const fn new(signing_key: SigningKey) -> Self {
         Self { signing_key }
     }
 }
@@ -122,15 +122,15 @@ impl InstallationIdentity {
         }
     }
 
-    pub fn client_id(&self) -> ClientId {
+    pub const fn client_id(&self) -> ClientId {
         self.metadata.client_id
     }
 
-    pub fn key_id(&self) -> KeyId {
+    pub const fn key_id(&self) -> KeyId {
         self.metadata.key_id
     }
 
-    pub fn public_key(&self) -> PublicKey {
+    pub const fn public_key(&self) -> PublicKey {
         self.metadata.public_key
     }
 }
@@ -338,7 +338,7 @@ fn create_temp_identity_dir(parent: &Path) -> Result<std::path::PathBuf> {
         ));
         match std::fs::create_dir(&tmp_dir) {
             Ok(()) => return Ok(tmp_dir),
-            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
             Err(error) => {
                 return Err(error).with_context(|| {
                     format!("create temporary identity directory: {}", tmp_dir.display())

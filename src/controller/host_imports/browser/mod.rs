@@ -14,8 +14,8 @@ use execute::BrowserSession;
 
 pub(super) type SharedBrowserSession = Arc<AsyncMutex<BrowserSession>>;
 
-pub(super) fn new_session(shared: Arc<Mutex<HostState>>) -> anyhow::Result<SharedBrowserSession> {
-    Ok(Arc::new(AsyncMutex::new(BrowserSession::new(shared)?)))
+pub(super) fn new_session(shared: Arc<Mutex<HostState>>) -> SharedBrowserSession {
+    Arc::new(AsyncMutex::new(BrowserSession::new(shared)))
 }
 
 pub(super) async fn handle(
@@ -32,7 +32,7 @@ pub(super) async fn handle(
         host.record_activity(Capabilities::BROWSER, "browser_action", &event);
     }
 
-    event_sink.emit(crate::events::Event::BrowserAction {
+    event_sink.emit(&crate::events::Event::BrowserAction {
         ts: crate::events::now_ts(),
         action: action_kind.clone(),
         detail: action_detail,
@@ -43,11 +43,11 @@ pub(super) async fn handle(
         let mut sess = session.lock().await;
         sess.execute(action).await
     };
-    let elapsed_ms = start.elapsed().as_millis() as u64;
+    let elapsed_ms = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
     let ok = response.is_ok();
     let error = if ok { None } else { Some(action_kind.clone()) };
 
-    event_sink.emit(crate::events::Event::BrowserActionDone {
+    event_sink.emit(&crate::events::Event::BrowserActionDone {
         ts: crate::events::now_ts(),
         action: action_kind,
         elapsed_ms,
@@ -63,7 +63,8 @@ fn browser_response_to_result(response: BrowserActionResponse) -> HostCallResult
         BrowserActionResponse::Ok { .. } => Ok(serde_json::json!({})),
         BrowserActionResponse::OkUrl { url, .. } => Ok(serde_json::json!({ "url": url })),
         BrowserActionResponse::OkCookies { cookies, .. } => {
-            serde_json::to_value(serde_json::json!({ "cookies": cookies })).map_err(json_error)
+            serde_json::to_value(serde_json::json!({ "cookies": cookies }))
+                .map_err(|error| json_error(&error))
         }
         BrowserActionResponse::OkText { texts, .. } => Ok(serde_json::json!({ "texts": texts })),
         BrowserActionResponse::OkHtml { html, count, .. } => {
@@ -79,6 +80,6 @@ fn browser_response_to_result(response: BrowserActionResponse) -> HostCallResult
     }
 }
 
-fn json_error(error: serde_json::Error) -> HostCallError {
+fn json_error(error: &serde_json::Error) -> HostCallError {
     HostCallError::new("encode_error", error.to_string())
 }

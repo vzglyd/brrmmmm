@@ -28,17 +28,17 @@ pub(super) fn register(
             if duration_ms <= 0 {
                 return 0;
             }
-            let duration_ms = duration_ms as u64;
-            let wake_ms = now_ms().saturating_add(duration_ms);
-            update_sleep_state(&runtime_host_sleep, &sink_host_sleep, duration_ms, wake_ms);
-            sink_host_sleep.emit(Event::SleepStart {
+            let sleep_ms = duration_ms.unsigned_abs();
+            let wake_ms = now_ms().saturating_add(sleep_ms);
+            update_sleep_state(&runtime_host_sleep, &sink_host_sleep, sleep_ms, wake_ms);
+            sink_host_sleep.emit(&Event::SleepStart {
                 ts: now_ts(),
-                duration_ms: duration_ms as i64,
+                duration_ms,
                 wake_at: ms_to_iso8601(wake_ms),
             });
 
             let started = Instant::now();
-            let total = Duration::from_millis(duration_ms);
+            let total = Duration::from_millis(sleep_ms);
             loop {
                 if stop_host_sleep.load(Ordering::Relaxed) {
                     return 1;
@@ -74,7 +74,7 @@ pub(super) fn register(
                 duration_ms.unsigned_abs(),
                 wake_ms,
             );
-            sink_sleep.emit(Event::SleepStart {
+            sink_sleep.emit(&Event::SleepStart {
                 ts: now_ts(),
                 duration_ms,
                 wake_at,

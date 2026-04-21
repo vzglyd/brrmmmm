@@ -36,7 +36,7 @@ pub enum AttestationError {
     MissingHeader(&'static str),
     /// A header value could not be parsed or had the wrong length.
     MalformedField(String),
-    /// The public key or derived key_id did not match the trusted value.
+    /// The public key or derived `key_id` did not match the trusted value.
     KeyMismatch,
     /// The content digest in the envelope did not match the request binding.
     ContentDigestMismatch,
@@ -304,10 +304,9 @@ pub fn binding_from_url(
         _ => return None,
     }
     let host = parsed.host_str()?;
-    let authority = match parsed.port() {
-        Some(port) => format!("{host}:{port}"),
-        None => host.to_string(),
-    };
+    let authority = parsed
+        .port()
+        .map_or_else(|| host.to_string(), |port| format!("{host}:{port}"));
     let mut path = parsed.path().to_string();
     if let Some(query) = parsed.query() {
         path.push('?');
@@ -386,15 +385,16 @@ fn cap_names(mask: u8) -> String {
 fn ua_timestamp(ms: u64) -> String {
     let secs = ms / 1000;
     let millis = ms % 1000;
-    let (y, mo, d) = civil_from_days((secs / 86400) as i64);
-    let h = (secs / 3600) % 24;
-    let m = (secs / 60) % 60;
-    let s = secs % 60;
-    format!("{y:04}{mo:02}{d:02}T{h:02}{m:02}{s:02}.{millis:03}Z")
+    let days = i64::try_from(secs / 86_400).unwrap_or(i64::MAX);
+    let (year, month, day) = civil_from_days(days);
+    let hour = (secs / 3_600) % 24;
+    let minute = (secs / 60) % 60;
+    let second = secs % 60;
+    format!("{year:04}{month:02}{day:02}T{hour:02}{minute:02}{second:02}.{millis:03}Z")
 }
 
 /// Howard Hinnant's civil calendar algorithm.
-fn civil_from_days(z: i64) -> (i64, i64, i64) {
+const fn civil_from_days(z: i64) -> (i64, i64, i64) {
     let z = z + 719_468;
     let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
     let doe = z - era * 146_097;
@@ -411,7 +411,7 @@ fn civil_from_days(z: i64) -> (i64, i64, i64) {
 /// Constructs the canonical byte payload that is signed or verified.
 /// Returns `Err(AttestationError::FieldTooLong)` if any binding string field
 /// exceeds 65535 bytes, which would cause a silent mismatch if truncated.
-pub(crate) fn canonical_payload(
+pub fn canonical_payload(
     fields: &EnvelopeFields,
     binding: &RequestBinding,
 ) -> Result<Vec<u8>, AttestationError> {
@@ -476,7 +476,7 @@ fn required<'a>(
 ) -> Result<&'a str, AttestationError> {
     headers
         .get(&name.to_ascii_lowercase())
-        .map(|value| value.as_str())
+        .map(std::string::String::as_str)
         .ok_or(AttestationError::MissingHeader(name))
 }
 

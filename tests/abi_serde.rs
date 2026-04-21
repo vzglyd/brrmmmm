@@ -64,7 +64,7 @@ fn poll_strategy_exponential_backoff_roundtrip() {
         max_secs: 300,
     };
     let json = roundtrip(&strategy);
-    assert!(json.contains("5"));
+    assert!(json.contains('5'));
     assert!(json.contains("300"));
 }
 
@@ -356,7 +356,7 @@ fn sidecar_param_field_with_options_roundtrip() {
 
 #[test]
 fn sidecar_params_schema_defaults_to_empty_fields() {
-    let json = r#"{}"#;
+    let json = r"{}";
     let decoded: MissionParamsSchema = serde_json::from_str(json).unwrap();
     assert!(decoded.fields.is_empty());
 }

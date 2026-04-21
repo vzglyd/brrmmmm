@@ -53,16 +53,17 @@ impl RuntimePolicy {
         }
     }
 
-    pub(super) fn epoch_ticks_for_secs(&self, secs: u64) -> u64 {
-        secs.saturating_mul(EPOCH_TICKS_PER_SECOND).max(1)
+    const fn epoch_ticks_for_secs(secs: u64) -> u64 {
+        let ticks = secs.saturating_mul(EPOCH_TICKS_PER_SECOND);
+        if ticks == 0 { 1 } else { ticks }
     }
 
-    pub(super) fn init_deadline_ticks(&self) -> u64 {
-        self.epoch_ticks_for_secs(self.init_timeout_secs)
+    pub(super) const fn init_deadline_ticks(&self) -> u64 {
+        Self::epoch_ticks_for_secs(self.init_timeout_secs)
     }
 
-    pub(super) fn acquisition_deadline_ticks(&self, timeout_secs: u64) -> u64 {
-        self.epoch_ticks_for_secs(timeout_secs)
+    pub(super) const fn acquisition_deadline_ticks(timeout_secs: u64) -> u64 {
+        Self::epoch_ticks_for_secs(timeout_secs)
     }
 
     fn store_limits(&self) -> StoreLimits {
@@ -138,14 +139,14 @@ pub(super) fn update_phase_state(
         prev
     };
     tracing::trace!(from = ?previous, to = ?phase, "mission phase transition");
-    event_sink.emit(Event::Phase {
+    event_sink.emit(&Event::Phase {
         ts: now_ts(),
         phase,
     });
 }
 
 fn is_valid_phase_transition(from: &MissionPhase, to: &MissionPhase) -> bool {
-    use MissionPhase::*;
+    use MissionPhase::{CoolingDown, Failed, Fetching, Idle, Parsing, Publishing};
     // Self-transitions are always valid (e.g. multiple artifact publishes in sequence).
     if from == to {
         return true;
@@ -156,16 +157,10 @@ fn is_valid_phase_transition(from: &MissionPhase, to: &MissionPhase) -> bool {
     }
     matches!(
         (from, to),
-        (Idle, Fetching)
-            | (Idle, Publishing)
-            | (CoolingDown, Fetching)
-            | (CoolingDown, Idle)
-            | (Failed, Fetching)
-            | (Failed, Idle)
+        (Idle | CoolingDown | Failed, Fetching)
+            | (Idle | Fetching | Parsing, Publishing)
+            | (CoolingDown | Failed | Publishing, Idle)
             | (Fetching, Parsing)
-            | (Fetching, Publishing)
-            | (Parsing, Publishing)
-            | (Publishing, Idle)
     )
 }
 
@@ -194,7 +189,7 @@ pub(super) fn update_sleep_state(
         state.cooldown_until_ms = Some(wake_ms);
         state.backoff_ms = Some(duration_ms);
     }
-    event_sink.emit(Event::Phase {
+    event_sink.emit(&Event::Phase {
         ts: now_ts(),
         phase: MissionPhase::CoolingDown,
     });
@@ -299,9 +294,10 @@ pub(super) fn update_mission_outcome_state(
         state.last_outcome_at_ms = Some(now);
         state.last_outcome_reported_by = Some(reported_by.to_string());
         state.last_host_decision = Some(host_decision.clone());
+        drop(state);
         (escalation, host_decision)
     };
-    event_sink.emit(Event::MissionOutcome {
+    event_sink.emit(&Event::MissionOutcome {
         ts: now_ts(),
         reported_by: reported_by.to_string(),
         outcome,
@@ -314,12 +310,9 @@ pub(super) fn update_mission_outcome_state(
 /// Compute a minimum backoff duration from the declared poll strategy and how
 /// many consecutive failures have accumulated. This is the floor the runtime
 /// enforces regardless of what the module requested via `retry_after_ms`.
-pub(crate) fn compute_strategy_backoff_ms(
-    strategy: &PollStrategy,
-    consecutive_failures: u32,
-) -> u64 {
+pub fn compute_strategy_backoff_ms(strategy: &PollStrategy, consecutive_failures: u32) -> u64 {
     match strategy {
-        PollStrategy::FixedInterval { interval_secs } => *interval_secs as u64 * 1_000,
+        PollStrategy::FixedInterval { interval_secs } => u64::from(*interval_secs) * 1_000,
         PollStrategy::ExponentialBackoff {
             base_secs,
             max_secs,
@@ -327,9 +320,9 @@ pub(crate) fn compute_strategy_backoff_ms(
             // failures=1 → base, failures=2 → 2*base, failures=3 → 4*base, …
             let shift = consecutive_failures.saturating_sub(1);
             let factor = 1u64.checked_shl(shift).unwrap_or(u64::MAX);
-            (*base_secs as u64)
+            u64::from(*base_secs)
                 .saturating_mul(factor)
-                .min(*max_secs as u64)
+                .min(u64::from(*max_secs))
                 * 1_000
         }
         PollStrategy::Jittered {
@@ -337,7 +330,7 @@ pub(crate) fn compute_strategy_backoff_ms(
             jitter_secs,
         } => {
             // Deterministic lower bound; the module may add jitter on top.
-            (*base_secs).saturating_sub(*jitter_secs) as u64 * 1_000
+            u64::from((*base_secs).saturating_sub(*jitter_secs)) * 1_000
         }
     }
 }
@@ -374,7 +367,7 @@ pub(super) fn category_for_outcome(outcome: &MissionOutcome) -> &'static str {
     category_for_status(outcome.status)
 }
 
-pub(super) fn category_for_status(status: MissionOutcomeStatus) -> &'static str {
+pub(super) const fn category_for_status(status: MissionOutcomeStatus) -> &'static str {
     match status {
         MissionOutcomeStatus::Published => "published",
         MissionOutcomeStatus::RetryableFailure => "retryable_failure",
@@ -487,17 +480,24 @@ pub(super) fn read_memory_from_caller(
     ptr: i32,
     len: i32,
 ) -> anyhow::Result<Vec<u8>> {
-    if ptr < 0 || len < 0 {
-        anyhow::bail!("memory read invalid negative range: ptr={ptr}, len={len}");
-    }
+    let ptr = checked_memory_offset(ptr, "ptr")?;
+    let len = checked_memory_offset(len, "len")?;
+    read_memory_range(caller, ptr, len)
+}
+
+fn read_memory_range(
+    caller: &mut WasmCaller<'_>,
+    ptr: usize,
+    len: usize,
+) -> anyhow::Result<Vec<u8>> {
     let mem = caller
         .get_export("memory")
-        .and_then(|m| m.into_memory())
+        .and_then(wasmtime::Extern::into_memory)
         .ok_or_else(|| anyhow::anyhow!("no memory export"))?;
     let data = mem
         .data(caller)
-        .get(ptr as usize..)
-        .and_then(|s| s.get(..len as usize))
+        .get(ptr..)
+        .and_then(|s| s.get(..len))
         .ok_or_else(|| anyhow::anyhow!("memory read OOB: ptr={ptr}, len={len}"))?;
     Ok(data.to_vec())
 }
@@ -509,14 +509,12 @@ pub(super) fn read_limited_memory_from_caller(
     limit: usize,
     label: &str,
 ) -> anyhow::Result<Vec<u8>> {
-    if len < 0 {
-        anyhow::bail!("{label} length is negative: {len}");
-    }
-    let len = len as usize;
+    let ptr = checked_memory_offset(ptr, "ptr")?;
+    let len = checked_memory_offset(len, label)?;
     if len > limit {
         anyhow::bail!("{label} length {len} exceeds configured limit of {limit} bytes");
     }
-    read_memory_from_caller(caller, ptr, len as i32)
+    read_memory_range(caller, ptr, len)
 }
 
 pub(super) fn write_memory_from_caller(
@@ -524,9 +522,10 @@ pub(super) fn write_memory_from_caller(
     ptr: i32,
     data: &[u8],
 ) -> anyhow::Result<()> {
+    let ptr = checked_memory_offset(ptr, "ptr")?;
     let mem = caller
         .get_export("memory")
-        .and_then(|m| m.into_memory())
+        .and_then(wasmtime::Extern::into_memory)
         .ok_or_else(|| anyhow::anyhow!("no memory export"))?;
     let mem_data = mem.data_mut(caller);
     let dst = mem_data
@@ -535,6 +534,11 @@ pub(super) fn write_memory_from_caller(
         .ok_or_else(|| anyhow::anyhow!("memory write OOB: ptr={ptr}, len={}", data.len()))?;
     dst.copy_from_slice(data);
     Ok(())
+}
+
+fn checked_memory_offset(value: i32, label: &str) -> anyhow::Result<usize> {
+    usize::try_from(value)
+        .map_err(|_| anyhow::anyhow!("memory access invalid negative {label}: {value}"))
 }
 
 pub(super) fn classify_reqwest_error(e: &reqwest::Error, message: String) -> (ErrorKind, String) {
@@ -566,7 +570,7 @@ pub(super) fn classify_io_error(e: &std::io::Error, message: String) -> (ErrorKi
     (io_kind_to_error_kind(e.kind()), message)
 }
 
-fn io_kind_to_error_kind(k: std::io::ErrorKind) -> ErrorKind {
+const fn io_kind_to_error_kind(k: std::io::ErrorKind) -> ErrorKind {
     match k {
         std::io::ErrorKind::ConnectionRefused => ErrorKind::ConnectionRefused,
         std::io::ErrorKind::PermissionDenied => ErrorKind::PermissionDenied,
@@ -576,130 +580,4 @@ fn io_kind_to_error_kind(k: std::io::ErrorKind) -> ErrorKind {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn phase_transition_allows_expected_lifecycle() {
-        assert!(is_valid_phase_transition(
-            &MissionPhase::Idle,
-            &MissionPhase::Fetching
-        ));
-        assert!(is_valid_phase_transition(
-            &MissionPhase::Fetching,
-            &MissionPhase::Parsing
-        ));
-        assert!(is_valid_phase_transition(
-            &MissionPhase::Parsing,
-            &MissionPhase::Publishing
-        ));
-        assert!(is_valid_phase_transition(
-            &MissionPhase::Publishing,
-            &MissionPhase::Idle
-        ));
-    }
-
-    #[test]
-    fn phase_transition_rejects_invalid_jump() {
-        assert!(!is_valid_phase_transition(
-            &MissionPhase::Idle,
-            &MissionPhase::Parsing
-        ));
-        assert!(!is_valid_phase_transition(
-            &MissionPhase::Parsing,
-            &MissionPhase::Fetching
-        ));
-    }
-
-    #[test]
-    fn backoff_fixed_interval_ignores_failure_count() {
-        let s = PollStrategy::FixedInterval { interval_secs: 60 };
-        assert_eq!(compute_strategy_backoff_ms(&s, 0), 60_000);
-        assert_eq!(compute_strategy_backoff_ms(&s, 5), 60_000);
-        assert_eq!(compute_strategy_backoff_ms(&s, 100), 60_000);
-    }
-
-    #[test]
-    fn backoff_exponential_doubles_per_failure() {
-        let s = PollStrategy::ExponentialBackoff {
-            base_secs: 30,
-            max_secs: 300,
-        };
-        assert_eq!(compute_strategy_backoff_ms(&s, 1), 30_000);
-        assert_eq!(compute_strategy_backoff_ms(&s, 2), 60_000);
-        assert_eq!(compute_strategy_backoff_ms(&s, 3), 120_000);
-        assert_eq!(compute_strategy_backoff_ms(&s, 4), 240_000);
-        assert_eq!(compute_strategy_backoff_ms(&s, 5), 300_000); // capped at max_secs
-        assert_eq!(compute_strategy_backoff_ms(&s, 6), 300_000); // stays at cap
-    }
-
-    #[test]
-    fn backoff_exponential_clamps_on_overflow() {
-        let s = PollStrategy::ExponentialBackoff {
-            base_secs: 30,
-            max_secs: 300,
-        };
-        // Large failure counts must not panic or produce nonsense.
-        assert_eq!(compute_strategy_backoff_ms(&s, u32::MAX), 300_000);
-    }
-
-    #[test]
-    fn backoff_jittered_returns_lower_bound() {
-        let s = PollStrategy::Jittered {
-            base_secs: 60,
-            jitter_secs: 15,
-        };
-        assert_eq!(compute_strategy_backoff_ms(&s, 0), 45_000);
-        assert_eq!(compute_strategy_backoff_ms(&s, 10), 45_000);
-    }
-
-    #[test]
-    fn backoff_jittered_saturates_when_jitter_exceeds_base() {
-        let s = PollStrategy::Jittered {
-            base_secs: 10,
-            jitter_secs: 30,
-        };
-        assert_eq!(compute_strategy_backoff_ms(&s, 1), 0); // saturating_sub clamps at 0
-    }
-
-    #[test]
-    fn acquisition_timeout_uses_assurance_default_over_poll_strategy() {
-        let outcome = MissionOutcome {
-            status: MissionOutcomeStatus::RetryableFailure,
-            reason_code: "acquisition_timeout".to_string(),
-            message: "timed out".to_string(),
-            retry_after_ms: None,
-            operator_action: None,
-            operator_timeout_ms: None,
-            operator_timeout_outcome: None,
-            primary_artifact_kind: None,
-        };
-        let describe = MissionModuleDescribe {
-            schema_version: 1,
-            logical_id: "test.mission".to_string(),
-            name: "Test".to_string(),
-            description: "Test".to_string(),
-            abi_version: 4,
-            run_modes: vec!["managed_polling".to_string()],
-            state_persistence: crate::abi::PersistenceAuthority::Volatile,
-            required_env_vars: Vec::new(),
-            optional_env_vars: Vec::new(),
-            params: Some(crate::abi::MissionParamsSchema { fields: Vec::new() }),
-            capabilities_needed: Vec::new(),
-            poll_strategy: Some(PollStrategy::FixedInterval { interval_secs: 60 }),
-            cooldown_policy: None,
-            artifact_types: Vec::new(),
-            acquisition_timeout_secs: Some(1),
-            operator_fallback: None,
-        };
-        let assurance = RuntimeAssurance {
-            same_reason_retry_limit: 3,
-            default_retry_after_ms: 50,
-        };
-
-        assert_eq!(
-            resolved_retry_after_ms(&outcome, &assurance, Some(&describe), 1),
-            Some(50)
-        );
-    }
-}
+mod tests;

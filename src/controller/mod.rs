@@ -48,7 +48,7 @@ pub struct MissionCompletion {
 pub struct MissionController {
     /// Canonical runtime state; read by `snapshot()`.
     runtime_state: Arc<Mutex<MissionRuntimeState>>,
-    /// Named artifact store; published_output consumed by `--once` mode.
+    /// Named artifact store; `published_output` consumed by `--once` mode.
     artifact_store: Arc<Mutex<ArtifactStore>>,
     /// Background thread running the mission module.
     thread: Option<thread::JoinHandle<()>>,
@@ -62,6 +62,11 @@ pub struct MissionController {
 
 impl MissionController {
     /// Load a mission-module WASM module and start running it in a background thread.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the runtime cannot load the config, read or
+    /// compile the WASM module, or prepare the background execution context.
     pub fn new(
         wasm_path: &str,
         env_vars: Vec<(String, String)>,
@@ -72,139 +77,59 @@ impl MissionController {
         config: &Config,
     ) -> Result<Self> {
         let policy = RuntimePolicy::from_limits(&config.limits);
-        if let Some(params) = params_bytes.as_ref()
-            && params.len() > policy.max_params_bytes
-        {
-            anyhow::bail!(
-                "mission params are {} bytes, exceeding the configured limit of {} bytes",
-                params.len(),
-                policy.max_params_bytes
-            );
-        }
-
-        let wasm_bytes =
-            std::fs::read(wasm_path).with_context(|| format!("read WASM file: {wasm_path}"))?;
-
-        let wasm_hash = persistence::wasm_identity(&wasm_bytes);
-        let module_hash = identity::ModuleHash(crate::utils::sha256_digest(&wasm_bytes));
-        let attestation_identity = if config.attestation_disabled {
-            None
-        } else {
-            Some(identity::load_or_create(config).context(
-                "load or create brrmmmm attestation identity; set BRRMMMM_ATTESTATION=off for explicit legacy mode",
-            )?)
-        };
-        let mut runtime_state = persistence::load(config, &wasm_hash)
-            .with_context(|| format!("load persisted runtime state for WASM {wasm_hash}"))?
-            .unwrap_or_default();
-        runtime_state.phase = MissionPhase::Idle;
-        runtime_state.last_error = None;
-        runtime_state.last_outcome = None;
-        runtime_state.last_outcome_at_ms = None;
-        runtime_state.last_outcome_reported_by = None;
-        runtime_state.last_host_decision = None;
-        runtime_state.pending_operator_action = None;
-        runtime_state.last_raw_artifact = None;
-        runtime_state.last_output_artifact = None;
-        let runtime_state = Arc::new(Mutex::new(runtime_state));
+        validate_controller_params(params_bytes.as_deref(), &policy)?;
+        let LoadedMissionAssets {
+            wasm_bytes,
+            wasm_hash,
+            module_hash,
+            attestation_identity,
+            runtime_state,
+        } = load_mission_assets(wasm_path, config)?;
         let stop_signal = Arc::new(AtomicBool::new(false));
-
-        let mut engine_config = WasmtimeConfig::new();
-        engine_config.epoch_interruption(true);
-        engine_config.async_support(true);
-        let engine = Engine::new(&engine_config).context("create wasmtime engine")?;
-        let module = Module::from_binary(&engine, &wasm_bytes)
-            .with_context(|| format!("compile WASM module: {wasm_path}"))?;
-
-        // Shared epoch timer: increments engine epoch every 100ms so that
-        // store.set_epoch_deadline() provides hard timeout enforcement regardless
-        // of whether the guest cooperatively checks the stop_signal.
-        let engine_for_timer = engine.clone();
-        let stop_for_timer = stop_signal.clone();
-        thread::spawn(move || {
-            while !stop_for_timer.load(Ordering::Relaxed) {
-                thread::sleep(std::time::Duration::from_millis(100));
-                engine_for_timer.increment_epoch();
-            }
-        });
-
-        {
-            lock_runtime(&runtime_state, "runtime_state").mode = ActiveMode::ManagedPolling;
-        }
-
-        // Build shared stores.
-        let artifact_store = Arc::new(Mutex::new(ArtifactStore::default()));
-        let force_refresh = Arc::new(AtomicBool::new(false));
-        let params_state = Arc::new(Mutex::new(params_bytes.clone()));
-        let artifact_store_clone = artifact_store.clone();
-        let force_refresh_clone = force_refresh.clone();
-        let params_state_clone = params_state.clone();
-        let runtime_state_clone = runtime_state.clone();
-        let stop_clone = stop_signal.clone();
-        let wasm_path_str = wasm_path.to_string();
-        let config_clone = config.clone();
-        let wasm_bytes_for_thread = wasm_bytes.clone();
-
-        let handle = thread::spawn(move || {
-            let runtime = match tokio::runtime::Builder::new_multi_thread()
-                .enable_all()
-                .build()
-            {
-                Ok(runtime) => runtime,
-                Err(error) => {
-                    eprintln!("[brrmmmm] failed to build tokio runtime: {error}");
-                    return;
-                }
-            };
-            let config = WasmRunConfig {
-                wasm_path: wasm_path_str,
-                env_vars,
-                params_bytes,
-                log_channel,
-                abi_version: ABI_VERSION_V4,
-                wasm_size_bytes: wasm_bytes_for_thread.len(),
-                wasm_hash,
-                module_hash,
-                attestation_identity,
-                policy,
-                override_retry_gate,
-            };
-            let context = WasmRunContext {
-                artifact_store: artifact_store_clone,
-                runtime_state: runtime_state_clone,
-                params_state: params_state_clone,
-                event_sink,
-                stop_signal: stop_clone,
-                force_refresh: force_refresh_clone,
-            };
-            let result = runtime.block_on(run_wasm_instance(
-                &engine,
-                &module,
-                config,
-                context,
-                &config_clone,
-            ));
-            if let Err(e) = result {
-                eprintln!("[brrmmmm] WASM execution error: {e:?}");
-            }
+        let (engine, module) = build_engine_and_module(wasm_path, &wasm_bytes)?;
+        start_epoch_timer(&engine, &stop_signal);
+        set_managed_polling_mode(&runtime_state);
+        let shared = SharedMissionHandles::new(params_bytes.clone());
+        let handle = spawn_mission_thread(MissionThreadLaunch {
+            engine,
+            module,
+            wasm_path: wasm_path.to_string(),
+            wasm_bytes,
+            wasm_hash,
+            module_hash,
+            attestation_identity,
+            env_vars,
+            params_bytes,
+            log_channel,
+            override_retry_gate,
+            event_sink,
+            policy,
+            config: config.clone(),
+            artifact_store: shared.artifact_store.clone(),
+            force_refresh: shared.force_refresh.clone(),
+            params_state: shared.params_state.clone(),
+            runtime_state: runtime_state.clone(),
+            stop_signal: stop_signal.clone(),
         });
 
         Ok(Self {
             runtime_state,
-            artifact_store,
+            artifact_store: shared.artifact_store,
             thread: Some(handle),
             stop_signal,
-            force_refresh,
-            params_bytes: params_state,
+            force_refresh: shared.force_refresh,
+            params_bytes: shared.params_state,
         })
     }
 
     /// Return a snapshot of the current runtime state.
+    #[must_use]
     pub fn snapshot(&self) -> MissionRuntimeState {
         lock_runtime(&self.runtime_state, "runtime_state").clone()
     }
 
-    /// Return the mission-module-declared acquisition budget once describe() has been read.
+    /// Return the mission-module-declared acquisition budget once `describe()` has been read.
+    #[must_use]
     pub fn acquisition_timeout_secs(&self) -> Option<u32> {
         self.snapshot()
             .describe
@@ -212,6 +137,7 @@ impl MissionController {
     }
 
     /// Poll for the terminal mission outcome, consuming the published output artifact if present.
+    #[must_use]
     pub fn poll_completion(&self) -> Option<MissionCompletion> {
         let snapshot = self.snapshot();
         let outcome = snapshot.last_outcome.clone()?;
@@ -239,11 +165,13 @@ impl MissionController {
     }
 
     /// Return a clone of the force-refresh flag for use by the stdin command listener.
+    #[must_use]
     pub fn force_refresh_flag(&self) -> Arc<AtomicBool> {
         self.force_refresh.clone()
     }
 
     /// Return a clone of the current params handle for command listeners.
+    #[must_use]
     pub fn params_handle(&self) -> Arc<Mutex<Option<Vec<u8>>>> {
         self.params_bytes.clone()
     }
@@ -253,6 +181,186 @@ impl MissionController {
         self.stop_signal.store(true, Ordering::Relaxed);
         self.thread.take();
     }
+}
+
+struct LoadedMissionAssets {
+    wasm_bytes: Vec<u8>,
+    wasm_hash: String,
+    module_hash: identity::ModuleHash,
+    attestation_identity: Option<identity::InstallationIdentity>,
+    runtime_state: Arc<Mutex<MissionRuntimeState>>,
+}
+
+struct SharedMissionHandles {
+    artifact_store: Arc<Mutex<ArtifactStore>>,
+    force_refresh: Arc<AtomicBool>,
+    params_state: Arc<Mutex<Option<Vec<u8>>>>,
+}
+
+impl SharedMissionHandles {
+    fn new(params_bytes: Option<Vec<u8>>) -> Self {
+        Self {
+            artifact_store: Arc::new(Mutex::new(ArtifactStore::default())),
+            force_refresh: Arc::new(AtomicBool::new(false)),
+            params_state: Arc::new(Mutex::new(params_bytes)),
+        }
+    }
+}
+
+struct MissionThreadLaunch {
+    engine: Engine,
+    module: Module,
+    wasm_path: String,
+    wasm_bytes: Vec<u8>,
+    wasm_hash: String,
+    module_hash: identity::ModuleHash,
+    attestation_identity: Option<identity::InstallationIdentity>,
+    env_vars: Vec<(String, String)>,
+    params_bytes: Option<Vec<u8>>,
+    log_channel: bool,
+    override_retry_gate: bool,
+    event_sink: EventSink,
+    policy: RuntimePolicy,
+    config: Config,
+    artifact_store: Arc<Mutex<ArtifactStore>>,
+    force_refresh: Arc<AtomicBool>,
+    params_state: Arc<Mutex<Option<Vec<u8>>>>,
+    runtime_state: Arc<Mutex<MissionRuntimeState>>,
+    stop_signal: Arc<AtomicBool>,
+}
+
+fn validate_controller_params(params_bytes: Option<&[u8]>, policy: &RuntimePolicy) -> Result<()> {
+    if let Some(params) = params_bytes
+        && params.len() > policy.max_params_bytes
+    {
+        anyhow::bail!(
+            "mission params are {} bytes, exceeding the configured limit of {} bytes",
+            params.len(),
+            policy.max_params_bytes
+        );
+    }
+    Ok(())
+}
+
+fn load_mission_assets(wasm_path: &str, config: &Config) -> Result<LoadedMissionAssets> {
+    let wasm_bytes =
+        std::fs::read(wasm_path).with_context(|| format!("read WASM file: {wasm_path}"))?;
+    let wasm_hash = persistence::wasm_identity(&wasm_bytes);
+    let module_hash = identity::ModuleHash(crate::utils::sha256_digest(&wasm_bytes));
+    let attestation_identity = load_attestation_identity(config)?;
+    let runtime_state = Arc::new(Mutex::new(load_runtime_state(config, &wasm_hash)?));
+
+    Ok(LoadedMissionAssets {
+        wasm_bytes,
+        wasm_hash,
+        module_hash,
+        attestation_identity,
+        runtime_state,
+    })
+}
+
+fn load_attestation_identity(config: &Config) -> Result<Option<identity::InstallationIdentity>> {
+    if config.attestation_disabled {
+        return Ok(None);
+    }
+
+    identity::load_or_create(config)
+        .context(
+            "load or create brrmmmm attestation identity; set BRRMMMM_ATTESTATION=off for explicit legacy mode",
+        )
+        .map(Some)
+}
+
+fn load_runtime_state(config: &Config, wasm_hash: &str) -> Result<MissionRuntimeState> {
+    let mut runtime_state = persistence::load(config, wasm_hash)
+        .with_context(|| format!("load persisted runtime state for WASM {wasm_hash}"))?
+        .unwrap_or_default();
+    reset_runtime_state_for_start(&mut runtime_state);
+    Ok(runtime_state)
+}
+
+fn reset_runtime_state_for_start(runtime_state: &mut MissionRuntimeState) {
+    runtime_state.phase = MissionPhase::Idle;
+    runtime_state.last_error = None;
+    runtime_state.last_outcome = None;
+    runtime_state.last_outcome_at_ms = None;
+    runtime_state.last_outcome_reported_by = None;
+    runtime_state.last_host_decision = None;
+    runtime_state.pending_operator_action = None;
+    runtime_state.last_raw_artifact = None;
+    runtime_state.last_output_artifact = None;
+}
+
+fn build_engine_and_module(wasm_path: &str, wasm_bytes: &[u8]) -> Result<(Engine, Module)> {
+    let mut engine_config = WasmtimeConfig::new();
+    engine_config.epoch_interruption(true);
+    engine_config.async_support(true);
+    let engine = Engine::new(&engine_config).context("create wasmtime engine")?;
+    let module = Module::from_binary(&engine, wasm_bytes)
+        .with_context(|| format!("compile WASM module: {wasm_path}"))?;
+    Ok((engine, module))
+}
+
+fn start_epoch_timer(engine: &Engine, stop_signal: &Arc<AtomicBool>) {
+    let engine_for_timer = engine.clone();
+    let stop_for_timer = stop_signal.clone();
+    thread::spawn(move || {
+        while !stop_for_timer.load(Ordering::Relaxed) {
+            thread::sleep(std::time::Duration::from_millis(100));
+            engine_for_timer.increment_epoch();
+        }
+    });
+}
+
+fn set_managed_polling_mode(runtime_state: &Arc<Mutex<MissionRuntimeState>>) {
+    lock_runtime(runtime_state, "runtime_state").mode = ActiveMode::ManagedPolling;
+}
+
+fn spawn_mission_thread(launch: MissionThreadLaunch) -> thread::JoinHandle<()> {
+    thread::spawn(move || {
+        let runtime = match tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+        {
+            Ok(runtime) => runtime,
+            Err(error) => {
+                eprintln!("[brrmmmm] failed to build tokio runtime: {error}");
+                return;
+            }
+        };
+
+        let config = WasmRunConfig {
+            wasm_path: launch.wasm_path,
+            env_vars: launch.env_vars,
+            params_bytes: launch.params_bytes,
+            log_channel: launch.log_channel,
+            abi_version: ABI_VERSION_V4,
+            wasm_size_bytes: launch.wasm_bytes.len(),
+            wasm_hash: launch.wasm_hash,
+            module_hash: launch.module_hash,
+            attestation_identity: launch.attestation_identity,
+            policy: launch.policy,
+            override_retry_gate: launch.override_retry_gate,
+        };
+        let context = WasmRunContext {
+            artifact_store: launch.artifact_store,
+            runtime_state: launch.runtime_state,
+            params_state: launch.params_state,
+            event_sink: launch.event_sink,
+            stop_signal: launch.stop_signal,
+            force_refresh: launch.force_refresh,
+        };
+        let result = runtime.block_on(run_wasm_instance(
+            &launch.engine,
+            &launch.module,
+            config,
+            context,
+            &launch.config,
+        ));
+        if let Err(error) = result {
+            eprintln!("[brrmmmm] WASM execution error: {error:?}");
+        }
+    })
 }
 
 impl Drop for MissionController {

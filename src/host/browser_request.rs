@@ -3,15 +3,15 @@ use serde_json::Value;
 
 pub const WIRE_VERSION: u32 = 2;
 
-fn default_timeout_ms() -> u32 {
+const fn default_timeout_ms() -> u32 {
     10_000
 }
 
-fn default_text_limit() -> u32 {
+const fn default_text_limit() -> u32 {
     20
 }
 
-fn default_selector_kind() -> SelectorKind {
+const fn default_selector_kind() -> SelectorKind {
     SelectorKind::Css
 }
 
@@ -72,7 +72,7 @@ pub enum BrowserAction {
 }
 
 impl BrowserAction {
-    pub fn kind(&self) -> &'static str {
+    pub const fn kind(&self) -> &'static str {
         match self {
             Self::Navigate { .. } => "navigate",
             Self::Fill { .. } => "fill",
@@ -93,8 +93,7 @@ impl BrowserAction {
     pub fn detail(&self) -> String {
         match self {
             Self::Navigate { url } => url.clone(),
-            Self::Fill { selector, .. } => selector.clone(), // value intentionally omitted
-            Self::Click { selector } => selector.clone(),
+            Self::Fill { selector, .. } | Self::Click { selector } => selector.clone(), // value intentionally omitted
             Self::Press { selector, key } => format!("{selector} key={key}"),
             Self::WaitForSelector {
                 selector,
@@ -108,21 +107,19 @@ impl BrowserAction {
             } => {
                 format!("{pattern} timeout={timeout_ms}ms")
             }
-            Self::CurrentUrl => String::new(),
-            Self::GetCookies => String::new(),
+            Self::CurrentUrl | Self::GetCookies | Self::Screenshot => String::new(),
             Self::GetText { selector, limit } => format!("{selector} limit={limit}"),
             Self::GetHtml {
                 selector,
                 selector_kind,
                 limit,
-            } => match selector {
-                Some(selector) => format!("{selector_kind:?} {selector} limit={limit}"),
-                None => "document".to_string(),
-            },
+            } => selector.as_ref().map_or_else(
+                || "document".to_string(),
+                |selector| format!("{selector_kind:?} {selector} limit={limit}"),
+            ),
             Self::EvaluateJson { expression } => {
                 format!("expression_len={}", expression.len())
             }
-            Self::Screenshot => String::new(),
         }
     }
 }
@@ -174,14 +171,14 @@ pub enum BrowserActionResponse {
 }
 
 impl BrowserActionResponse {
-    pub fn ok() -> Self {
+    pub const fn ok() -> Self {
         Self::Ok {
             wire_version: WIRE_VERSION,
             ok: true,
         }
     }
 
-    pub fn ok_url(url: String) -> Self {
+    pub const fn ok_url(url: String) -> Self {
         Self::OkUrl {
             wire_version: WIRE_VERSION,
             ok: true,
@@ -189,7 +186,7 @@ impl BrowserActionResponse {
         }
     }
 
-    pub fn ok_cookies(cookies: Vec<BrowserCookie>) -> Self {
+    pub const fn ok_cookies(cookies: Vec<BrowserCookie>) -> Self {
         Self::OkCookies {
             wire_version: WIRE_VERSION,
             ok: true,
@@ -197,7 +194,7 @@ impl BrowserActionResponse {
         }
     }
 
-    pub fn ok_text(texts: Vec<String>) -> Self {
+    pub const fn ok_text(texts: Vec<String>) -> Self {
         Self::OkText {
             wire_version: WIRE_VERSION,
             ok: true,
@@ -205,7 +202,7 @@ impl BrowserActionResponse {
         }
     }
 
-    pub fn ok_html(html: String, count: usize) -> Self {
+    pub const fn ok_html(html: String, count: usize) -> Self {
         Self::OkHtml {
             wire_version: WIRE_VERSION,
             ok: true,
@@ -214,7 +211,7 @@ impl BrowserActionResponse {
         }
     }
 
-    pub fn ok_json(value: Value) -> Self {
+    pub const fn ok_json(value: Value) -> Self {
         Self::OkJson {
             wire_version: WIRE_VERSION,
             ok: true,
@@ -222,7 +219,7 @@ impl BrowserActionResponse {
         }
     }
 
-    pub fn ok_screenshot(png_b64: String) -> Self {
+    pub const fn ok_screenshot(png_b64: String) -> Self {
         Self::OkScreenshot {
             wire_version: WIRE_VERSION,
             ok: true,
@@ -239,7 +236,7 @@ impl BrowserActionResponse {
         }
     }
 
-    pub fn is_ok(&self) -> bool {
+    pub const fn is_ok(&self) -> bool {
         matches!(
             self,
             Self::Ok { .. }
@@ -266,10 +263,12 @@ pub struct BrowserCookie {
 #[cfg_attr(not(test), allow(dead_code))]
 pub fn decode_action(bytes: &[u8]) -> anyhow::Result<BrowserAction> {
     let val: serde_json::Value = serde_json::from_slice(bytes)?;
-    let version = val
-        .get("wire_version")
-        .and_then(|v| v.as_u64())
-        .unwrap_or(0) as u32;
+    let version = u32::try_from(
+        val.get("wire_version")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(0),
+    )
+    .unwrap_or(u32::MAX);
     anyhow::ensure!(
         version == WIRE_VERSION,
         "unsupported browser wire_version {version}; expected {WIRE_VERSION}"
@@ -344,7 +343,7 @@ mod tests {
         .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
 
-        assert_eq!(json["wire_version"], WIRE_VERSION as u64);
+        assert_eq!(json["wire_version"], u64::from(WIRE_VERSION));
         assert_eq!(json["ok"], true);
         assert_eq!(json["png_b64"], "iVBORw0KGgo=");
     }

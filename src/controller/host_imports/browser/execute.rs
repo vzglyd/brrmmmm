@@ -18,7 +18,7 @@ use crate::mission_state::{self, Capabilities};
 
 use super::super::super::io::lock_runtime;
 
-pub(crate) struct BrowserSession {
+pub struct BrowserSession {
     pub browser: Option<Browser>,
     pub active_page: Option<chromiumoxide::Page>,
     pub shared: Arc<Mutex<HostState>>,
@@ -27,14 +27,14 @@ pub(crate) struct BrowserSession {
 }
 
 impl BrowserSession {
-    pub fn new(shared: Arc<Mutex<HostState>>) -> anyhow::Result<Self> {
-        Ok(Self {
+    pub const fn new(shared: Arc<Mutex<HostState>>) -> Self {
+        Self {
             browser: None,
             active_page: None,
             shared,
             last_applied_ua: String::new(),
             interception_started: false,
-        })
+        }
     }
 
     pub async fn execute(&mut self, action: BrowserAction) -> BrowserActionResponse {
@@ -48,13 +48,13 @@ impl BrowserSession {
         // Apply CDP UA override if the sidecar changed the UA after the browser was launched.
         let current_ua = lock_runtime(&self.shared, "host_state").full_user_agent(None);
         if current_ua != self.last_applied_ua {
-            if let Some(page) = self.active_page.as_ref().cloned() {
+            if let Some(page) = self.active_page.clone() {
                 let ua_clone = current_ua.clone();
                 let _ = page
                     .execute(SetUserAgentOverrideParams::new(ua_clone))
                     .await;
             }
-            self.last_applied_ua = current_ua.clone();
+            self.last_applied_ua.clone_from(&current_ua);
         }
 
         let Some(browser) = self.browser.as_ref() else {
@@ -106,6 +106,14 @@ impl BrowserSession {
     }
 }
 
+struct BrowserActionContext<'a> {
+    browser: &'a Browser,
+    active_page: &'a mut Option<chromiumoxide::Page>,
+    shared: Arc<Mutex<HostState>>,
+    interception_started: &'a mut bool,
+    user_agent: &'a str,
+}
+
 async fn run_action(
     browser: &Browser,
     active_page: &mut Option<chromiumoxide::Page>,
@@ -114,297 +122,282 @@ async fn run_action(
     interception_started: &mut bool,
     user_agent: &str,
 ) -> BrowserActionResponse {
+    let mut ctx = BrowserActionContext {
+        browser,
+        active_page,
+        shared,
+        interception_started,
+        user_agent,
+    };
+
     match action {
-        BrowserAction::Navigate { url } => {
-            let page = match active_page.as_ref().cloned() {
-                Some(page) => page,
-                None => {
-                    let pages = browser.pages().await.unwrap_or_default();
-                    match pages.into_iter().next() {
-                        Some(page) => page,
-                        None => match browser.new_page("about:blank").await {
-                            Ok(page) => {
-                                let page_clone = page.clone();
-                                *active_page = Some(page);
-                                page_clone
-                            }
-                            Err(e) => {
-                                return BrowserActionResponse::err(
-                                    "navigation_failed",
-                                    e.to_string(),
-                                );
-                            }
-                        },
-                    }
-                }
-            };
-            if let Err(e) =
-                ensure_page_attestation(&page, shared.clone(), interception_started, user_agent)
-                    .await
-            {
-                return BrowserActionResponse::err("browser_attestation_failed", e);
-            }
-            match page.goto(&url).await {
-                Ok(_) => {
-                    *active_page = Some(page);
-                    BrowserActionResponse::ok()
-                }
-                Err(e) => BrowserActionResponse::err("navigation_failed", e.to_string()),
-            }
-        }
-        BrowserAction::Fill { selector, value } => {
-            let page = match current_page(
-                browser,
-                active_page,
-                shared.clone(),
-                interception_started,
-                user_agent,
-            )
-            .await
-            {
-                Ok(p) => p,
-                Err(e) => return BrowserActionResponse::err("no_page", e),
-            };
-            match page.find_element(&selector).await {
-                Ok(el) => match el.click().await {
-                    Ok(_) => match el.type_str(&value).await {
-                        Ok(_) => BrowserActionResponse::ok(),
-                        Err(e) => BrowserActionResponse::err("fill_failed", e.to_string()),
-                    },
-                    Err(e) => BrowserActionResponse::err("fill_failed", e.to_string()),
-                },
-                Err(e) => BrowserActionResponse::err(
-                    "element_not_found",
-                    format!("no element matches '{selector}': {e}"),
-                ),
-            }
-        }
-        BrowserAction::Click { selector } => {
-            let page = match current_page(
-                browser,
-                active_page,
-                shared.clone(),
-                interception_started,
-                user_agent,
-            )
-            .await
-            {
-                Ok(p) => p,
-                Err(e) => return BrowserActionResponse::err("no_page", e),
-            };
-            match page.find_element(&selector).await {
-                Ok(el) => match el.click().await {
-                    Ok(_) => BrowserActionResponse::ok(),
-                    Err(e) => BrowserActionResponse::err("click_failed", e.to_string()),
-                },
-                Err(e) => BrowserActionResponse::err(
-                    "element_not_found",
-                    format!("no element matches '{selector}': {e}"),
-                ),
-            }
-        }
-        BrowserAction::Press { selector, key } => {
-            let page = match current_page(
-                browser,
-                active_page,
-                shared.clone(),
-                interception_started,
-                user_agent,
-            )
-            .await
-            {
-                Ok(p) => p,
-                Err(e) => return BrowserActionResponse::err("no_page", e),
-            };
-            match page.find_element(&selector).await {
-                Ok(el) => match el.press_key(&key).await {
-                    Ok(_) => BrowserActionResponse::ok(),
-                    Err(e) => BrowserActionResponse::err("press_failed", e.to_string()),
-                },
-                Err(e) => BrowserActionResponse::err(
-                    "element_not_found",
-                    format!("no element matches '{selector}': {e}"),
-                ),
-            }
-        }
+        BrowserAction::Navigate { url } => ctx.handle_navigate(&url).await,
+        BrowserAction::Fill { selector, value } => ctx.handle_fill(&selector, &value).await,
+        BrowserAction::Click { selector } => ctx.handle_click(&selector).await,
+        BrowserAction::Press { selector, key } => ctx.handle_press(&selector, &key).await,
         BrowserAction::WaitForSelector {
             selector,
             timeout_ms,
-        } => {
-            let page = match current_page(
-                browser,
-                active_page,
-                shared.clone(),
-                interception_started,
-                user_agent,
-            )
-            .await
-            {
-                Ok(p) => p,
-                Err(e) => return BrowserActionResponse::err("no_page", e),
-            };
-            let timeout = std::time::Duration::from_millis(timeout_ms as u64);
-            match tokio::time::timeout(timeout, wait_for_selector_match(&page, &selector)).await {
-                Ok(()) => BrowserActionResponse::ok(),
-                Err(_) => BrowserActionResponse::err(
-                    "selector_timeout",
-                    format!("'{selector}' not found within {timeout_ms}ms"),
-                ),
-            }
-        }
+        } => ctx.handle_wait_for_selector(&selector, timeout_ms).await,
         BrowserAction::WaitForUrl {
             pattern,
             timeout_ms,
-        } => {
-            let page = match current_page(
-                browser,
-                active_page,
-                shared.clone(),
-                interception_started,
-                user_agent,
-            )
-            .await
-            {
-                Ok(p) => p,
-                Err(e) => return BrowserActionResponse::err("no_page", e),
-            };
-            let timeout = std::time::Duration::from_millis(timeout_ms as u64);
-            match tokio::time::timeout(timeout, wait_for_url_match(&page, &pattern)).await {
-                Ok(Ok(())) => BrowserActionResponse::ok(),
-                Ok(Err(e)) => BrowserActionResponse::err("wait_for_url_failed", e),
-                Err(_) => BrowserActionResponse::err(
-                    "url_timeout",
-                    format!("URL matching '{pattern}' not seen within {timeout_ms}ms"),
-                ),
-            }
-        }
-        BrowserAction::CurrentUrl => {
-            let page = match current_page(
-                browser,
-                active_page,
-                shared.clone(),
-                interception_started,
-                user_agent,
-            )
-            .await
-            {
-                Ok(p) => p,
-                Err(e) => return BrowserActionResponse::err("no_page", e),
-            };
-            match page.url().await {
-                Ok(Some(url)) => BrowserActionResponse::ok_url(url),
-                Ok(None) => BrowserActionResponse::err("no_url", "page has no URL"),
-                Err(e) => BrowserActionResponse::err("current_url_failed", e.to_string()),
-            }
-        }
-        BrowserAction::GetCookies => {
-            let page = match current_page(
-                browser,
-                active_page,
-                shared.clone(),
-                interception_started,
-                user_agent,
-            )
-            .await
-            {
-                Ok(p) => p,
-                Err(e) => return BrowserActionResponse::err("no_page", e),
-            };
-            match page.get_cookies().await {
-                Ok(cookies) => {
-                    let out = cookies
-                        .into_iter()
-                        .map(|c| BrowserCookie {
-                            name: c.name,
-                            value: c.value,
-                            domain: c.domain,
-                            path: c.path,
-                            secure: c.secure,
-                            http_only: c.http_only,
-                        })
-                        .collect();
-                    BrowserActionResponse::ok_cookies(out)
-                }
-                Err(e) => BrowserActionResponse::err("get_cookies_failed", e.to_string()),
-            }
-        }
-        BrowserAction::GetText { selector, limit } => {
-            let page = match current_page(
-                browser,
-                active_page,
-                shared.clone(),
-                interception_started,
-                user_agent,
-            )
-            .await
-            {
-                Ok(p) => p,
-                Err(e) => return BrowserActionResponse::err("no_page", e),
-            };
-            match get_text(&page, &selector, limit).await {
-                Ok(texts) => BrowserActionResponse::ok_text(texts),
-                Err(e) => BrowserActionResponse::err("get_text_failed", e),
-            }
-        }
+        } => ctx.handle_wait_for_url(&pattern, timeout_ms).await,
+        BrowserAction::CurrentUrl => ctx.handle_current_url().await,
+        BrowserAction::GetCookies => ctx.handle_get_cookies().await,
+        BrowserAction::GetText { selector, limit } => ctx.handle_get_text(&selector, limit).await,
         BrowserAction::GetHtml {
             selector,
             selector_kind,
             limit,
         } => {
-            let page = match current_page(
-                browser,
-                active_page,
-                shared.clone(),
-                interception_started,
-                user_agent,
-            )
-            .await
-            {
-                Ok(p) => p,
-                Err(e) => return BrowserActionResponse::err("no_page", e),
-            };
-            match get_html(&page, selector.as_deref(), selector_kind, limit).await {
-                Ok((html, count)) => BrowserActionResponse::ok_html(html, count),
-                Err(e) => BrowserActionResponse::err("get_html_failed", e),
-            }
+            ctx.handle_get_html(selector.as_deref(), selector_kind, limit)
+                .await
         }
-        BrowserAction::EvaluateJson { expression } => {
-            let page = match current_page(
-                browser,
-                active_page,
-                shared.clone(),
-                interception_started,
-                user_agent,
-            )
-            .await
-            {
-                Ok(p) => p,
-                Err(e) => return BrowserActionResponse::err("no_page", e),
-            };
-            match evaluate_json(&page, &expression).await {
-                Ok(value) => BrowserActionResponse::ok_json(value),
-                Err(e) => BrowserActionResponse::err("evaluate_json_failed", e),
+        BrowserAction::EvaluateJson { expression } => ctx.handle_evaluate_json(&expression).await,
+        BrowserAction::Screenshot => ctx.handle_screenshot().await,
+    }
+}
+
+impl BrowserActionContext<'_> {
+    async fn handle_navigate(&mut self, url: &str) -> BrowserActionResponse {
+        let page = if let Some(page) = self.active_page.clone() {
+            page
+        } else {
+            let pages = self.browser.pages().await.unwrap_or_default();
+            match pages.into_iter().next() {
+                Some(page) => page,
+                None => match self.browser.new_page("about:blank").await {
+                    Ok(page) => {
+                        let page_clone = page.clone();
+                        *self.active_page = Some(page);
+                        page_clone
+                    }
+                    Err(error) => {
+                        return BrowserActionResponse::err("navigation_failed", error.to_string());
+                    }
+                },
             }
+        };
+
+        if let Err(error) = ensure_page_attestation(
+            &page,
+            self.shared.clone(),
+            self.interception_started,
+            self.user_agent,
+        )
+        .await
+        {
+            return BrowserActionResponse::err("browser_attestation_failed", error);
         }
-        BrowserAction::Screenshot => {
-            let page = match current_page(
-                browser,
-                active_page,
-                shared.clone(),
-                interception_started,
-                user_agent,
-            )
-            .await
-            {
-                Ok(p) => p,
-                Err(e) => return BrowserActionResponse::err("no_page", e),
-            };
-            let params = CaptureScreenshotParams::builder().build();
-            match page.screenshot(params).await {
-                Ok(bytes) => BrowserActionResponse::ok_screenshot(base64_encode(&bytes)),
-                Err(e) => BrowserActionResponse::err("screenshot_failed", e.to_string()),
+
+        match page.goto(url).await {
+            Ok(_) => {
+                *self.active_page = Some(page);
+                BrowserActionResponse::ok()
             }
+            Err(error) => BrowserActionResponse::err("navigation_failed", error.to_string()),
         }
+    }
+
+    async fn handle_fill(&mut self, selector: &str, value: &str) -> BrowserActionResponse {
+        let page = match self.current_page_response().await {
+            Ok(page) => page,
+            Err(response) => return response,
+        };
+
+        match page.find_element(selector).await {
+            Ok(element) => match element.click().await {
+                Ok(_) => match element.type_str(value).await {
+                    Ok(_) => BrowserActionResponse::ok(),
+                    Err(error) => BrowserActionResponse::err("fill_failed", error.to_string()),
+                },
+                Err(error) => BrowserActionResponse::err("fill_failed", error.to_string()),
+            },
+            Err(error) => BrowserActionResponse::err(
+                "element_not_found",
+                format!("no element matches '{selector}': {error}"),
+            ),
+        }
+    }
+
+    async fn handle_click(&mut self, selector: &str) -> BrowserActionResponse {
+        let page = match self.current_page_response().await {
+            Ok(page) => page,
+            Err(response) => return response,
+        };
+
+        match page.find_element(selector).await {
+            Ok(element) => match element.click().await {
+                Ok(_) => BrowserActionResponse::ok(),
+                Err(error) => BrowserActionResponse::err("click_failed", error.to_string()),
+            },
+            Err(error) => BrowserActionResponse::err(
+                "element_not_found",
+                format!("no element matches '{selector}': {error}"),
+            ),
+        }
+    }
+
+    async fn handle_press(&mut self, selector: &str, key: &str) -> BrowserActionResponse {
+        let page = match self.current_page_response().await {
+            Ok(page) => page,
+            Err(response) => return response,
+        };
+
+        match page.find_element(selector).await {
+            Ok(element) => match element.press_key(key).await {
+                Ok(_) => BrowserActionResponse::ok(),
+                Err(error) => BrowserActionResponse::err("press_failed", error.to_string()),
+            },
+            Err(error) => BrowserActionResponse::err(
+                "element_not_found",
+                format!("no element matches '{selector}': {error}"),
+            ),
+        }
+    }
+
+    async fn handle_wait_for_selector(
+        &mut self,
+        selector: &str,
+        timeout_ms: u32,
+    ) -> BrowserActionResponse {
+        let page = match self.current_page_response().await {
+            Ok(page) => page,
+            Err(response) => return response,
+        };
+        let timeout = std::time::Duration::from_millis(u64::from(timeout_ms));
+        match tokio::time::timeout(timeout, wait_for_selector_match(&page, selector)).await {
+            Ok(()) => BrowserActionResponse::ok(),
+            Err(_) => BrowserActionResponse::err(
+                "selector_timeout",
+                format!("'{selector}' not found within {timeout_ms}ms"),
+            ),
+        }
+    }
+
+    async fn handle_wait_for_url(
+        &mut self,
+        pattern: &str,
+        timeout_ms: u32,
+    ) -> BrowserActionResponse {
+        let page = match self.current_page_response().await {
+            Ok(page) => page,
+            Err(response) => return response,
+        };
+        let timeout = std::time::Duration::from_millis(u64::from(timeout_ms));
+        match tokio::time::timeout(timeout, wait_for_url_match(&page, pattern)).await {
+            Ok(Ok(())) => BrowserActionResponse::ok(),
+            Ok(Err(error)) => BrowserActionResponse::err("wait_for_url_failed", error),
+            Err(_) => BrowserActionResponse::err(
+                "url_timeout",
+                format!("URL matching '{pattern}' not seen within {timeout_ms}ms"),
+            ),
+        }
+    }
+
+    async fn handle_current_url(&mut self) -> BrowserActionResponse {
+        let page = match self.current_page_response().await {
+            Ok(page) => page,
+            Err(response) => return response,
+        };
+
+        match page.url().await {
+            Ok(Some(url)) => BrowserActionResponse::ok_url(url),
+            Ok(None) => BrowserActionResponse::err("no_url", "page has no URL"),
+            Err(error) => BrowserActionResponse::err("current_url_failed", error.to_string()),
+        }
+    }
+
+    async fn handle_get_cookies(&mut self) -> BrowserActionResponse {
+        let page = match self.current_page_response().await {
+            Ok(page) => page,
+            Err(response) => return response,
+        };
+
+        match page.get_cookies().await {
+            Ok(cookies) => BrowserActionResponse::ok_cookies(
+                cookies
+                    .into_iter()
+                    .map(|cookie| BrowserCookie {
+                        name: cookie.name,
+                        value: cookie.value,
+                        domain: cookie.domain,
+                        path: cookie.path,
+                        secure: cookie.secure,
+                        http_only: cookie.http_only,
+                    })
+                    .collect(),
+            ),
+            Err(error) => BrowserActionResponse::err("get_cookies_failed", error.to_string()),
+        }
+    }
+
+    async fn handle_get_text(&mut self, selector: &str, limit: u32) -> BrowserActionResponse {
+        let page = match self.current_page_response().await {
+            Ok(page) => page,
+            Err(response) => return response,
+        };
+
+        match get_text(&page, selector, limit).await {
+            Ok(texts) => BrowserActionResponse::ok_text(texts),
+            Err(error) => BrowserActionResponse::err("get_text_failed", error),
+        }
+    }
+
+    async fn handle_get_html(
+        &mut self,
+        selector: Option<&str>,
+        selector_kind: SelectorKind,
+        limit: u32,
+    ) -> BrowserActionResponse {
+        let page = match self.current_page_response().await {
+            Ok(page) => page,
+            Err(response) => return response,
+        };
+
+        match get_html(&page, selector, selector_kind, limit).await {
+            Ok((html, count)) => BrowserActionResponse::ok_html(html, count),
+            Err(error) => BrowserActionResponse::err("get_html_failed", error),
+        }
+    }
+
+    async fn handle_evaluate_json(&mut self, expression: &str) -> BrowserActionResponse {
+        let page = match self.current_page_response().await {
+            Ok(page) => page,
+            Err(response) => return response,
+        };
+
+        match evaluate_json(&page, expression).await {
+            Ok(value) => BrowserActionResponse::ok_json(value),
+            Err(error) => BrowserActionResponse::err("evaluate_json_failed", error),
+        }
+    }
+
+    async fn handle_screenshot(&mut self) -> BrowserActionResponse {
+        let page = match self.current_page_response().await {
+            Ok(page) => page,
+            Err(response) => return response,
+        };
+        let params = CaptureScreenshotParams::builder().build();
+        match page.screenshot(params).await {
+            Ok(bytes) => BrowserActionResponse::ok_screenshot(base64_encode(&bytes)),
+            Err(error) => BrowserActionResponse::err("screenshot_failed", error.to_string()),
+        }
+    }
+
+    async fn current_page_response(
+        &mut self,
+    ) -> Result<chromiumoxide::Page, BrowserActionResponse> {
+        current_page(
+            self.browser,
+            self.active_page,
+            self.shared.clone(),
+            self.interception_started,
+            self.user_agent,
+        )
+        .await
+        .map_err(|error| BrowserActionResponse::err("no_page", error))
     }
 }
 
@@ -494,6 +487,7 @@ async fn continue_attested_request(
             &binding,
         );
         let user_agent = host.full_user_agent(envelope.as_ref());
+        drop(host);
         attestation::merge_host_headers(original, &user_agent, envelope.as_ref())
     };
     let entries: Vec<HeaderEntry> = headers
@@ -503,8 +497,7 @@ async fn continue_attested_request(
     let params = ContinueRequestParams::builder()
         .request_id(event.request_id.clone())
         .headers(entries)
-        .build()
-        .map_err(|error| error.to_string())?;
+        .build()?;
     page.execute(params)
         .await
         .map(|_| ())
@@ -520,8 +513,7 @@ fn cdp_headers_to_pairs(headers: &serde_json::Value) -> Vec<(String, String)> {
                 .map(|(name, value)| {
                     let value = value
                         .as_str()
-                        .map(ToOwned::to_owned)
-                        .unwrap_or_else(|| value.to_string());
+                        .map_or_else(|| value.to_string(), ToOwned::to_owned);
                     (name.clone(), value)
                 })
                 .collect()

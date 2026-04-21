@@ -33,8 +33,9 @@ pub enum ErrorCategory {
 }
 
 impl ErrorCategory {
-    /// Return the stable snake_case string emitted in structured logs.
-    pub fn as_str(self) -> &'static str {
+    /// Return the stable `snake_case` string emitted in structured logs.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
         match self {
             Self::StateCorruption => "state_corruption",
             Self::BudgetExceeded => "budget_exceeded",
@@ -51,7 +52,8 @@ impl ErrorCategory {
     }
 
     /// Return the process exit code associated with this category.
-    pub fn exit_code(self) -> i32 {
+    #[must_use]
+    pub const fn exit_code(self) -> i32 {
         match self {
             Self::ConfigInvalid | Self::ParamsInvalid | Self::BudgetExceeded => 64,
             Self::StateCorruption | Self::OperatorActionRequired => 65,
@@ -115,7 +117,8 @@ pub enum BrrmmmmError {
 
 impl BrrmmmmError {
     /// Return the coarse-grained category for this error.
-    pub fn category(&self) -> ErrorCategory {
+    #[must_use]
+    pub const fn category(&self) -> ErrorCategory {
         match self {
             Self::StateCorruption(_) => ErrorCategory::StateCorruption,
             Self::BudgetExceeded { .. } => ErrorCategory::BudgetExceeded,
@@ -132,12 +135,14 @@ impl BrrmmmmError {
     }
 
     /// Return the process exit code associated with this error.
-    pub fn exit_code(&self) -> i32 {
+    #[must_use]
+    pub const fn exit_code(&self) -> i32 {
         self.category().exit_code()
     }
 
     /// Construct a standardized budget-exceeded error.
-    pub fn budget(resource: &'static str, actual: usize, limit: usize) -> Self {
+    #[must_use]
+    pub const fn budget(resource: &'static str, actual: usize, limit: usize) -> Self {
         Self::BudgetExceeded {
             resource,
             actual,

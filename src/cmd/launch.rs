@@ -4,10 +4,10 @@ use anyhow::Result;
 
 use crate::daemon::{DaemonClient, DaemonCommand, DaemonResponse, socket_path};
 
-pub(crate) fn cmd_launch(
+pub fn cmd_launch(
     wasm: String,
     name: Option<String>,
-    env: Vec<String>,
+    env: &[String],
     params: Option<String>,
 ) -> Result<()> {
     let sock = socket_path();
@@ -34,8 +34,9 @@ pub(crate) fn cmd_launch(
                 println!("{mission} launched");
                 Ok(())
             }
-            DaemonResponse::Full { message } => anyhow::bail!("{message}"),
-            DaemonResponse::Error { message } => anyhow::bail!("{message}"),
+            DaemonResponse::Full { message } | DaemonResponse::Error { message } => {
+                anyhow::bail!("{message}")
+            }
             _ => anyhow::bail!("unexpected response from daemon"),
         }
     })

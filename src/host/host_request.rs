@@ -4,7 +4,7 @@ pub const WIRE_VERSION: u32 = 2;
 
 // ── Host-mediated network request ───────────────────────────────────
 
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(tag = "action", rename_all = "snake_case")]
 pub enum NetworkAction {
     Http {
@@ -25,23 +25,23 @@ pub enum NetworkAction {
     },
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Header {
     pub name: String,
     pub value: String,
 }
 
-fn default_http_timeout_ms() -> u32 {
+const fn default_http_timeout_ms() -> u32 {
     30_000
 }
 
-fn default_tcp_timeout_ms() -> u32 {
+const fn default_tcp_timeout_ms() -> u32 {
     5_000
 }
 
 // ── Host response data ──────────────────────────────────────────────
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum NetworkResponseData {
     Http {
@@ -55,7 +55,7 @@ pub enum NetworkResponseData {
     },
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ErrorKind {
     Dns,
@@ -68,7 +68,7 @@ pub enum ErrorKind {
 }
 
 impl ErrorKind {
-    pub fn as_str(&self) -> &'static str {
+    pub const fn as_str(&self) -> &'static str {
         match self {
             Self::Dns => "dns",
             Self::Tls => "tls",

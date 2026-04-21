@@ -19,13 +19,7 @@ pub(super) fn register(
     runtime_state: Arc<Mutex<MissionRuntimeState>>,
     wasm_hash: Option<String>,
 ) -> Result<()> {
-    action::register(
-        linker,
-        shared.clone(),
-        event_sink.clone(),
-        runtime_state.clone(),
-        wasm_hash,
-    )?;
+    action::register(linker, shared.clone(), event_sink, runtime_state, wasm_hash)?;
     response::register(linker, shared)?;
     Ok(())
 }

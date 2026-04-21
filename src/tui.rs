@@ -1,4 +1,4 @@
-pub(crate) fn find_tui_script(tui_path: Option<&str>) -> Option<std::path::PathBuf> {
+pub fn find_tui_script(tui_path: Option<&str>) -> Option<std::path::PathBuf> {
     if let Some(val) = tui_path {
         let p = std::path::PathBuf::from(val);
         if p.exists() {
@@ -29,7 +29,7 @@ pub(crate) fn find_tui_script(tui_path: Option<&str>) -> Option<std::path::PathB
     None
 }
 
-pub(crate) fn launch_tui(args: &[String], config: &brrmmmm::config::Config) -> ! {
+pub fn launch_tui(args: &[String], config: &brrmmmm::config::Config) -> ! {
     let Some(tui) = find_tui_script(config.tui_path.as_deref()) else {
         eprintln!(
             "[brrmmmm] TUI not found. Build it with: npm --prefix tui run build\n\

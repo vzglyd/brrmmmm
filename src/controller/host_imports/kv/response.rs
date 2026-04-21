@@ -34,9 +34,13 @@ pub(super) fn register(linker: &mut WasmLinker, shared: Arc<Mutex<HostState>>) -
                 eprintln!("[brrmmmm] kv_response_read error: {error}");
                 return -1;
             }
-            data.len() as i32
+            len_to_i32(data.len())
         },
     )?;
 
     Ok(())
+}
+
+fn len_to_i32(len: usize) -> i32 {
+    i32::try_from(len).unwrap_or(i32::MAX)
 }

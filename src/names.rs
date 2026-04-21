@@ -14,11 +14,13 @@ const SECOND: &[&str] = &[
 
 fn rand_u64(salt: u64) -> u64 {
     use std::time::SystemTime;
-    let nanos = SystemTime::now()
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .unwrap_or_default()
-        .subsec_nanos() as u64;
-    let pid = std::process::id() as u64;
+    let nanos = u64::from(
+        SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap_or_default()
+            .subsec_nanos(),
+    );
+    let pid = u64::from(std::process::id());
     // LCG mix of time, pid, and caller-supplied salt
     let v = nanos
         .wrapping_add(pid.wrapping_mul(0x9e37_79b9_7f4a_7c15))
@@ -29,10 +31,15 @@ fn rand_u64(salt: u64) -> u64 {
 /// Generate a space-themed two-word mission name not already in `taken`.
 /// Returns `None` only if 10 collision retries all produce taken names.
 pub fn generate_mission_name(taken: &HashSet<String>) -> Option<String> {
+    let first_len = u64::try_from(FIRST.len()).ok()?;
+    let second_len = u64::try_from(SECOND.len()).ok()?;
+
     for i in 0..10u64 {
         let v = rand_u64(i.wrapping_mul(0xbf58_476d_1ce4_e5b9));
-        let first = FIRST[(v as usize) % FIRST.len()];
-        let second = SECOND[((v >> 32) as usize) % SECOND.len()];
+        let first_index = usize::try_from(v % first_len).ok()?;
+        let second_index = usize::try_from((v >> 32) % second_len).ok()?;
+        let first = FIRST[first_index];
+        let second = SECOND[second_index];
         let name = format!("{first}-{second}");
         if !taken.contains(&name) {
             return Some(name);

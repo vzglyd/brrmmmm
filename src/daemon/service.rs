@@ -1,28 +1,27 @@
 use anyhow::Result;
 
-pub(crate) fn daemon_install() -> Result<()> {
+pub fn daemon_install() -> Result<()> {
     platform::install()
 }
 
-pub(crate) fn daemon_start() -> Result<()> {
+pub fn daemon_start() -> Result<()> {
     platform::start()
 }
 
-pub(crate) fn daemon_stop() -> Result<()> {
+pub fn daemon_stop() -> Result<()> {
     platform::stop()
 }
 
-pub(crate) fn daemon_restart() -> Result<()> {
+pub fn daemon_restart() -> Result<()> {
     platform::restart()
 }
 
-pub(crate) fn daemon_status() -> Result<()> {
-    platform::status()?;
+pub fn daemon_status() {
+    platform::status();
     probe_socket();
-    Ok(())
 }
 
-pub(crate) fn daemon_uninstall() -> Result<()> {
+pub fn daemon_uninstall() -> Result<()> {
     platform::uninstall()
 }
 
@@ -32,9 +31,8 @@ fn probe_socket() {
         println!("socket: not found (daemon not running?)");
         return;
     }
-    let rt = match tokio::runtime::Runtime::new() {
-        Ok(r) => r,
-        Err(_) => return,
+    let Ok(rt) = tokio::runtime::Runtime::new() else {
+        return;
     };
     match rt.block_on(async {
         let mut client = super::client::DaemonClient::connect(&sock).await?;
@@ -107,11 +105,10 @@ mod platform {
         Ok(())
     }
 
-    pub(super) fn status() -> Result<()> {
+    pub(super) fn status() {
         let _ = std::process::Command::new("systemctl")
             .args(["--user", "status", "brrmmmm"])
             .status();
-        Ok(())
     }
 
     pub(super) fn uninstall() -> Result<()> {
@@ -234,12 +231,13 @@ mod platform {
         start()
     }
 
-    pub(super) fn status() -> Result<()> {
-        let uid = uid()?;
+    pub(super) fn status() {
+        let Ok(uid) = uid() else {
+            return;
+        };
         let _ = std::process::Command::new("launchctl")
             .args(["print", &format!("gui/{uid}/{LABEL}")])
             .status();
-        Ok(())
     }
 
     pub(super) fn uninstall() -> Result<()> {
@@ -275,8 +273,8 @@ mod platform {
     pub(super) fn restart() -> Result<()> {
         unsupported()
     }
-    pub(super) fn status() -> Result<()> {
-        unsupported()
+    pub(super) fn status() {
+        let _ = unsupported();
     }
     pub(super) fn uninstall() -> Result<()> {
         unsupported()

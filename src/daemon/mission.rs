@@ -1,3 +1,4 @@
+use std::collections::VecDeque;
 use std::sync::Arc;
 
 use tokio::sync::{Mutex, broadcast, mpsc};
@@ -6,6 +7,8 @@ use super::protocol::MissionSummary;
 
 pub(super) const MAX_MISSIONS: usize = 128;
 pub(super) const BROADCAST_CAPACITY: usize = 1024;
+const MAX_HISTORY_EVENTS: usize = 4_096;
+const MAX_HISTORY_BYTES: usize = 2 * 1024 * 1024;
 
 pub(super) enum MissionCtrl {
     Hold,
@@ -40,8 +43,48 @@ impl MissionState {
 
 pub(super) struct MissionHandle {
     pub state: Arc<Mutex<MissionState>>,
-    pub event_tx: broadcast::Sender<String>,
+    pub history: Arc<Mutex<MissionHistory>>,
+    pub event_tx: broadcast::Sender<MissionEvent>,
     pub ctrl_tx: mpsc::Sender<MissionCtrl>,
+}
+
+#[derive(Debug, Clone)]
+pub(super) struct MissionEvent {
+    pub seq: u64,
+    pub line: String,
+}
+
+#[derive(Debug, Default)]
+pub(super) struct MissionHistory {
+    events: VecDeque<MissionEvent>,
+    bytes: usize,
+    next_seq: u64,
+}
+
+impl MissionHistory {
+    pub fn append(&mut self, line: String) -> MissionEvent {
+        let event = MissionEvent {
+            seq: self.next_seq,
+            line,
+        };
+        self.next_seq = self.next_seq.saturating_add(1);
+        self.bytes = self.bytes.saturating_add(event.line.len());
+        self.events.push_back(event.clone());
+
+        while self.events.len() > MAX_HISTORY_EVENTS || self.bytes > MAX_HISTORY_BYTES {
+            if let Some(removed) = self.events.pop_front() {
+                self.bytes = self.bytes.saturating_sub(removed.line.len());
+            } else {
+                break;
+            }
+        }
+
+        event
+    }
+
+    pub fn snapshot(&self) -> (Vec<MissionEvent>, u64) {
+        (self.events.iter().cloned().collect(), self.next_seq)
+    }
 }
 
 pub(super) struct MissionCleanup {
@@ -50,7 +93,7 @@ pub(super) struct MissionCleanup {
 }
 
 impl MissionCleanup {
-    pub fn new(name: String, tx: mpsc::UnboundedSender<String>) -> Self {
+    pub const fn new(name: String, tx: mpsc::UnboundedSender<String>) -> Self {
         Self { name, tx }
     }
 }

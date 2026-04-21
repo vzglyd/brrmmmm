@@ -23,172 +23,191 @@ pub(super) fn register(
     runtime_state: Arc<Mutex<MissionRuntimeState>>,
     wasm_hash: Option<String>,
 ) -> Result<()> {
-    // kv_get(key_ptr, key_len) -> i32
-    {
-        let shared = shared.clone();
-        let event_sink = event_sink.clone();
-        let runtime_state = runtime_state.clone();
-        linker.func_wrap(
-            "brrmmmm_host",
-            "kv_get",
-            move |mut caller: WasmCaller<'_>, ptr: i32, len: i32| -> i32 {
-                let limits = lock_runtime(&shared, "host_state").config.limits.clone();
-                let key = match read_key(
-                    &mut caller,
-                    ptr,
-                    len,
-                    limits.kv_max_key_bytes,
-                    &event_sink,
-                    "kv_get",
-                ) {
-                    Ok(key) => key,
-                    Err(status) => return status,
-                };
-                record_kv_activity(&shared, "get");
+    register_get(
+        linker,
+        shared.clone(),
+        event_sink.clone(),
+        runtime_state.clone(),
+    )?;
+    register_set(
+        linker,
+        shared.clone(),
+        event_sink.clone(),
+        runtime_state.clone(),
+        wasm_hash.clone(),
+    )?;
+    register_delete(linker, shared, event_sink, runtime_state, wasm_hash)?;
+    Ok(())
+}
 
-                let value = {
-                    let state = lock_runtime(&runtime_state, "runtime_state");
-                    state.kv.get(&key).cloned()
-                };
+fn register_get(
+    linker: &mut WasmLinker,
+    shared: Arc<Mutex<HostState>>,
+    event_sink: EventSink,
+    runtime_state: Arc<Mutex<MissionRuntimeState>>,
+) -> Result<()> {
+    linker.func_wrap(
+        "brrmmmm_host",
+        "kv_get",
+        move |mut caller: WasmCaller<'_>, ptr: i32, len: i32| -> i32 {
+            let limits = lock_runtime(&shared, "host_state").config.limits.clone();
+            let key = match read_key(
+                &mut caller,
+                ptr,
+                len,
+                limits.kv_max_key_bytes,
+                &event_sink,
+                "kv_get",
+            ) {
+                Ok(key) => key,
+                Err(status) => return status,
+            };
+            record_kv_activity(&shared, "get");
 
-                event_sink.emit(Event::KvGet {
-                    ts: now_ts(),
-                    key,
-                    found: value.is_some(),
-                });
+            let value = {
+                let state = lock_runtime(&runtime_state, "runtime_state");
+                state.kv.get(&key).cloned()
+            };
 
-                if let Some(data) = value {
-                    store_pending_kv_response(&shared, data);
-                    0
-                } else {
+            event_sink.emit(&Event::KvGet {
+                ts: now_ts(),
+                key,
+                found: value.is_some(),
+            });
+
+            value.map_or_else(
+                || {
                     clear_pending_kv_response(&shared);
                     -1
-                }
-            },
-        )?;
-    }
+                },
+                |data| {
+                    store_pending_kv_response(&shared, data);
+                    0
+                },
+            )
+        },
+    )?;
+    Ok(())
+}
 
-    // kv_set(key_ptr, key_len, value_ptr, value_len) -> i32
-    {
-        let shared = shared.clone();
-        let event_sink = event_sink.clone();
-        let runtime_state = runtime_state.clone();
-        let wasm_hash = wasm_hash.clone();
-        linker.func_wrap(
-            "brrmmmm_host",
-            "kv_set",
-            move |mut caller: WasmCaller<'_>,
-                  key_ptr: i32,
-                  key_len: i32,
-                  val_ptr: i32,
-                  val_len: i32|
-                  -> i32 {
-                let limits = lock_runtime(&shared, "host_state").config.limits.clone();
-                let key = match read_key(
-                    &mut caller,
-                    key_ptr,
-                    key_len,
-                    limits.kv_max_key_bytes,
-                    &event_sink,
-                    "kv_set",
-                ) {
-                    Ok(key) => key,
-                    Err(status) => return status,
-                };
-                record_kv_activity(&shared, "set");
+fn register_set(
+    linker: &mut WasmLinker,
+    shared: Arc<Mutex<HostState>>,
+    event_sink: EventSink,
+    runtime_state: Arc<Mutex<MissionRuntimeState>>,
+    wasm_hash: Option<String>,
+) -> Result<()> {
+    linker.func_wrap(
+        "brrmmmm_host",
+        "kv_set",
+        move |mut caller: WasmCaller<'_>,
+              key_ptr: i32,
+              key_len: i32,
+              val_ptr: i32,
+              val_len: i32|
+              -> i32 {
+            let limits = lock_runtime(&shared, "host_state").config.limits.clone();
+            let key = match read_key(
+                &mut caller,
+                key_ptr,
+                key_len,
+                limits.kv_max_key_bytes,
+                &event_sink,
+                "kv_set",
+            ) {
+                Ok(key) => key,
+                Err(status) => return status,
+            };
+            record_kv_activity(&shared, "set");
 
-                if val_len < 0 || val_len as usize > limits.kv_max_value_bytes {
+            let Some(value_len) = usize::try_from(val_len).ok() else {
+                return invalid_value_len(&event_sink, val_len, limits.kv_max_value_bytes);
+            };
+            if value_len > limits.kv_max_value_bytes {
+                return invalid_value_len(&event_sink, val_len, limits.kv_max_value_bytes);
+            }
+
+            let val_bytes = match read_memory_from_caller(&mut caller, val_ptr, val_len) {
+                Ok(bytes) => bytes,
+                Err(error) => {
                     diag(
                         &event_sink,
-                        &format!(
-                            "[brrmmmm] kv_set value length {} exceeds configured limit of {} bytes",
-                            val_len, limits.kv_max_value_bytes
-                        ),
+                        &format!("[brrmmmm] kv_set value memory error: {error}"),
                     );
                     return -1;
                 }
+            };
 
-                let val_bytes = match read_memory_from_caller(&mut caller, val_ptr, val_len) {
-                    Ok(b) => b,
-                    Err(e) => {
-                        diag(
-                            &event_sink,
-                            &format!("[brrmmmm] kv_set value memory error: {e}"),
-                        );
-                        return -1;
-                    }
-                };
+            event_sink.emit(&Event::KvSet {
+                ts: now_ts(),
+                key: key.clone(),
+                value_len,
+            });
 
-                event_sink.emit(Event::KvSet {
-                    ts: now_ts(),
-                    key: key.clone(),
-                    value_len: val_bytes.len(),
-                });
+            clear_pending_kv_response(&shared);
+            let config = lock_runtime(&shared, "host_state").config.clone();
+            if let Err(error) = set_value(
+                &config,
+                &runtime_state,
+                key,
+                val_bytes,
+                wasm_hash.as_deref(),
+                persistence::save,
+            ) {
+                diag(&event_sink, &format!("[brrmmmm] kv_set failed: {error}"));
+                return -1;
+            }
+            0
+        },
+    )?;
+    Ok(())
+}
 
-                clear_pending_kv_response(&shared);
-                let config = lock_runtime(&shared, "host_state").config.clone();
-                if let Err(error) = set_value(
-                    &config,
-                    &runtime_state,
-                    key,
-                    val_bytes,
-                    wasm_hash.as_deref(),
-                    persistence::save,
-                ) {
-                    diag(&event_sink, &format!("[brrmmmm] kv_set failed: {error}"));
-                    return -1;
-                }
-                0
-            },
-        )?;
-    }
+fn register_delete(
+    linker: &mut WasmLinker,
+    shared: Arc<Mutex<HostState>>,
+    event_sink: EventSink,
+    runtime_state: Arc<Mutex<MissionRuntimeState>>,
+    wasm_hash: Option<String>,
+) -> Result<()> {
+    linker.func_wrap(
+        "brrmmmm_host",
+        "kv_delete",
+        move |mut caller: WasmCaller<'_>, ptr: i32, len: i32| -> i32 {
+            let limits = lock_runtime(&shared, "host_state").config.limits.clone();
+            let key = match read_key(
+                &mut caller,
+                ptr,
+                len,
+                limits.kv_max_key_bytes,
+                &event_sink,
+                "kv_delete",
+            ) {
+                Ok(key) => key,
+                Err(status) => return status,
+            };
+            record_kv_activity(&shared, "delete");
 
-    // kv_delete(key_ptr, key_len) -> i32
-    {
-        let shared = shared.clone();
-        let event_sink = event_sink.clone();
-        let runtime_state = runtime_state.clone();
-        let wasm_hash = wasm_hash.clone();
-        linker.func_wrap(
-            "brrmmmm_host",
-            "kv_delete",
-            move |mut caller: WasmCaller<'_>, ptr: i32, len: i32| -> i32 {
-                let limits = lock_runtime(&shared, "host_state").config.limits.clone();
-                let key = match read_key(
-                    &mut caller,
-                    ptr,
-                    len,
-                    limits.kv_max_key_bytes,
-                    &event_sink,
-                    "kv_delete",
-                ) {
-                    Ok(key) => key,
-                    Err(status) => return status,
-                };
-                record_kv_activity(&shared, "delete");
+            event_sink.emit(&Event::KvDelete {
+                ts: now_ts(),
+                key: key.clone(),
+            });
 
-                event_sink.emit(Event::KvDelete {
-                    ts: now_ts(),
-                    key: key.clone(),
-                });
-
-                clear_pending_kv_response(&shared);
-                let config = lock_runtime(&shared, "host_state").config.clone();
-                if let Err(error) = delete_value(
-                    &config,
-                    &runtime_state,
-                    &key,
-                    wasm_hash.as_deref(),
-                    persistence::save,
-                ) {
-                    diag(&event_sink, &format!("[brrmmmm] kv_delete failed: {error}"));
-                    return -1;
-                }
-                0
-            },
-        )?;
-    }
-
+            clear_pending_kv_response(&shared);
+            let config = lock_runtime(&shared, "host_state").config.clone();
+            if let Err(error) = delete_value(
+                &config,
+                &runtime_state,
+                &key,
+                wasm_hash.as_deref(),
+                persistence::save,
+            ) {
+                diag(&event_sink, &format!("[brrmmmm] kv_delete failed: {error}"));
+                return -1;
+            }
+            0
+        },
+    )?;
     Ok(())
 }
 
@@ -201,12 +220,21 @@ fn record_kv_activity(shared: &Arc<Mutex<HostState>>, operation: &str) {
 fn read_key(
     caller: &mut WasmCaller<'_>,
     ptr: i32,
-    len: i32,
+    len_i32: i32,
     max_key_bytes: usize,
     event_sink: &EventSink,
     action: &str,
 ) -> std::result::Result<String, i32> {
-    if len < 0 || len as usize > max_key_bytes {
+    let Some(len) = usize::try_from(len_i32).ok() else {
+        diag(
+            event_sink,
+            &format!(
+                "[brrmmmm] {action} key length {len_i32} exceeds configured limit of {max_key_bytes} bytes"
+            ),
+        );
+        return Err(-1);
+    };
+    if len > max_key_bytes {
         diag(
             event_sink,
             &format!(
@@ -215,7 +243,7 @@ fn read_key(
         );
         return Err(-1);
     }
-    let key_bytes = match read_memory_from_caller(caller, ptr, len) {
+    let key_bytes = match read_memory_from_caller(caller, ptr, len_i32) {
         Ok(bytes) => bytes,
         Err(error) => {
             diag(
@@ -280,6 +308,7 @@ fn set_value(
         restore_value(&mut state, key, previous);
         return Err(error);
     }
+    drop(state);
     Ok(())
 }
 
@@ -293,13 +322,25 @@ fn delete_value(
     let mut state = lock_runtime(runtime_state, "runtime_state");
     let previous = state.kv.remove(key);
     if previous.is_none() {
+        drop(state);
         return Ok(());
     }
     if let Err(error) = persist_if_host_persisted(config, &state, wasm_hash, persist) {
         restore_value(&mut state, key.to_string(), previous);
         return Err(error);
     }
+    drop(state);
     Ok(())
+}
+
+fn invalid_value_len(event_sink: &EventSink, value_len: i32, max_value_bytes: usize) -> i32 {
+    diag(
+        event_sink,
+        &format!(
+            "[brrmmmm] kv_set value length {value_len} exceeds configured limit of {max_value_bytes} bytes"
+        ),
+    );
+    -1
 }
 
 fn restore_value(state: &mut MissionRuntimeState, key: String, previous: Option<Vec<u8>>) {
@@ -319,8 +360,7 @@ fn persist_if_host_persisted(
     let should_persist = state
         .describe
         .as_ref()
-        .map(|describe| describe.state_persistence == PersistenceAuthority::HostPersisted)
-        .unwrap_or(false);
+        .is_some_and(|describe| describe.state_persistence == PersistenceAuthority::HostPersisted);
     if !should_persist {
         return Ok(());
     }
@@ -364,7 +404,9 @@ mod tests {
         _wasm_hash: &str,
         _state: &MissionRuntimeState,
     ) -> BrrmmmmResult<()> {
-        Ok(())
+        std::fs::metadata(".")
+            .map(|_| ())
+            .map_err(|error| crate::error::BrrmmmmError::PersistenceFailure(error.to_string()))
     }
 
     fn persist_err(

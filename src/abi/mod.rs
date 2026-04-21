@@ -175,7 +175,7 @@ pub enum MissionParamType {
 
 /// Full self-description emitted by a mission module at startup.
 ///
-/// This is the core of the brrmmmm behavioral contract: OpenAPI describes
+/// This is the core of the brrmmmm behavioral contract: `OpenAPI` describes
 /// the endpoint; this describes the behavior.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MissionModuleDescribe {
@@ -237,16 +237,16 @@ pub struct OperatorFallbackPolicy {
 impl std::fmt::Display for PollStrategy {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            PollStrategy::FixedInterval { interval_secs } => {
+            Self::FixedInterval { interval_secs } => {
                 write!(f, "fixed_interval {interval_secs}s")
             }
-            PollStrategy::ExponentialBackoff {
+            Self::ExponentialBackoff {
                 base_secs,
                 max_secs,
             } => {
                 write!(f, "exponential_backoff base={base_secs}s max={max_secs}s")
             }
-            PollStrategy::Jittered {
+            Self::Jittered {
                 base_secs,
                 jitter_secs,
             } => {
@@ -314,7 +314,8 @@ pub enum MissionOutcomeStatus {
 
 impl OperatorTimeoutOutcome {
     /// Convert the timeout classification into the corresponding terminal mission status.
-    pub fn mission_status(self) -> MissionOutcomeStatus {
+    #[must_use]
+    pub const fn mission_status(self) -> MissionOutcomeStatus {
         match self {
             Self::RetryableFailure => MissionOutcomeStatus::RetryableFailure,
             Self::TerminalFailure => MissionOutcomeStatus::TerminalFailure,
@@ -439,7 +440,7 @@ pub struct OperatorEscalationState {
 
 // ── Host-side runtime state snapshot ────────────────────────────────
 
-/// Canonical runtime state maintained by the host MissionController.
+/// Canonical runtime state maintained by the host `MissionController`.
 /// Both the CLI and TUI read this — neither parses logs.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct MissionRuntimeState {
@@ -477,7 +478,7 @@ pub struct MissionRuntimeState {
     pub last_host_decision: Option<HostDecisionState>,
     /// Active bounded operator-rescue window for the current mission attempt, when one exists.
     pub pending_operator_action: Option<OperatorEscalationState>,
-    /// Populated once describe() has been called.
+    /// Populated once `describe()` has been called.
     pub describe: Option<MissionModuleDescribe>,
     /// Persistent key-value storage for session state.
     #[serde(default)]

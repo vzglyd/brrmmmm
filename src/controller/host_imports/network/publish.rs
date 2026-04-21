@@ -59,7 +59,7 @@ pub(super) fn publish_raw_source_payload(
         received_at_ms,
     };
     update_artifact_state(runtime_state, &meta);
-    sink.emit(Event::ArtifactReceived {
+    sink.emit(&Event::ArtifactReceived {
         ts: now_ts(),
         kind: "raw_source_payload".to_string(),
         size_bytes: body.len(),

@@ -2,7 +2,7 @@ use anyhow::Result;
 
 use crate::daemon::{DaemonClient, DaemonCommand, DaemonResponse, socket_path};
 
-pub(crate) fn cmd_missions() -> Result<()> {
+pub fn cmd_missions() -> Result<()> {
     let sock = socket_path();
     let rt = tokio::runtime::Runtime::new()?;
     rt.block_on(async {

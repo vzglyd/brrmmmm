@@ -13,7 +13,7 @@ use brrmmmm::events::{ms_to_iso8601, now_ms};
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug)]
-pub(crate) struct MissionRecorder {
+pub struct MissionRecorder {
     path: PathBuf,
     started_at: String,
     started_at_ms: u64,
@@ -152,7 +152,7 @@ impl MissionRecorder {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub(crate) struct MissionRecord {
+pub struct MissionRecord {
     pub(crate) schema_version: u8,
     pub(crate) module: MissionModuleRecord,
     pub(crate) outcome: MissionOutcome,
@@ -167,7 +167,7 @@ pub(crate) struct MissionRecord {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub(crate) struct MissionModuleRecord {
+pub struct MissionModuleRecord {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) wasm_path: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -179,7 +179,7 @@ pub(crate) struct MissionModuleRecord {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub(crate) struct HostDecisionRecord {
+pub struct HostDecisionRecord {
     #[serde(default)]
     pub(crate) exit_code: i32,
     #[serde(default)]
@@ -195,14 +195,14 @@ pub(crate) struct HostDecisionRecord {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub(crate) struct ExplanationRecord {
+pub struct ExplanationRecord {
     pub(crate) summary: String,
     pub(crate) message: String,
     pub(crate) next_action: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub(crate) struct MissionEscalationRecord {
+pub struct MissionEscalationRecord {
     pub(crate) action: String,
     pub(crate) deadline_at: String,
     pub(crate) deadline_at_ms: u64,
@@ -210,7 +210,7 @@ pub(crate) struct MissionEscalationRecord {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub(crate) struct MissionArtifactsRecord {
+pub struct MissionArtifactsRecord {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) raw_source: Option<MissionArtifactRecord>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -220,7 +220,7 @@ pub(crate) struct MissionArtifactsRecord {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub(crate) struct MissionArtifactRecord {
+pub struct MissionArtifactRecord {
     pub(crate) size_bytes: usize,
     pub(crate) base64: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -230,14 +230,14 @@ pub(crate) struct MissionArtifactRecord {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub(crate) struct TimingRecord {
+pub struct TimingRecord {
     pub(crate) started_at: String,
     pub(crate) finished_at: String,
     pub(crate) elapsed_ms: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub(crate) struct MissionStatsRecord {
+pub struct MissionStatsRecord {
     pub(crate) consecutive_failures: u32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) last_success_at_ms: Option<u64>,
@@ -247,7 +247,7 @@ pub(crate) struct MissionStatsRecord {
     pub(crate) cooldown_until_ms: Option<u64>,
 }
 
-pub(crate) fn load_record(path: &Path) -> Result<MissionRecord> {
+pub fn load_record(path: &Path) -> Result<MissionRecord> {
     let bytes =
         std::fs::read(path).with_context(|| format!("read mission record {}", path.display()))?;
     serde_json::from_slice(&bytes)
@@ -255,7 +255,7 @@ pub(crate) fn load_record(path: &Path) -> Result<MissionRecord> {
 }
 
 #[derive(Debug, Clone, Serialize)]
-pub(crate) struct MissionExplainView {
+pub struct MissionExplainView {
     pub(crate) summary: String,
     pub(crate) outcome: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -284,7 +284,7 @@ pub(crate) struct MissionExplainView {
     pub(crate) finished_at: String,
 }
 
-pub(crate) fn explain_record(record: &MissionRecord, now_ms: u64) -> MissionExplainView {
+pub fn explain_record(record: &MissionRecord, now_ms: u64) -> MissionExplainView {
     let analysis = explain_analysis(
         &record.outcome,
         &record.host_decision,
@@ -357,7 +357,7 @@ fn explanation_for_outcome(
     }
 }
 
-fn category_for_status(status: MissionOutcomeStatus) -> &'static str {
+const fn category_for_status(status: MissionOutcomeStatus) -> &'static str {
     match status {
         MissionOutcomeStatus::Published => "published",
         MissionOutcomeStatus::RetryableFailure => "retryable_failure",
@@ -366,7 +366,7 @@ fn category_for_status(status: MissionOutcomeStatus) -> &'static str {
     }
 }
 
-fn exit_code_for_status(status: MissionOutcomeStatus) -> i32 {
+const fn exit_code_for_status(status: MissionOutcomeStatus) -> i32 {
     match status {
         MissionOutcomeStatus::Published => 0,
         MissionOutcomeStatus::RetryableFailure => 75,
@@ -375,7 +375,7 @@ fn exit_code_for_status(status: MissionOutcomeStatus) -> i32 {
     }
 }
 
-fn status_name(status: MissionOutcomeStatus) -> &'static str {
+const fn status_name(status: MissionOutcomeStatus) -> &'static str {
     match status {
         MissionOutcomeStatus::Published => "published",
         MissionOutcomeStatus::RetryableFailure => "retryable_failure",
@@ -407,117 +407,169 @@ fn explain_analysis(
     now_ms: u64,
 ) -> ExplainAnalysis {
     match outcome.status {
-        MissionOutcomeStatus::Published => ExplainAnalysis {
-            effective_status: MissionOutcomeStatus::Published,
-            host_decision: host_decision.clone(),
-            summary: format!(
-                "Mission published {}.",
-                outcome
-                    .primary_artifact_kind
-                    .as_deref()
-                    .unwrap_or("its final artifact")
-            ),
-            next_action: "Consume the published_output artifact.".to_string(),
-            rescue_window_open: None,
-        },
-        MissionOutcomeStatus::RetryableFailure => ExplainAnalysis {
-            effective_status: MissionOutcomeStatus::RetryableFailure,
-            host_decision: host_decision.clone(),
-            summary: format!(
-                "Mission failed with a retryable condition: {}.",
-                outcome.reason_code
-            ),
-            next_action: if host_decision.next_attempt_policy == NextAttemptPolicy::ManualOnly
-                || host_decision.risk_posture == MissionRiskPosture::AwaitingChangedConditions
-            {
-                "Change the inputs, environment, or module before launching another automated attempt."
-                    .to_string()
-            } else {
-                match outcome.retry_after_ms {
-                    Some(retry_after_ms) => format!("Retry after {retry_after_ms} ms."),
-                    None => "Retry when the orchestration policy allows.".to_string(),
-                }
-            },
-            rescue_window_open: None,
-        },
-        MissionOutcomeStatus::TerminalFailure => ExplainAnalysis {
-            effective_status: MissionOutcomeStatus::TerminalFailure,
-            host_decision: host_decision.clone(),
-            summary: format!("Mission failed terminally: {}.", outcome.reason_code),
-            next_action: "Do not retry automatically; inspect the mission explanation.".to_string(),
-            rescue_window_open: None,
-        },
-        MissionOutcomeStatus::OperatorActionRequired => match escalation {
-            Some(escalation) if now_ms <= escalation.deadline_at_ms => ExplainAnalysis {
-                effective_status: MissionOutcomeStatus::OperatorActionRequired,
-                host_decision: host_decision.clone(),
-                summary: format!(
-                    "Mission is awaiting operator rescue until {}.",
-                    escalation.deadline_at
-                ),
-                next_action: format!(
-                    "{} Rescue window closes at {}.",
-                    escalation.action, escalation.deadline_at
-                ),
-                rescue_window_open: Some(true),
-            },
-            Some(escalation) => {
-                let effective_status = escalation.timeout_outcome.mission_status();
-                let next_action = match effective_status {
-                    MissionOutcomeStatus::RetryableFailure => {
-                        "Start a new mission attempt when orchestration policy allows."
-                            .to_string()
-                    }
-                    MissionOutcomeStatus::TerminalFailure => {
-                        "Do not retry automatically; fix prerequisites before launching a new attempt."
-                            .to_string()
-                    }
-                    _ => unreachable!("operator timeout outcomes are terminal"),
-                };
-                let mut effective_host_decision = host_decision.clone();
-                effective_host_decision.exit_code = exit_code_for_status(effective_status);
-                effective_host_decision.category =
-                    category_for_status(effective_status).to_string();
-                effective_host_decision.risk_posture = MissionRiskPosture::ClosedSafe;
-                effective_host_decision.next_attempt_policy = match effective_status {
-                    MissionOutcomeStatus::RetryableFailure => NextAttemptPolicy::AfterCooldown,
-                    MissionOutcomeStatus::TerminalFailure => NextAttemptPolicy::ManualOnly,
-                    _ => effective_host_decision.next_attempt_policy,
-                };
-                if !effective_host_decision
-                    .basis
-                    .contains(&DecisionBasisTag::RescueWindowExpired)
-                {
-                    effective_host_decision
-                        .basis
-                        .push(DecisionBasisTag::RescueWindowExpired);
-                }
-                ExplainAnalysis {
-                    effective_status,
-                    host_decision: effective_host_decision,
-                    summary: format!(
-                        "Operator rescue window expired at {}; closing the attempt as {}.",
-                        escalation.deadline_at,
-                        status_name(effective_status)
-                    ),
-                    next_action,
-                    rescue_window_open: Some(false),
-                }
-            }
-            None => ExplainAnalysis {
-                effective_status: MissionOutcomeStatus::OperatorActionRequired,
-                host_decision: host_decision.clone(),
-                summary: format!("Mission needs operator action: {}.", outcome.reason_code),
-                next_action: outcome.operator_action.clone().unwrap_or_else(|| {
-                    "Perform the required operator action before retrying.".to_string()
-                }),
-                rescue_window_open: None,
-            },
-        },
+        MissionOutcomeStatus::Published => published_analysis(outcome, host_decision),
+        MissionOutcomeStatus::RetryableFailure => retryable_analysis(outcome, host_decision),
+        MissionOutcomeStatus::TerminalFailure => terminal_analysis(outcome, host_decision),
+        MissionOutcomeStatus::OperatorActionRequired => {
+            operator_action_analysis(outcome, host_decision, escalation, now_ms)
+        }
     }
 }
 
-pub(crate) fn host_decision_record(
+fn published_analysis(
+    outcome: &MissionOutcome,
+    host_decision: &HostDecisionRecord,
+) -> ExplainAnalysis {
+    ExplainAnalysis {
+        effective_status: MissionOutcomeStatus::Published,
+        host_decision: host_decision.clone(),
+        summary: format!(
+            "Mission published {}.",
+            outcome
+                .primary_artifact_kind
+                .as_deref()
+                .unwrap_or("its final artifact")
+        ),
+        next_action: "Consume the published_output artifact.".to_string(),
+        rescue_window_open: None,
+    }
+}
+
+fn retryable_analysis(
+    outcome: &MissionOutcome,
+    host_decision: &HostDecisionRecord,
+) -> ExplainAnalysis {
+    ExplainAnalysis {
+        effective_status: MissionOutcomeStatus::RetryableFailure,
+        host_decision: host_decision.clone(),
+        summary: format!(
+            "Mission failed with a retryable condition: {}.",
+            outcome.reason_code
+        ),
+        next_action: if host_decision.next_attempt_policy == NextAttemptPolicy::ManualOnly
+            || host_decision.risk_posture == MissionRiskPosture::AwaitingChangedConditions
+        {
+            "Change the inputs, environment, or module before launching another automated attempt."
+                .to_string()
+        } else {
+            outcome.retry_after_ms.map_or_else(
+                || "Retry when the orchestration policy allows.".to_string(),
+                |retry_after_ms| format!("Retry after {retry_after_ms} ms."),
+            )
+        },
+        rescue_window_open: None,
+    }
+}
+
+fn terminal_analysis(
+    outcome: &MissionOutcome,
+    host_decision: &HostDecisionRecord,
+) -> ExplainAnalysis {
+    ExplainAnalysis {
+        effective_status: MissionOutcomeStatus::TerminalFailure,
+        host_decision: host_decision.clone(),
+        summary: format!("Mission failed terminally: {}.", outcome.reason_code),
+        next_action: "Do not retry automatically; inspect the mission explanation.".to_string(),
+        rescue_window_open: None,
+    }
+}
+
+fn operator_action_analysis(
+    outcome: &MissionOutcome,
+    host_decision: &HostDecisionRecord,
+    escalation: Option<&MissionEscalationRecord>,
+    now_ms: u64,
+) -> ExplainAnalysis {
+    match escalation {
+        Some(escalation) if now_ms <= escalation.deadline_at_ms => {
+            operator_window_open_analysis(host_decision, escalation)
+        }
+        Some(escalation) => operator_window_expired_analysis(host_decision, escalation),
+        None => operator_action_required_analysis(outcome, host_decision),
+    }
+}
+
+fn operator_window_open_analysis(
+    host_decision: &HostDecisionRecord,
+    escalation: &MissionEscalationRecord,
+) -> ExplainAnalysis {
+    ExplainAnalysis {
+        effective_status: MissionOutcomeStatus::OperatorActionRequired,
+        host_decision: host_decision.clone(),
+        summary: format!(
+            "Mission is awaiting operator rescue until {}.",
+            escalation.deadline_at
+        ),
+        next_action: format!(
+            "{} Rescue window closes at {}.",
+            escalation.action, escalation.deadline_at
+        ),
+        rescue_window_open: Some(true),
+    }
+}
+
+fn operator_window_expired_analysis(
+    host_decision: &HostDecisionRecord,
+    escalation: &MissionEscalationRecord,
+) -> ExplainAnalysis {
+    let effective_status = escalation.timeout_outcome.mission_status();
+    let next_action = match effective_status {
+        MissionOutcomeStatus::RetryableFailure => {
+            "Start a new mission attempt when orchestration policy allows.".to_string()
+        }
+        MissionOutcomeStatus::TerminalFailure => {
+            "Do not retry automatically; fix prerequisites before launching a new attempt."
+                .to_string()
+        }
+        _ => unreachable!("operator timeout outcomes are terminal"),
+    };
+    let mut effective_host_decision = host_decision.clone();
+    effective_host_decision.exit_code = exit_code_for_status(effective_status);
+    effective_host_decision.category = category_for_status(effective_status).to_string();
+    effective_host_decision.risk_posture = MissionRiskPosture::ClosedSafe;
+    effective_host_decision.next_attempt_policy = match effective_status {
+        MissionOutcomeStatus::RetryableFailure => NextAttemptPolicy::AfterCooldown,
+        MissionOutcomeStatus::TerminalFailure => NextAttemptPolicy::ManualOnly,
+        _ => effective_host_decision.next_attempt_policy,
+    };
+    if !effective_host_decision
+        .basis
+        .contains(&DecisionBasisTag::RescueWindowExpired)
+    {
+        effective_host_decision
+            .basis
+            .push(DecisionBasisTag::RescueWindowExpired);
+    }
+    ExplainAnalysis {
+        effective_status,
+        host_decision: effective_host_decision,
+        summary: format!(
+            "Operator rescue window expired at {}; closing the attempt as {}.",
+            escalation.deadline_at,
+            status_name(effective_status)
+        ),
+        next_action,
+        rescue_window_open: Some(false),
+    }
+}
+
+fn operator_action_required_analysis(
+    outcome: &MissionOutcome,
+    host_decision: &HostDecisionRecord,
+) -> ExplainAnalysis {
+    ExplainAnalysis {
+        effective_status: MissionOutcomeStatus::OperatorActionRequired,
+        host_decision: host_decision.clone(),
+        summary: format!("Mission needs operator action: {}.", outcome.reason_code),
+        next_action: outcome
+            .operator_action
+            .clone()
+            .unwrap_or_else(|| "Perform the required operator action before retrying.".to_string()),
+        rescue_window_open: None,
+    }
+}
+
+pub fn host_decision_record(
     decision: HostDecisionState,
     outcome: &MissionOutcome,
     durable_record_written: bool,
@@ -536,10 +588,7 @@ pub(crate) fn host_decision_record(
     }
 }
 
-pub(crate) fn fallback_host_decision(
-    outcome: &MissionOutcome,
-    synthesized: bool,
-) -> HostDecisionState {
+pub fn fallback_host_decision(outcome: &MissionOutcome, synthesized: bool) -> HostDecisionState {
     let mut basis = if synthesized {
         vec![DecisionBasisTag::HostSynthesized]
     } else {
@@ -646,8 +695,7 @@ fn enum_name<T: serde::Serialize>(value: &T) -> String {
 fn error_category(error: &anyhow::Error) -> &'static str {
     error
         .downcast_ref::<BrrmmmmError>()
-        .map(|error| error.category().as_str())
-        .unwrap_or("unexpected")
+        .map_or("unexpected", |error| error.category().as_str())
 }
 
 fn write_record(path: &Path, record: &MissionRecord) -> Result<()> {
@@ -685,7 +733,7 @@ fn atomic_write(path: &Path, data: &[u8]) -> Result<()> {
                 tmp_file = Some(file);
                 break;
             }
-            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
             Err(error) => {
                 return Err(BrrmmmmError::PersistenceFailure(format!(
                     "open temp mission result {}: {error}",

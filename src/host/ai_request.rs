@@ -15,14 +15,14 @@ pub enum AiAction {
 }
 
 impl AiAction {
-    pub fn kind(&self) -> &'static str {
+    pub const fn kind(&self) -> &'static str {
         match self {
             Self::Complete { .. } => "complete",
             Self::Vision { .. } => "vision",
         }
     }
 
-    pub fn prompt_len(&self) -> usize {
+    pub const fn prompt_len(&self) -> usize {
         match self {
             Self::Complete { prompt } | Self::Vision { prompt, .. } => prompt.len(),
         }
@@ -46,7 +46,7 @@ pub enum AiActionResponse {
 }
 
 impl AiActionResponse {
-    pub fn ok(text: String) -> Self {
+    pub const fn ok(text: String) -> Self {
         Self::Ok {
             wire_version: WIRE_VERSION,
             ok: true,
@@ -63,7 +63,7 @@ impl AiActionResponse {
         }
     }
 
-    pub fn is_ok(&self) -> bool {
+    pub const fn is_ok(&self) -> bool {
         matches!(self, Self::Ok { .. })
     }
 
@@ -78,10 +78,12 @@ impl AiActionResponse {
 #[cfg_attr(not(test), allow(dead_code))]
 pub fn decode_action(bytes: &[u8]) -> anyhow::Result<AiAction> {
     let val: serde_json::Value = serde_json::from_slice(bytes)?;
-    let version = val
-        .get("wire_version")
-        .and_then(|v| v.as_u64())
-        .unwrap_or(0) as u32;
+    let version = u32::try_from(
+        val.get("wire_version")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(0),
+    )
+    .unwrap_or(u32::MAX);
     anyhow::ensure!(
         version == WIRE_VERSION,
         "unsupported ai wire_version {version}; expected {WIRE_VERSION}"
@@ -107,7 +109,7 @@ mod tests {
 
         match action {
             AiAction::Complete { prompt } => assert_eq!(prompt, "summarize"),
-            _ => panic!("expected complete action"),
+            AiAction::Vision { .. } => panic!("expected complete action"),
         }
     }
 
@@ -126,7 +128,7 @@ mod tests {
                 assert_eq!(prompt, "read it");
                 assert_eq!(image_png_b64, "ZmFrZQ==");
             }
-            _ => panic!("expected vision action"),
+            AiAction::Complete { .. } => panic!("expected vision action"),
         }
     }
 
@@ -144,7 +146,7 @@ mod tests {
         let bytes = encode_response(&AiActionResponse::ok("answer".to_string())).unwrap();
         let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
 
-        assert_eq!(json["wire_version"], WIRE_VERSION as u64);
+        assert_eq!(json["wire_version"], u64::from(WIRE_VERSION));
         assert_eq!(json["ok"], true);
         assert_eq!(json["text"], "answer");
     }

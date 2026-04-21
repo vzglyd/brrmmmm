@@ -14,31 +14,38 @@ use crate::abi::{
 // ── Timestamp helpers ────────────────────────────────────────────────
 
 /// Return the current Unix timestamp in milliseconds.
+#[must_use]
 pub fn now_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis() as u64
+    u64::try_from(
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis(),
+    )
+    .unwrap_or(u64::MAX)
 }
 
 /// Return the current UTC time encoded as an ISO-8601 string with millisecond precision.
+#[must_use]
 pub fn now_ts() -> String {
     ms_to_iso8601(now_ms())
 }
 
 /// Convert a Unix timestamp in milliseconds to an ISO-8601 UTC string.
+#[must_use]
 pub fn ms_to_iso8601(ms: u64) -> String {
     let secs = ms / 1000;
     let millis = ms % 1000;
-    let (y, mo, d) = civil_from_days((secs / 86400) as i64);
-    let h = (secs / 3600) % 24;
-    let m = (secs / 60) % 60;
-    let s = secs % 60;
-    format!("{y:04}-{mo:02}-{d:02}T{h:02}:{m:02}:{s:02}.{millis:03}Z")
+    let days = i64::try_from(secs / 86_400).unwrap_or(i64::MAX);
+    let (year, month, day) = civil_from_days(days);
+    let hour = (secs / 3_600) % 24;
+    let minute = (secs / 60) % 60;
+    let second = secs % 60;
+    format!("{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}.{millis:03}Z")
 }
 
 /// Howard Hinnant's civil calendar algorithm.
-fn civil_from_days(z: i64) -> (i64, i64, i64) {
+const fn civil_from_days(z: i64) -> (i64, i64, i64) {
     let z = z + 719_468;
     let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
     let doe = z - era * 146_097;
@@ -69,7 +76,7 @@ pub enum Event {
         /// ABI version reported by the mission module.
         abi_version: u32,
     },
-    /// Emitted when a mission module's describe() blob is received.
+    /// Emitted when a mission module's `describe()` blob is received.
     Describe {
         /// Event timestamp in ISO-8601 UTC format.
         ts: String,
@@ -90,7 +97,7 @@ pub enum Event {
         /// Newly observed lifecycle phase.
         phase: MissionPhase,
     },
-    /// Forwarded from a mission module's take_events() ring buffer.
+    /// Forwarded from a mission module's `take_events()` ring buffer.
     #[allow(dead_code)]
     GuestEventFwd {
         /// Event timestamp in ISO-8601 UTC format.
@@ -102,7 +109,7 @@ pub enum Event {
         /// Guest-defined structured attributes.
         attrs: serde_json::Value,
     },
-    /// Emitted when an artifact_publish is received.
+    /// Emitted when an `artifact_publish` is received.
     ArtifactReceived {
         /// Event timestamp in ISO-8601 UTC format.
         ts: String,
@@ -115,7 +122,7 @@ pub enum Event {
         /// Structured artifact metadata snapshot.
         artifact: ArtifactMeta,
     },
-    /// Emitted when a network_request starts (before any I/O).
+    /// Emitted when a `network_request` starts (before any I/O).
     RequestStart {
         /// Event timestamp in ISO-8601 UTC format.
         ts: String,
@@ -128,7 +135,7 @@ pub enum Event {
         /// Request path when one is available.
         path: Option<String>,
     },
-    /// Emitted when a network_request completes successfully.
+    /// Emitted when a `network_request` completes successfully.
     RequestDone {
         /// Event timestamp in ISO-8601 UTC format.
         ts: String,
@@ -141,7 +148,7 @@ pub enum Event {
         /// Response payload size in bytes.
         response_size_bytes: usize,
     },
-    /// Emitted when a network_request fails.
+    /// Emitted when a `network_request` fails.
     RequestError {
         /// Event timestamp in ISO-8601 UTC format.
         ts: String,
@@ -161,7 +168,7 @@ pub enum Event {
         /// Planned wake time in ISO-8601 UTC format.
         wake_at: String,
     },
-    /// Emitted when the mission module produces a log_info message.
+    /// Emitted when the mission module produces a `log_info` message.
     Log {
         /// Event timestamp in ISO-8601 UTC format.
         ts: String,
@@ -188,7 +195,7 @@ pub enum Event {
         /// Human-readable termination reason.
         reason: String,
     },
-    /// Emitted when a browser_action starts.
+    /// Emitted when a `browser_action` starts.
     BrowserAction {
         /// Event timestamp in ISO-8601 UTC format.
         ts: String,
@@ -197,7 +204,7 @@ pub enum Event {
         /// Loggable detail (selector or URL); never includes secret values.
         detail: String,
     },
-    /// Emitted when a browser_action completes.
+    /// Emitted when a `browser_action` completes.
     BrowserActionDone {
         /// Event timestamp in ISO-8601 UTC format.
         ts: String,
@@ -210,7 +217,7 @@ pub enum Event {
         /// Error description when the action failed.
         error: Option<String>,
     },
-    /// Emitted when an ai_request starts.
+    /// Emitted when an `ai_request` starts.
     AiRequest {
         /// Event timestamp in ISO-8601 UTC format.
         ts: String,
@@ -219,7 +226,7 @@ pub enum Event {
         /// Prompt length in bytes.
         prompt_len: usize,
     },
-    /// Emitted when an ai_request completes.
+    /// Emitted when an `ai_request` completes.
     AiRequestDone {
         /// Event timestamp in ISO-8601 UTC format.
         ts: String,
@@ -232,7 +239,7 @@ pub enum Event {
         /// Error description when the action failed.
         error: Option<String>,
     },
-    /// Emitted when a kv_get is called.
+    /// Emitted when a `kv_get` is called.
     KvGet {
         /// Event timestamp in ISO-8601 UTC format.
         ts: String,
@@ -241,7 +248,7 @@ pub enum Event {
         /// Whether the key existed.
         found: bool,
     },
-    /// Emitted when a kv_set is called.
+    /// Emitted when a `kv_set` is called.
     KvSet {
         /// Event timestamp in ISO-8601 UTC format.
         ts: String,
@@ -250,7 +257,7 @@ pub enum Event {
         /// Value length in bytes.
         value_len: usize,
     },
-    /// Emitted when a kv_delete is called.
+    /// Emitted when a `kv_delete` is called.
     KvDelete {
         /// Event timestamp in ISO-8601 UTC format.
         ts: String,
@@ -275,6 +282,7 @@ pub struct EnvVarStatus {
 impl EnvVarStatus {
     /// Build a snapshot from raw `--env KEY=VALUE` args (v1 mode: all provided vars are "set",
     /// required/optional classification is unknown).
+    #[must_use]
     pub fn from_raw_env(env_vars: &[(String, String)]) -> Vec<Self> {
         env_vars
             .iter()
@@ -301,6 +309,7 @@ struct EventSinkInner {
 
 impl EventSink {
     /// A sink that discards all events (normal / --once mode).
+    #[must_use]
     pub fn noop() -> Self {
         Self {
             inner: Arc::new(Mutex::new(EventSinkInner { enabled: false })),
@@ -308,6 +317,7 @@ impl EventSink {
     }
 
     /// A sink that writes NDJSON to stdout (--events mode).
+    #[must_use]
     pub fn for_stdout() -> Self {
         Self {
             inner: Arc::new(Mutex::new(EventSinkInner { enabled: true })),
@@ -315,16 +325,17 @@ impl EventSink {
     }
 
     /// Return `true` when the sink actively emits structured events.
+    #[must_use]
     pub fn is_enabled(&self) -> bool {
         lock_sink(&self.inner).enabled
     }
 
     /// Emit one structured event if the sink is enabled.
-    pub fn emit(&self, event: Event) {
+    pub fn emit(&self, event: &Event) {
         if !lock_sink(&self.inner).enabled {
             return;
         }
-        if let Ok(json) = serde_json::to_string(&event) {
+        if let Ok(json) = serde_json::to_string(event) {
             let stdout = std::io::stdout();
             let mut handle = stdout.lock();
             let _ = handle.write_all(json.as_bytes());
@@ -334,7 +345,7 @@ impl EventSink {
     }
 }
 
-fn lock_sink<'a>(inner: &'a Mutex<EventSinkInner>) -> MutexGuard<'a, EventSinkInner> {
+fn lock_sink(inner: &Mutex<EventSinkInner>) -> MutexGuard<'_, EventSinkInner> {
     match inner.lock() {
         Ok(guard) => guard,
         Err(poisoned) => {
@@ -350,7 +361,7 @@ fn lock_sink<'a>(inner: &'a Mutex<EventSinkInner>) -> MutexGuard<'a, EventSinkIn
 /// This prevents diagnostic messages from corrupting the NDJSON stream.
 pub fn diag(sink: &EventSink, msg: &str) {
     if sink.is_enabled() {
-        sink.emit(Event::Log {
+        sink.emit(&Event::Log {
             ts: now_ts(),
             message: msg.to_string(),
         });

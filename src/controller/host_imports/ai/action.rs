@@ -63,7 +63,7 @@ pub(super) fn register(
             let action_kind = action.kind().to_string();
             let prompt_len = action.prompt_len();
 
-            event_sink.emit(Event::AiRequest {
+            event_sink.emit(&Event::AiRequest {
                 ts: now_ts(),
                 action: action_kind.clone(),
                 prompt_len,
@@ -126,7 +126,7 @@ pub(super) fn register(
             let ok = response.is_ok();
             let error = response.error_code().map(ToOwned::to_owned);
 
-            event_sink.emit(Event::AiRequestDone {
+            event_sink.emit(&Event::AiRequestDone {
                 ts: now_ts(),
                 action: action_kind,
                 elapsed_ms,
@@ -162,7 +162,7 @@ fn store_response_and_return(
 ) -> i32 {
     let ok = response.is_ok();
     let error = response.error_code().map(ToOwned::to_owned);
-    event_sink.emit(Event::AiRequestDone {
+    event_sink.emit(&Event::AiRequestDone {
         ts: now_ts(),
         action: action_kind,
         elapsed_ms,

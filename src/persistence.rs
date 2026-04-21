@@ -76,10 +76,7 @@ pub fn clear(config: &Config, wasm_hash: &str) {
     let _ = std::fs::remove_file(path);
 }
 
-pub(crate) fn validate_state(
-    state: &MissionRuntimeState,
-    limits: &RuntimeLimits,
-) -> BrrmmmmResult<()> {
+pub fn validate_state(state: &MissionRuntimeState, limits: &RuntimeLimits) -> BrrmmmmResult<()> {
     let mut total = 0usize;
     for (key, value) in &state.kv {
         let key_len = key.len();
@@ -110,11 +107,11 @@ pub(crate) fn validate_state(
 }
 
 #[derive(Clone, Copy)]
-pub(crate) enum FileMode {
+pub enum FileMode {
     Private,
 }
 
-pub(crate) fn atomic_write(path: &Path, data: &[u8], mode: FileMode) -> BrrmmmmResult<()> {
+pub fn atomic_write(path: &Path, data: &[u8], mode: FileMode) -> BrrmmmmResult<()> {
     let parent = path.parent().unwrap_or_else(|| Path::new("."));
     std::fs::create_dir_all(parent).map_err(|error| {
         BrrmmmmError::PersistenceFailure(format!("create directory {}: {error}", parent.display()))
@@ -137,7 +134,7 @@ pub(crate) fn atomic_write(path: &Path, data: &[u8], mode: FileMode) -> BrrmmmmR
                 tmp_file = Some(file);
                 break;
             }
-            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
             Err(error) => {
                 return Err(BrrmmmmError::PersistenceFailure(format!(
                     "open temp file {}: {error}",
@@ -202,7 +199,7 @@ fn open_temp(path: &Path, _mode: FileMode) -> std::io::Result<std::fs::File> {
         .open(path)
 }
 
-pub(crate) fn fsync_dir(path: &Path) -> BrrmmmmResult<()> {
+pub fn fsync_dir(path: &Path) -> BrrmmmmResult<()> {
     match std::fs::File::open(path) {
         Ok(file) => file.sync_all().map_err(|error| {
             BrrmmmmError::PersistenceFailure(format!("fsync directory {}: {error}", path.display()))

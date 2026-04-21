@@ -24,10 +24,13 @@ pub(super) fn register(linker: &mut WasmLinker, shared: Arc<Mutex<HostState>>) -
         "brrmmmm_host",
         "ua_get",
         move |mut caller: WasmCaller<'_>, ptr: i32, len: i32| -> i32 {
+            let Some(max_len) = usize::try_from(len).ok() else {
+                return -1;
+            };
             let ua_bytes = current_user_agent_bytes(&shared_get);
-            let to_write = &ua_bytes[..ua_bytes.len().min(len as usize)];
+            let to_write = &ua_bytes[..ua_bytes.len().min(max_len)];
             match write_memory_from_caller(&mut caller, ptr, to_write) {
-                Ok(()) => to_write.len() as i32,
+                Ok(()) => len_to_i32(to_write.len()),
                 Err(_) => -1,
             }
         },
@@ -37,9 +40,8 @@ pub(super) fn register(linker: &mut WasmLinker, shared: Arc<Mutex<HostState>>) -
         "brrmmmm_host",
         "ua_set",
         move |mut caller: WasmCaller<'_>, ptr: i32, len: i32| -> i32 {
-            let bytes = match read_memory_from_caller(&mut caller, ptr, len) {
-                Ok(b) => b,
-                Err(_) => return -1,
+            let Ok(bytes) = read_memory_from_caller(&mut caller, ptr, len) else {
+                return -1;
             };
             set_user_agent_bytes(&shared_set, bytes)
         },
@@ -55,33 +57,36 @@ pub(super) fn register(linker: &mut WasmLinker, shared: Arc<Mutex<HostState>>) -
 }
 
 fn user_agent_len(shared: &Arc<Mutex<HostState>>) -> i32 {
-    current_user_agent_bytes(shared).len() as i32
+    len_to_i32(current_user_agent_bytes(shared).len())
 }
 
 fn current_user_agent_bytes(shared: &Arc<Mutex<HostState>>) -> Vec<u8> {
     let s = lock_runtime(shared, "host_state");
     s.user_agent
         .lock()
-        .unwrap_or_else(|e| e.into_inner())
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
         .as_bytes()
         .to_vec()
 }
 
 fn set_user_agent_bytes(shared: &Arc<Mutex<HostState>>, bytes: Vec<u8>) -> i32 {
-    match String::from_utf8(bytes) {
-        Ok(new_ua) => {
-            let s = lock_runtime(shared, "host_state");
-            *s.user_agent.lock().unwrap_or_else(|e| e.into_inner()) = new_ua;
-            0
-        }
-        Err(_) => -1,
-    }
+    String::from_utf8(bytes).map_or(-1, |new_ua| {
+        let s = lock_runtime(shared, "host_state");
+        *s.user_agent
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = new_ua;
+        0
+    })
 }
 
 fn set_identity_disclosure(shared: &Arc<Mutex<HostState>>, visible: bool) -> i32 {
     let mut s = lock_runtime(shared, "host_state");
     s.set_identity_disclosure_visible(visible);
     0
+}
+
+fn len_to_i32(len: usize) -> i32 {
+    i32::try_from(len).unwrap_or(i32::MAX)
 }
 
 #[cfg(test)]
@@ -104,7 +109,7 @@ mod tests {
 
         assert_eq!(set_user_agent_bytes(&shared, b"sidecar/ci".to_vec()), 0);
 
-        assert_eq!(user_agent_len(&shared), "sidecar/ci".len() as i32);
+        assert_eq!(user_agent_len(&shared), len_to_i32("sidecar/ci".len()));
         assert_eq!(current_user_agent_bytes(&shared), b"sidecar/ci");
     }
 

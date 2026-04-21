@@ -5,30 +5,30 @@ use crate::daemon::{
     daemon_uninstall,
 };
 
-pub(crate) fn cmd_daemon_run() -> Result<()> {
+pub fn cmd_daemon_run() -> Result<()> {
     tokio::runtime::Runtime::new()?.block_on(daemon::run())
 }
 
-pub(crate) fn cmd_daemon_install() -> Result<()> {
+pub fn cmd_daemon_install() -> Result<()> {
     daemon_install()
 }
 
-pub(crate) fn cmd_daemon_start() -> Result<()> {
+pub fn cmd_daemon_start() -> Result<()> {
     daemon_start()
 }
 
-pub(crate) fn cmd_daemon_stop() -> Result<()> {
+pub fn cmd_daemon_stop() -> Result<()> {
     daemon_stop()
 }
 
-pub(crate) fn cmd_daemon_restart() -> Result<()> {
+pub fn cmd_daemon_restart() -> Result<()> {
     daemon_restart()
 }
 
-pub(crate) fn cmd_daemon_status() -> Result<()> {
-    daemon_status()
+pub fn cmd_daemon_status() {
+    daemon_status();
 }
 
-pub(crate) fn cmd_daemon_uninstall() -> Result<()> {
+pub fn cmd_daemon_uninstall() -> Result<()> {
     daemon_uninstall()
 }

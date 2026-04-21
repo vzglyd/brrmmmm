@@ -14,30 +14,30 @@ pub(super) fn register(
 ) -> anyhow::Result<()> {
     let s_params_len = shared.clone();
     linker.func_wrap("brrmmmm_host", "params_len", move || -> i32 {
-        let hs = lock_runtime(&s_params_len, "host_state");
-        let pb = lock_runtime(&*hs.params_bytes, "params_bytes");
-        pb.as_ref().map_or(0, |params| params.len() as i32)
+        let params_bytes = params_handle(&s_params_len);
+        let params = lock_runtime(&params_bytes, "params_bytes");
+        params.as_ref().map_or(0, |params| len_to_i32(params.len()))
     })?;
 
-    let s_params_read = shared.clone();
+    let s_params_read = shared;
     let sink_params_read = event_sink.clone();
     linker.func_wrap(
         "brrmmmm_host",
         "params_read",
         move |mut caller: WasmCaller<'_>, ptr: i32, len: i32| -> i32 {
-            if ptr < 0 || len < 0 {
+            let Some(buffer_len) = usize::try_from(len).ok() else {
                 return -1;
-            }
-            let params: Vec<u8> = {
-                let hs = lock_runtime(&s_params_read, "host_state");
-                let pb = lock_runtime(&*hs.params_bytes, "params_bytes");
-                pb.as_ref().cloned().unwrap_or_default()
             };
-            if params.len() > len as usize {
+            let params: Vec<u8> = {
+                let params_bytes = params_handle(&s_params_read);
+                let params = lock_runtime(&params_bytes, "params_bytes");
+                params.as_ref().cloned().unwrap_or_default()
+            };
+            if params.len() > buffer_len {
                 return -2;
             }
             match write_memory_from_caller(&mut caller, ptr, &params) {
-                Ok(()) => params.len() as i32,
+                Ok(()) => len_to_i32(params.len()),
                 Err(error) => {
                     diag(
                         &sink_params_read,
@@ -58,7 +58,7 @@ pub(super) fn register(
                 && let Ok(msg) = std::str::from_utf8(&data)
             {
                 if sink_log.is_enabled() {
-                    sink_log.emit(Event::Log {
+                    sink_log.emit(&Event::Log {
                         ts: now_ts(),
                         message: msg.to_string(),
                     });
@@ -71,4 +71,13 @@ pub(super) fn register(
     )?;
 
     Ok(())
+}
+
+fn params_handle(shared: &Arc<Mutex<HostState>>) -> Arc<Mutex<Option<Vec<u8>>>> {
+    let host = lock_runtime(shared, "host_state");
+    host.params_bytes.clone()
+}
+
+fn len_to_i32(len: usize) -> i32 {
+    i32::try_from(len).unwrap_or(i32::MAX)
 }

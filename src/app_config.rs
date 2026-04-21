@@ -9,10 +9,10 @@ use serde::Deserialize;
 use crate::cmd::params::{parse_env_vars, parse_params_bytes, parse_params_value};
 use crate::mission_result::MissionRecorder;
 
-pub(crate) const WORKING_DIR_CONFIG_NAME: &str = "brrmmmm.toml";
+pub const WORKING_DIR_CONFIG_NAME: &str = "brrmmmm.toml";
 
 #[derive(Debug)]
-pub(crate) struct LoadedWorkingDirConfig {
+pub struct LoadedWorkingDirConfig {
     mission: Option<LoadedMissionConfig>,
     runtime: Option<LoadedRuntimeOverrides>,
     assurance: Option<AssuranceOverrides>,
@@ -20,7 +20,7 @@ pub(crate) struct LoadedWorkingDirConfig {
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct ResolvedRun {
+pub struct ResolvedRun {
     pub(crate) wasm_path: PathBuf,
     pub(crate) env_vars: Vec<(String, String)>,
     pub(crate) params_bytes: Option<Vec<u8>>,
@@ -31,7 +31,7 @@ pub(crate) struct ResolvedRun {
 }
 
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct RunResolveRequest<'a> {
+pub struct RunResolveRequest<'a> {
     pub(crate) wasm_path: Option<&'a Path>,
     pub(crate) env: &'a [String],
     pub(crate) params_json: Option<&'a str>,
@@ -114,7 +114,7 @@ struct AssuranceConfig {
 }
 
 #[derive(Debug, Default, Deserialize)]
-pub(crate) struct LimitOverrides {
+pub struct LimitOverrides {
     kv_max_key_bytes: Option<usize>,
     kv_max_value_bytes: Option<usize>,
     kv_max_total_bytes: Option<usize>,
@@ -127,7 +127,7 @@ pub(crate) struct LimitOverrides {
     max_ai_response_bytes: Option<usize>,
 }
 
-pub(crate) fn load_from_cwd() -> Result<Option<LoadedWorkingDirConfig>> {
+pub fn load_from_cwd() -> Result<Option<LoadedWorkingDirConfig>> {
     let cwd = std::env::current_dir().map_err(|error| {
         BrrmmmmError::ConfigInvalid(format!("resolve current directory: {error}"))
     })?;
@@ -142,15 +142,14 @@ pub(crate) fn load_from_cwd() -> Result<Option<LoadedWorkingDirConfig>> {
     let config: WorkingDirConfig = toml::from_str(&raw).map_err(|error| {
         BrrmmmmError::ConfigInvalid(format!("parse {}: {error}", path.display()))
     })?;
-    LoadedWorkingDirConfig::from_raw(path, config).map(Some)
+    LoadedWorkingDirConfig::from_raw(&path, config).map(Some)
 }
 
 impl LoadedWorkingDirConfig {
-    fn from_raw(path: PathBuf, raw: WorkingDirConfig) -> Result<Self> {
+    fn from_raw(path: &Path, raw: WorkingDirConfig) -> Result<Self> {
         let dir = path
             .parent()
-            .map(Path::to_path_buf)
-            .unwrap_or_else(|| PathBuf::from("."));
+            .map_or_else(|| PathBuf::from("."), Path::to_path_buf);
 
         let mission = raw
             .mission
@@ -160,7 +159,11 @@ impl LoadedWorkingDirConfig {
             .runtime
             .map(|runtime| normalize_runtime(&dir, runtime))
             .transpose()?;
-        let assurance = raw.assurance.map(normalize_assurance).transpose()?;
+        let assurance = raw
+            .assurance
+            .as_ref()
+            .map(normalize_assurance)
+            .transpose()?;
 
         if let Some(limits) = &raw.limits {
             validate_limits(limits)?;
@@ -174,13 +177,13 @@ impl LoadedWorkingDirConfig {
         })
     }
 
-    pub(crate) fn apply_runtime_overrides(&self, config: &mut Config) -> Result<()> {
+    pub(crate) fn apply_runtime_overrides(&self, config: &mut Config) {
         if let Some(runtime) = &self.runtime {
             if let Some(path) = &runtime.tui_path {
                 config.tui_path = Some(path.display().to_string());
             }
             if let Some(ai_model) = &runtime.ai_model {
-                config.ai_model = ai_model.clone();
+                config.ai_model.clone_from(ai_model);
             }
             if let Some(browser_headless) = runtime.browser_headless {
                 config.browser_headless = browser_headless;
@@ -189,10 +192,10 @@ impl LoadedWorkingDirConfig {
                 config.attestation_disabled = !attestation;
             }
             if let Some(identity_dir) = &runtime.identity_dir {
-                config.identity_dir = identity_dir.clone();
+                config.identity_dir.clone_from(identity_dir);
             }
             if let Some(state_dir) = &runtime.state_dir {
-                config.state_dir = state_dir.clone();
+                config.state_dir.clone_from(state_dir);
             }
             if let Some(api_key) = &runtime.anthropic_api_key {
                 config.anthropic_api_key = Some(api_key.clone());
@@ -205,8 +208,6 @@ impl LoadedWorkingDirConfig {
         if let Some(assurance) = &self.assurance {
             apply_assurance(&mut config.assurance, assurance);
         }
-
-        Ok(())
     }
 
     pub(crate) fn resolve_wasm_path(&self, explicit: Option<&Path>) -> Result<PathBuf> {
@@ -219,8 +220,7 @@ impl LoadedWorkingDirConfig {
             })
             .ok_or_else(|| {
                 BrrmmmmError::ConfigInvalid(format!(
-                    "WASM path is required; pass one explicitly or set mission.wasm in {}",
-                    WORKING_DIR_CONFIG_NAME
+                    "WASM path is required; pass one explicitly or set mission.wasm in {WORKING_DIR_CONFIG_NAME}"
                 ))
                 .into()
             })
@@ -231,7 +231,7 @@ impl LoadedWorkingDirConfig {
     }
 }
 
-pub(crate) fn resolve_run_without_config(request: RunResolveRequest<'_>) -> Result<ResolvedRun> {
+pub fn resolve_run_without_config(request: RunResolveRequest<'_>) -> Result<ResolvedRun> {
     resolve_run_inner(None, request)
 }
 
@@ -257,14 +257,12 @@ fn resolve_run_inner(
     let resolved_result_path = result_path
         .map(Path::to_path_buf)
         .or_else(|| mission.and_then(|mission| mission.result_path.clone()));
-    let recorder = resolved_result_path
-        .clone()
-        .map(|path| MissionRecorder::new(path, resolved_wasm_path.as_deref()));
+    let recorder =
+        resolved_result_path.map(|path| MissionRecorder::new(path, resolved_wasm_path.as_deref()));
 
     let wasm_path = resolved_wasm_path.ok_or_else(|| {
         BrrmmmmError::ConfigInvalid(format!(
-            "WASM path is required; pass one explicitly or set mission.wasm in {}",
-            WORKING_DIR_CONFIG_NAME
+            "WASM path is required; pass one explicitly or set mission.wasm in {WORKING_DIR_CONFIG_NAME}"
         ))
     });
     let wasm_path = match wasm_path {
@@ -397,7 +395,7 @@ fn normalize_runtime(dir: &Path, runtime: RuntimeOverrides) -> Result<LoadedRunt
     })
 }
 
-fn normalize_assurance(assurance: AssuranceConfig) -> Result<AssuranceOverrides> {
+fn normalize_assurance(assurance: &AssuranceConfig) -> Result<AssuranceOverrides> {
     for (name, value) in [
         (
             "assurance.same_reason_retry_limit",
@@ -471,7 +469,7 @@ fn validate_limits(limits: &LimitOverrides) -> Result<()> {
     Ok(())
 }
 
-fn apply_limits(target: &mut RuntimeLimits, overrides: &LimitOverrides) {
+const fn apply_limits(target: &mut RuntimeLimits, overrides: &LimitOverrides) {
     if let Some(value) = overrides.kv_max_key_bytes {
         target.kv_max_key_bytes = value;
     }
@@ -504,7 +502,7 @@ fn apply_limits(target: &mut RuntimeLimits, overrides: &LimitOverrides) {
     }
 }
 
-fn apply_assurance(target: &mut RuntimeAssurance, overrides: &AssuranceOverrides) {
+const fn apply_assurance(target: &mut RuntimeAssurance, overrides: &AssuranceOverrides) {
     if let Some(value) = overrides.same_reason_retry_limit {
         target.same_reason_retry_limit = value;
     }

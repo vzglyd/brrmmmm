@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
-pub(crate) enum Command {
+pub enum Command {
     Launch {
         wasm: String,
         #[serde(default)]
@@ -38,16 +38,16 @@ pub(crate) enum Command {
     Shutdown,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub(crate) enum RescueAction {
+pub enum RescueAction {
     Retry,
     Abort,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
-pub(crate) enum Response {
+pub enum Response {
     Launched { mission: String },
     Ok { mission: String },
     Error { message: String },
@@ -59,7 +59,7 @@ pub(crate) enum Response {
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
-pub(crate) struct MissionSummary {
+pub struct MissionSummary {
     pub name: String,
     pub phase: String,
     pub cycles: u64,

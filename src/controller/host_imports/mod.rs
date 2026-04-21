@@ -58,7 +58,7 @@ pub(super) fn register_brrmmmm_host_on_linker(
         force_refresh,
     )?;
     let network_session = std::sync::Arc::new(network::NetworkSession::new()?);
-    let browser_session = browser::new_session(shared.clone())?;
+    let browser_session = browser::new_session(shared.clone());
     let ai_session = ai::new_session(config)?;
     host_call::register(
         linker,

@@ -48,23 +48,23 @@ impl ArtifactStore {
         self.published_output = None;
     }
 
-    /// Take the published output (consumed once, like the old channel_data.take()).
-    pub fn take_published(&mut self) -> Option<Artifact> {
+    /// Take the published output (consumed once, like the old `channel_data.take()`).
+    pub const fn take_published(&mut self) -> Option<Artifact> {
         self.published_output.take()
     }
 }
 
 // ── Shared state between host imports and the runner ────────────────
 
-/// State shared by all brrmmmm_host import functions.
+/// State shared by all `brrmmmm_host` import functions.
 pub struct HostState {
-    /// Named artifact store (replaces raw channel_data).
+    /// Named artifact store (replaces raw `channel_data`).
     pub artifact_store: Arc<Mutex<ArtifactStore>>,
 
-    /// Pending response from a host_call, to be read by host_response_read.
+    /// Pending response from a `host_call`, to be read by `host_response_read`.
     pub pending_response: Arc<Mutex<Option<Vec<u8>>>>,
 
-    /// Pending value from a kv_get, to be read by kv_response_read.
+    /// Pending value from a `kv_get`, to be read by `kv_response_read`.
     pub pending_kv_response: Arc<Mutex<Option<Vec<u8>>>>,
 
     /// Whether to print channel pushes to stderr (--log-channel flag).
@@ -161,11 +161,11 @@ impl HostState {
         }
     }
 
-    pub fn set_identity_disclosure_visible(&mut self, visible: bool) {
+    pub const fn set_identity_disclosure_visible(&mut self, visible: bool) {
         self.identity_disclosure_visible = visible;
     }
 
-    pub fn clear_transient_runtime_outputs(&mut self) {
+    pub fn clear_transient_runtime_outputs(&self) {
         clear_mutex_option(&self.pending_response);
         clear_mutex_option(&self.pending_kv_response);
         lock_or_recover(&self.artifact_store, "artifact_store").clear();
@@ -175,7 +175,7 @@ impl HostState {
         let base = self
             .user_agent
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .trim()
             .to_string();
         if !self.identity_disclosure_visible {

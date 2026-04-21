@@ -1,6 +1,6 @@
 use crate::host::ai_request::{AiAction, AiActionResponse};
 
-pub(crate) struct AiSession {
+pub struct AiSession {
     client: reqwest::Client,
     model: String,
     api_key: String,
@@ -163,13 +163,15 @@ fn parse_response_text(text: &str) -> AiActionResponse {
                 .filter(|block| block["type"].as_str().unwrap_or("text") == "text")
                 .find_map(|block| block["text"].as_str())
         })
-        .map(|t| AiActionResponse::ok(t.to_string()))
-        .unwrap_or_else(|| {
-            AiActionResponse::err(
-                "unexpected_response",
-                format!("no text in response: {text}"),
-            )
-        })
+        .map_or_else(
+            || {
+                AiActionResponse::err(
+                    "unexpected_response",
+                    format!("no text in response: {text}"),
+                )
+            },
+            |t| AiActionResponse::ok(t.to_string()),
+        )
 }
 
 #[cfg(test)]
@@ -220,7 +222,9 @@ mod tests {
 
         match response {
             AiActionResponse::Ok { text, .. } => assert_eq!(text, "answer"),
-            other => panic!("expected ok response, got {other:?}"),
+            other @ AiActionResponse::Err { .. } => {
+                panic!("expected ok response, got {other:?}")
+            }
         }
     }
 }

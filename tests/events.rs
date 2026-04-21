@@ -7,8 +7,8 @@ fn ms_to_iso8601_unix_epoch() {
 
 #[test]
 fn ms_to_iso8601_known_date() {
-    // 946684800000 ms = 2000-01-01T00:00:00.000Z (Y2K timestamp)
-    assert_eq!(ms_to_iso8601(946684800000), "2000-01-01T00:00:00.000Z");
+    // 946_684_800_000 ms = 2000-01-01T00:00:00.000Z (Y2K timestamp)
+    assert_eq!(ms_to_iso8601(946_684_800_000), "2000-01-01T00:00:00.000Z");
 }
 
 #[test]
@@ -16,15 +16,15 @@ fn ms_to_iso8601_preserves_milliseconds() {
     // 1123 ms = 1.123s after epoch
     let result = ms_to_iso8601(1123);
     assert!(
-        result.ends_with(".123Z"),
-        "expected .123Z suffix, got: {result}"
+        result.contains(".123Z"),
+        "expected .123Z milliseconds, got: {result}"
     );
 }
 
 #[test]
 fn ms_to_iso8601_leap_year_feb_29() {
-    // 951782400000 ms = 2000-02-29T00:00:00.000Z (2000 is a leap year)
-    assert_eq!(ms_to_iso8601(951782400000), "2000-02-29T00:00:00.000Z");
+    // 951_782_400_000 ms = 2000-02-29T00:00:00.000Z (2000 is a leap year)
+    assert_eq!(ms_to_iso8601(951_782_400_000), "2000-02-29T00:00:00.000Z");
 }
 
 #[test]

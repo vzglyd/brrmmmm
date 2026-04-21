@@ -81,22 +81,22 @@ impl MissionState {
     }
 
     /// Return the stable hash of the loaded sidecar module bytes.
-    pub fn module_hash(&self) -> ModuleHash {
+    pub const fn module_hash(&self) -> ModuleHash {
         self.module_hash
     }
 
     /// Return the current mission identifier.
-    pub fn mission_id(&self) -> MissionId {
+    pub const fn mission_id(&self) -> MissionId {
         self.mission_id
     }
 
     /// Return the cumulative behavior hash for normalized activity so far.
-    pub fn behavior_hash(&self) -> BehaviorHash {
+    pub const fn behavior_hash(&self) -> BehaviorHash {
         self.behavior_hash
     }
 
     /// Return the observed capability bitmask.
-    pub fn cap_mask(&self) -> u8 {
+    pub const fn cap_mask(&self) -> u8 {
         self.capabilities.bits()
     }
 }

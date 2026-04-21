@@ -9,14 +9,14 @@ use crate::identity::ModuleHash;
 use crate::persistence::{FileMode, atomic_write};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub(crate) struct RepeatFailureGateRecord {
+pub struct RepeatFailureGateRecord {
     pub(crate) reason_code: String,
     pub(crate) input_fingerprint: String,
     pub(crate) triggered_at_ms: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub(crate) struct MissionLedgerRecord {
+pub struct MissionLedgerRecord {
     pub(crate) schema_version: u8,
     pub(crate) logical_id: String,
     pub(crate) module_hash: String,
@@ -36,7 +36,7 @@ pub(crate) struct MissionLedgerRecord {
     pub(crate) last_explanation: Option<String>,
 }
 
-pub(crate) fn load(
+pub fn load(
     config: &Config,
     logical_id: &str,
     module_hash: ModuleHash,
@@ -58,7 +58,7 @@ pub(crate) fn load(
     Ok(Some(record))
 }
 
-pub(crate) fn save(
+pub fn save(
     config: &Config,
     logical_id: &str,
     module_hash: ModuleHash,
@@ -106,7 +106,7 @@ pub(crate) fn save(
     atomic_write(&path, &bytes, FileMode::Private)
 }
 
-pub(crate) fn apply_to_runtime_state(
+pub const fn apply_to_runtime_state(
     runtime_state: &mut MissionRuntimeState,
     ledger: &MissionLedgerRecord,
 ) {
@@ -116,10 +116,7 @@ pub(crate) fn apply_to_runtime_state(
     runtime_state.cooldown_until_ms = ledger.cooldown_until_ms;
 }
 
-pub(crate) fn repeat_failure_gate_active(
-    ledger: &MissionLedgerRecord,
-    input_fingerprint: &str,
-) -> bool {
+pub fn repeat_failure_gate_active(ledger: &MissionLedgerRecord, input_fingerprint: &str) -> bool {
     ledger
         .repeat_failure_gate
         .as_ref()
@@ -137,9 +134,7 @@ fn ledger_retry_state(
         return (
             fingerprint
                 .or_else(|| prior_ledger.and_then(|ledger| ledger.last_input_fingerprint.clone())),
-            prior_ledger
-                .map(|ledger| ledger.same_reason_streak)
-                .unwrap_or(0),
+            prior_ledger.map_or(0, |ledger| ledger.same_reason_streak),
             prior_ledger.and_then(|ledger| ledger.repeat_failure_gate.clone()),
         );
     };
@@ -157,17 +152,17 @@ fn ledger_retry_state(
                     .map(|fingerprint| RepeatFailureGateRecord {
                         reason_code: prior_ledger
                             .and_then(|ledger| ledger.last_outcome.as_ref())
-                            .map(|outcome| outcome.reason_code.clone())
-                            .unwrap_or_else(|| "repeated_failure".to_string()),
+                            .map_or_else(
+                                || "repeated_failure".to_string(),
+                                |outcome| outcome.reason_code.clone(),
+                            ),
                         input_fingerprint: fingerprint.clone(),
                         triggered_at_ms: runtime_state.last_outcome_at_ms.unwrap_or_default(),
                     })
             });
         return (
             fingerprint,
-            prior_ledger
-                .map(|ledger| ledger.same_reason_streak)
-                .unwrap_or(0),
+            prior_ledger.map_or(0, |ledger| ledger.same_reason_streak),
             gate,
         );
     }
@@ -181,8 +176,7 @@ fn ledger_retry_state(
         && previous_fingerprint == input_fingerprint
     {
         prior_ledger
-            .map(|ledger| ledger.same_reason_streak)
-            .unwrap_or(0)
+            .map_or(0, |ledger| ledger.same_reason_streak)
             .saturating_add(1)
     } else {
         1

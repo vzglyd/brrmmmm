@@ -39,6 +39,11 @@ pub struct MissionInspection {
 }
 
 /// Inspect a mission-module WASM module without executing an acquisition mission.
+///
+/// # Errors
+///
+/// Returns an error when the WASM cannot be read, instantiated, or does not
+/// satisfy the required ABI surface for inspection.
 pub fn inspect_module_contract(wasm_path: &str) -> Result<MissionInspection> {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -80,16 +85,17 @@ async fn inspect_module_contract_async(wasm_path: &str) -> Result<MissionInspect
     let host_imports = brrmmmm_host_imports(&module);
     let mut diagnostics = Vec::new();
 
-    let describe =
-        match read_static_describe(&instance, &mut store, &RuntimePolicy::default()).await? {
-            Some(describe) => Some(describe),
-            None => {
+    let describe = read_static_describe(&instance, &mut store, &RuntimePolicy::default())
+        .await?
+        .map_or_else(
+            || {
                 diagnostics.push(
                     "mission module is missing brrmmmm_module_describe_ptr/len exports".to_string(),
                 );
                 None
-            }
-        };
+            },
+            Some,
+        );
     if !host_imports
         .iter()
         .any(|name| name == "mission_outcome_report")
@@ -114,6 +120,11 @@ async fn inspect_module_contract_async(wasm_path: &str) -> Result<MissionInspect
 }
 
 /// Validate that an inspection result satisfies the minimum runnable contract.
+///
+/// # Errors
+///
+/// Returns an error when the inspection result is missing required entrypoints,
+/// host imports, or describe metadata.
 pub fn validate_module_inspection(inspection: &MissionInspection) -> Result<()> {
     if inspection.entrypoint.is_none() {
         anyhow::bail!("WASM module must export brrmmmm_module_start");
@@ -258,7 +269,9 @@ pub(super) async fn read_static_describe(
     if ptr < 0 || len <= 0 {
         anyhow::bail!("invalid describe memory range: ptr={ptr}, len={len}");
     }
-    if len as usize > policy.max_describe_bytes {
+    let ptr = usize::try_from(ptr).context("mission describe pointer must be non-negative")?;
+    let len = usize::try_from(len).context("mission describe length must be positive")?;
+    if len > policy.max_describe_bytes {
         anyhow::bail!(
             "mission describe is {len} bytes, exceeding the configured limit of {} bytes",
             policy.max_describe_bytes
@@ -268,9 +281,9 @@ pub(super) async fn read_static_describe(
     let memory = instance
         .get_memory(&mut *store, "memory")
         .context("mission describe requires exported memory")?;
-    let mut bytes = vec![0; len as usize];
+    let mut bytes = vec![0; len];
     memory
-        .read(&mut *store, ptr as usize, &mut bytes)
+        .read(&mut *store, ptr, &mut bytes)
         .context("read mission describe bytes")?;
     let describe = serde_json::from_slice::<MissionModuleDescribe>(&bytes)
         .context("decode mission describe JSON")?;

@@ -67,7 +67,7 @@ pub(super) fn register(
                 host.record_activity(Capabilities::BROWSER, "browser_action", &event);
             }
 
-            event_sink.emit(Event::BrowserAction {
+            event_sink.emit(&Event::BrowserAction {
                 ts: now_ts(),
                 action: action_kind.clone(),
                 detail: action_detail,
@@ -85,7 +85,7 @@ pub(super) fn register(
             let ok = response.is_ok();
             let error = if ok { None } else { Some(action_kind.clone()) };
 
-            event_sink.emit(Event::BrowserActionDone {
+            event_sink.emit(&Event::BrowserActionDone {
                 ts: now_ts(),
                 action: action_kind,
                 elapsed_ms,

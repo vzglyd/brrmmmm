@@ -26,13 +26,39 @@ pub(super) fn register(
     browser: SharedBrowserSession,
     ai: SharedAiSession,
 ) -> Result<()> {
-    let call_shared = shared.clone();
-    let call_sink = event_sink.clone();
-    let call_runtime = runtime_state.clone();
-    let call_counter = request_counter.clone();
-    let call_network = network.clone();
-    let call_browser = browser.clone();
-    let call_ai = ai.clone();
+    register_host_call(
+        linker,
+        shared.clone(),
+        event_sink,
+        runtime_state,
+        request_counter,
+        network,
+        browser,
+        ai,
+    )?;
+    register_host_response_len(linker, shared.clone())?;
+    register_host_response_read(linker, shared)?;
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn register_host_call(
+    linker: &mut WasmLinker,
+    shared: Arc<Mutex<HostState>>,
+    event_sink: EventSink,
+    runtime_state: Arc<Mutex<MissionRuntimeState>>,
+    request_counter: Arc<AtomicU64>,
+    network: Arc<NetworkSession>,
+    browser: SharedBrowserSession,
+    ai: SharedAiSession,
+) -> Result<()> {
+    let call_shared = shared;
+    let call_sink = event_sink;
+    let call_runtime = runtime_state;
+    let call_counter = request_counter;
+    let call_network = network;
+    let call_browser = browser;
+    let call_ai = ai;
     linker.func_wrap_async(
         "brrmmmm_host",
         "host_call",
@@ -69,10 +95,7 @@ pub(super) fn register(
                 };
 
                 let decoded = decode_call(&bytes);
-                let capability = match decoded.as_ref() {
-                    Ok(call) => call.capability(),
-                    Err(_) => "host",
-                };
+                let capability = decoded.as_ref().map_or("host", |call| call.capability());
                 let response = match decoded {
                     Ok(call) => {
                         dispatch(
@@ -96,7 +119,7 @@ pub(super) fn register(
                     Ok(data) => {
                         *pending_response_handle(&shared)
                             .lock()
-                            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(data);
+                            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(data);
                         0
                     }
                     Err(error) => {
@@ -110,39 +133,48 @@ pub(super) fn register(
             }) as Box<dyn Future<Output = i32> + Send>
         },
     )?;
+    Ok(())
+}
 
-    let len_shared = shared.clone();
+fn register_host_response_len(
+    linker: &mut WasmLinker,
+    shared: Arc<Mutex<HostState>>,
+) -> Result<()> {
     linker.func_wrap(
         "brrmmmm_host",
         "host_response_len",
-        move |_caller: WasmCaller<'_>| -> i32 { pending_response_len(&len_shared).unwrap_or(0) },
+        move |_caller: WasmCaller<'_>| -> i32 { pending_response_len(&shared).unwrap_or(0) },
     )?;
+    Ok(())
+}
 
-    let read_shared = shared.clone();
+fn register_host_response_read(
+    linker: &mut WasmLinker,
+    shared: Arc<Mutex<HostState>>,
+) -> Result<()> {
     linker.func_wrap(
         "brrmmmm_host",
         "host_response_read",
         move |mut caller: WasmCaller<'_>, ptr: i32, len: i32| -> i32 {
-            let Some(data_len) = pending_response_len(&read_shared) else {
+            let Some(data_len) = pending_response_len(&shared) else {
                 return -1;
             };
             if len != data_len {
                 return -1;
             }
-            let Some(data) = take_pending_response(&read_shared) else {
+            let Some(data) = take_pending_response(&shared) else {
                 return -1;
             };
             if let Err(error) = write_memory_from_caller(&mut caller, ptr, &data) {
                 eprintln!("[brrmmmm] host_response_read error: {error}");
-                *pending_response_handle(&read_shared)
+                *pending_response_handle(&shared)
                     .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(data);
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(data);
                 return -1;
             }
-            data.len() as i32
+            len_to_i32(data.len()).unwrap_or(-1)
         },
     )?;
-
     Ok(())
 }
 
@@ -182,19 +214,23 @@ async fn dispatch(
 fn pending_response_len(shared: &Arc<Mutex<HostState>>) -> Option<i32> {
     pending_response_handle(shared)
         .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
         .as_ref()
-        .map(|bytes| bytes.len() as i32)
+        .and_then(|bytes| len_to_i32(bytes.len()))
 }
 
 fn take_pending_response(shared: &Arc<Mutex<HostState>>) -> Option<Vec<u8>> {
     pending_response_handle(shared)
         .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
         .take()
 }
 
 fn pending_response_handle(shared: &Arc<Mutex<HostState>>) -> Arc<Mutex<Option<Vec<u8>>>> {
     let host = lock_runtime(shared, "host_state");
     Arc::clone(&host.pending_response)
+}
+
+fn len_to_i32(len: usize) -> Option<i32> {
+    i32::try_from(len).ok()
 }

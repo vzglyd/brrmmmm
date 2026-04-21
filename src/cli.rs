@@ -1,23 +1,23 @@
 use clap::{Parser, Subcommand, ValueEnum, ValueHint};
 use std::path::PathBuf;
 
-#[derive(ValueEnum, Clone, Default, PartialEq, Debug)]
-pub(crate) enum OutputFormat {
+#[derive(ValueEnum, Clone, Copy, Default, PartialEq, Eq, Debug)]
+pub enum OutputFormat {
     #[default]
     Text,
     Json,
     Table,
 }
 
-#[derive(ValueEnum, Clone, Default, PartialEq, Debug)]
-pub(crate) enum LogFormat {
+#[derive(ValueEnum, Clone, Copy, Default, PartialEq, Eq, Debug)]
+pub enum LogFormat {
     #[default]
     Text,
     Json,
 }
 
-#[derive(ValueEnum, Clone, Debug)]
-pub(crate) enum RescueActionArg {
+#[derive(ValueEnum, Clone, Copy, Debug)]
+pub enum RescueActionArg {
     Retry,
     Abort,
 }
@@ -48,7 +48,7 @@ EXAMPLES:
   brrmmmm rescue   solar-wind --action retry --reason \"fixed API key\"",
     version
 )]
-pub(crate) struct Cli {
+pub struct Cli {
     /// Output format: json, text, or table.
     /// Default: json for inspect, text for validate and run.
     #[arg(long, global = true, value_enum)]
@@ -71,7 +71,7 @@ pub(crate) struct Cli {
 }
 
 #[derive(Subcommand)]
-pub(crate) enum Commands {
+pub enum Commands {
     /// Run a mission-module WASM module
     Run {
         /// Path to the mission-module `.wasm` file. Falls back to mission.wasm in ./brrmmmm.toml.
@@ -86,11 +86,11 @@ pub(crate) enum Commands {
         #[arg(short = 'e', long, value_name = "KEY=VALUE", value_parser = parse_key_val)]
         env: Vec<String>,
 
-        /// JSON object exposed through the mission-module params_len/params_read imports
+        /// JSON object exposed through the mission-module `params_len/params_read` imports
         #[arg(short = 'j', long, conflicts_with = "params_file")]
         params_json: Option<String>,
 
-        /// Path to a JSON file exposed through the mission-module params_len/params_read imports
+        /// Path to a JSON file exposed through the mission-module `params_len/params_read` imports
         #[arg(short = 'f', long, value_name = "PATH", value_hint = ValueHint::FilePath)]
         params_file: Option<PathBuf>,
 
@@ -216,8 +216,8 @@ pub(crate) enum Commands {
     },
 }
 
-#[derive(Subcommand)]
-pub(crate) enum DaemonAction {
+#[derive(Subcommand, Clone, Copy, Debug)]
+pub enum DaemonAction {
     /// Generate and enable the systemd/launchd service unit
     Install,
     /// Run the daemon in the foreground (called by the service manager)

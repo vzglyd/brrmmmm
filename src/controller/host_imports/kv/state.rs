@@ -18,8 +18,7 @@ pub(super) fn pending_kv_response_len(shared: &Arc<Mutex<HostState>>) -> i32 {
     let pending_response = pending_kv_response_handle(shared);
     lock_runtime(&pending_response, "pending_kv_response")
         .as_ref()
-        .map(|bytes| bytes.len() as i32)
-        .unwrap_or(-1)
+        .map_or(-1, |bytes| len_to_i32(bytes.len()))
 }
 
 pub(super) fn take_pending_kv_response(shared: &Arc<Mutex<HostState>>) -> Option<Vec<u8>> {
@@ -30,4 +29,8 @@ pub(super) fn take_pending_kv_response(shared: &Arc<Mutex<HostState>>) -> Option
 fn pending_kv_response_handle(shared: &Arc<Mutex<HostState>>) -> Arc<Mutex<Option<Vec<u8>>>> {
     let host = lock_runtime(shared, "host_state");
     Arc::clone(&host.pending_kv_response)
+}
+
+fn len_to_i32(len: usize) -> i32 {
+    i32::try_from(len).unwrap_or(i32::MAX)
 }

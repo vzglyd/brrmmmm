@@ -95,6 +95,11 @@ impl Config {
     ///
     /// Returns [`crate::error::BrrmmmmError::ConfigInvalid`] when any configured
     /// value is malformed or out of range.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when any configured environment value is malformed,
+    /// empty where disallowed, or not valid UTF-8 where UTF-8 is required.
     pub fn load() -> BrrmmmmResult<Self> {
         let limits = RuntimeLimits::load()?;
 
@@ -242,18 +247,15 @@ fn non_empty_env(name: &str) -> BrrmmmmResult<Option<String>> {
 }
 
 fn env_path(name: &str) -> BrrmmmmResult<Option<PathBuf>> {
-    match std::env::var_os(name) {
-        Some(value) => {
-            if os_string_is_empty(&value) {
-                Err(BrrmmmmError::ConfigInvalid(format!(
-                    "{name} must not be empty"
-                )))
-            } else {
-                Ok(Some(PathBuf::from(value)))
-            }
+    std::env::var_os(name).map_or(Ok(None), |value| {
+        if os_string_is_empty(&value) {
+            Err(BrrmmmmError::ConfigInvalid(format!(
+                "{name} must not be empty"
+            )))
+        } else {
+            Ok(Some(PathBuf::from(value)))
         }
-        None => Ok(None),
-    }
+    })
 }
 
 fn os_string_is_empty(value: &OsString) -> bool {
@@ -292,8 +294,7 @@ fn default_state_dir() -> PathBuf {
 
 fn fallback_data_dir() -> PathBuf {
     std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("."))
+        .map_or_else(|| PathBuf::from("."), PathBuf::from)
         .join(".local")
         .join("share")
 }

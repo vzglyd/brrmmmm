@@ -6,15 +6,18 @@ use crate::cli::OutputFormat;
 
 pub(super) fn write_payload(data: &[u8], output: OutputFormat) -> Result<()> {
     match output {
-        OutputFormat::Json => match serde_json::from_slice::<serde_json::Value>(data) {
-            Ok(value) => println!("{}", serde_json::to_string_pretty(&value)?),
-            Err(_) => {
+        OutputFormat::Json => {
+            if let Ok(value) = serde_json::from_slice::<serde_json::Value>(data) {
+                println!("{}", serde_json::to_string_pretty(&value)?);
+            } else {
                 eprintln!("[brrmmmm] payload is not valid JSON, emitting raw");
                 write_raw(data)?;
             }
-        },
-        OutputFormat::Table => match serde_json::from_slice::<serde_json::Value>(data) {
-            Ok(serde_json::Value::Object(map)) => {
+        }
+        OutputFormat::Table => {
+            if let Ok(serde_json::Value::Object(map)) =
+                serde_json::from_slice::<serde_json::Value>(data)
+            {
                 let rows: Vec<(&str, String)> = map
                     .iter()
                     .map(|(key, value)| {
@@ -26,12 +29,11 @@ pub(super) fn write_payload(data: &[u8], output: OutputFormat) -> Result<()> {
                     })
                     .collect();
                 print_table(&rows);
-            }
-            _ => {
+            } else {
                 eprintln!("[brrmmmm] payload is not a JSON object, emitting raw");
                 write_raw(data)?;
             }
-        },
+        }
         OutputFormat::Text => write_raw(data)?,
     }
 
@@ -50,7 +52,7 @@ pub(super) fn print_table(rows: &[(&str, String)]) {
     println!("{:<key_w$}  Value", "Field");
     println!("{sep}");
     for (key, value) in rows {
-        println!("{:<key_w$}  {value}", key);
+        println!("{key:<key_w$}  {value}");
     }
 }
 
