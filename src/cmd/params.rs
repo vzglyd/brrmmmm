@@ -45,7 +45,7 @@ pub(crate) fn parse_params_bytes(
 
     serde_json::to_vec(&value)
         .map(Some)
-        .map_err(|error| BrrmmmmError::ParamsInvalid(format!("serialize sidecar params: {error}")))
+        .map_err(|error| BrrmmmmError::ParamsInvalid(format!("serialize mission params: {error}")))
 }
 
 pub(crate) fn parse_params_value(
@@ -54,7 +54,7 @@ pub(crate) fn parse_params_value(
 ) -> BrrmmmmResult<Vec<u8>> {
     validate_params_value(value, limits)?;
     let bytes = serde_json::to_vec(value).map_err(|error| {
-        BrrmmmmError::ParamsInvalid(format!("serialize sidecar params: {error}"))
+        BrrmmmmError::ParamsInvalid(format!("serialize mission params: {error}"))
     })?;
     if bytes.len() > limits.max_params_bytes {
         return Err(BrrmmmmError::budget(
@@ -69,7 +69,7 @@ pub(crate) fn parse_params_value(
 fn validate_params_value(value: &serde_json::Value, limits: &RuntimeLimits) -> BrrmmmmResult<()> {
     if !value.is_object() {
         return Err(BrrmmmmError::ParamsInvalid(
-            "sidecar params must be a JSON object".to_string(),
+            "mission params must be a JSON object".to_string(),
         ));
     }
     let depth = json_depth(value);

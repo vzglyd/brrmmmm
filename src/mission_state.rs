@@ -255,6 +255,7 @@ mod tests {
             cooldown_policy: None,
             artifact_types: vec!["published_output".to_string()],
             acquisition_timeout_secs: None,
+            operator_fallback: None,
         }
     }
 

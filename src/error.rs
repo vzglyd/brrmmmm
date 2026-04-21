@@ -24,6 +24,10 @@ pub enum ErrorCategory {
     ConfigInvalid,
     /// A sidecar mission exceeded its allowed time budget.
     Timeout,
+    /// A mission attempt closed safely and should be retried later.
+    RetryableFailure,
+    /// A mission attempt is waiting for bounded operator rescue.
+    OperatorActionRequired,
     /// A runtime failure occurred outside a narrower category.
     RuntimeFailure,
 }
@@ -40,6 +44,8 @@ impl ErrorCategory {
             Self::IdentityFailure => "identity_failure",
             Self::ConfigInvalid => "config_invalid",
             Self::Timeout => "timeout",
+            Self::RetryableFailure => "retryable_failure",
+            Self::OperatorActionRequired => "operator_action_required",
             Self::RuntimeFailure => "runtime_failure",
         }
     }
@@ -48,7 +54,8 @@ impl ErrorCategory {
     pub fn exit_code(self) -> i32 {
         match self {
             Self::ConfigInvalid | Self::ParamsInvalid | Self::BudgetExceeded => 64,
-            Self::StateCorruption => 65,
+            Self::StateCorruption | Self::OperatorActionRequired => 65,
+            Self::RetryableFailure => 75,
             Self::InvalidTransition | Self::RuntimeFailure => 70,
             Self::PersistenceFailure | Self::IdentityFailure => 74,
             Self::Timeout => 124,
@@ -95,6 +102,12 @@ pub enum BrrmmmmError {
     /// A time budget or wait deadline was exceeded.
     #[error("timeout: {0}")]
     Timeout(String),
+    /// The mission attempt closed safely and should be retried later.
+    #[error("retryable failure: {0}")]
+    RetryableFailure(String),
+    /// The mission attempt is waiting for bounded operator rescue.
+    #[error("operator action required: {0}")]
+    OperatorActionRequired(String),
     /// An uncategorized runtime failure occurred.
     #[error("runtime failure: {0}")]
     RuntimeFailure(String),
@@ -112,6 +125,8 @@ impl BrrmmmmError {
             Self::IdentityFailure(_) => ErrorCategory::IdentityFailure,
             Self::ConfigInvalid(_) => ErrorCategory::ConfigInvalid,
             Self::Timeout(_) => ErrorCategory::Timeout,
+            Self::RetryableFailure(_) => ErrorCategory::RetryableFailure,
+            Self::OperatorActionRequired(_) => ErrorCategory::OperatorActionRequired,
             Self::RuntimeFailure(_) => ErrorCategory::RuntimeFailure,
         }
     }

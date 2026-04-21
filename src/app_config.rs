@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use anyhow::Result;
-use brrmmmm::config::{Config, RuntimeLimits};
+use brrmmmm::config::{Config, RuntimeAssurance, RuntimeLimits};
 use brrmmmm::error::BrrmmmmError;
 use serde::Deserialize;
 
@@ -15,6 +15,7 @@ pub(crate) const WORKING_DIR_CONFIG_NAME: &str = "brrmmmm.toml";
 pub(crate) struct LoadedWorkingDirConfig {
     mission: Option<LoadedMissionConfig>,
     runtime: Option<LoadedRuntimeOverrides>,
+    assurance: Option<AssuranceOverrides>,
     limits: Option<LimitOverrides>,
 }
 
@@ -26,6 +27,7 @@ pub(crate) struct ResolvedRun {
     pub(crate) mission_recorder: Option<MissionRecorder>,
     pub(crate) log_channel: bool,
     pub(crate) events_mode: bool,
+    pub(crate) override_retry_gate: bool,
 }
 
 #[derive(Debug)]
@@ -50,12 +52,20 @@ struct LoadedRuntimeOverrides {
     anthropic_api_key: Option<String>,
 }
 
+#[derive(Debug)]
+struct AssuranceOverrides {
+    same_reason_retry_limit: Option<u32>,
+    default_retry_after_ms: Option<u64>,
+}
+
 #[derive(Debug, Default, Deserialize)]
 struct WorkingDirConfig {
     #[serde(default)]
     mission: Option<MissionConfig>,
     #[serde(default)]
     runtime: Option<RuntimeOverrides>,
+    #[serde(default)]
+    assurance: Option<AssuranceConfig>,
     #[serde(default)]
     limits: Option<LimitOverrides>,
 }
@@ -82,6 +92,12 @@ struct RuntimeOverrides {
     identity_dir: Option<PathBuf>,
     state_dir: Option<PathBuf>,
     anthropic_api_key: Option<String>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct AssuranceConfig {
+    same_reason_retry_limit: Option<u32>,
+    default_retry_after_ms: Option<u64>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -131,6 +147,10 @@ impl LoadedWorkingDirConfig {
             .runtime
             .map(|runtime| normalize_runtime(&dir, runtime))
             .transpose()?;
+        let assurance = raw
+            .assurance
+            .map(normalize_assurance)
+            .transpose()?;
 
         if let Some(limits) = &raw.limits {
             validate_limits(limits)?;
@@ -139,6 +159,7 @@ impl LoadedWorkingDirConfig {
         Ok(Self {
             mission,
             runtime,
+            assurance,
             limits: raw.limits,
         })
     }
@@ -171,6 +192,9 @@ impl LoadedWorkingDirConfig {
         if let Some(limits) = &self.limits {
             apply_limits(&mut config.limits, limits);
         }
+        if let Some(assurance) = &self.assurance {
+            apply_assurance(&mut config.assurance, assurance);
+        }
 
         Ok(())
     }
@@ -201,6 +225,7 @@ impl LoadedWorkingDirConfig {
         result_path: Option<&Path>,
         events_override: Option<bool>,
         log_channel_override: Option<bool>,
+        override_retry_gate: bool,
         limits: &RuntimeLimits,
     ) -> Result<ResolvedRun> {
         resolve_run_inner(
@@ -212,6 +237,7 @@ impl LoadedWorkingDirConfig {
             result_path,
             events_override,
             log_channel_override,
+            override_retry_gate,
             limits,
         )
     }
@@ -225,6 +251,7 @@ pub(crate) fn resolve_run_without_config(
     result_path: Option<&Path>,
     events_override: Option<bool>,
     log_channel_override: Option<bool>,
+    override_retry_gate: bool,
     limits: &RuntimeLimits,
 ) -> Result<ResolvedRun> {
     resolve_run_inner(
@@ -236,6 +263,7 @@ pub(crate) fn resolve_run_without_config(
         result_path,
         events_override,
         log_channel_override,
+        override_retry_gate,
         limits,
     )
 }
@@ -249,6 +277,7 @@ fn resolve_run_inner(
     result_path: Option<&Path>,
     events_override: Option<bool>,
     log_channel_override: Option<bool>,
+    override_retry_gate: bool,
     limits: &RuntimeLimits,
 ) -> Result<ResolvedRun> {
     let mission = loaded.and_then(|loaded| loaded.mission.as_ref());
@@ -297,6 +326,7 @@ fn resolve_run_inner(
         events_mode: events_override
             .or_else(|| mission.and_then(|mission| mission.events))
             .unwrap_or(false),
+        override_retry_gate,
     })
 }
 
@@ -397,6 +427,30 @@ fn normalize_runtime(dir: &Path, runtime: RuntimeOverrides) -> Result<LoadedRunt
     })
 }
 
+fn normalize_assurance(assurance: AssuranceConfig) -> Result<AssuranceOverrides> {
+    for (name, value) in [
+        (
+            "assurance.same_reason_retry_limit",
+            assurance.same_reason_retry_limit.map(u64::from),
+        ),
+        (
+            "assurance.default_retry_after_ms",
+            assurance.default_retry_after_ms,
+        ),
+    ] {
+        if value == Some(0) {
+            return Err(
+                BrrmmmmError::ConfigInvalid(format!("{name} must be greater than zero")).into(),
+            );
+        }
+    }
+
+    Ok(AssuranceOverrides {
+        same_reason_retry_limit: assurance.same_reason_retry_limit,
+        default_retry_after_ms: assurance.default_retry_after_ms,
+    })
+}
+
 fn resolve_path(dir: &Path, path: PathBuf, field_name: &str) -> Result<PathBuf> {
     if path.as_os_str().is_empty() {
         return Err(BrrmmmmError::ConfigInvalid(format!("{field_name} must not be empty")).into());
@@ -477,5 +531,14 @@ fn apply_limits(target: &mut RuntimeLimits, overrides: &LimitOverrides) {
     }
     if let Some(value) = overrides.max_ai_response_bytes {
         target.max_ai_response_bytes = value;
+    }
+}
+
+fn apply_assurance(target: &mut RuntimeAssurance, overrides: &AssuranceOverrides) {
+    if let Some(value) = overrides.same_reason_retry_limit {
+        target.same_reason_retry_limit = value;
+    }
+    if let Some(value) = overrides.default_retry_after_ms {
+        target.default_retry_after_ms = value;
     }
 }

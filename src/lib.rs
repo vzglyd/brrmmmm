@@ -2,6 +2,11 @@
 //! `brrmmmm` is the Rust runtime and inspection library for portable Wasm
 //! mission modules.
 //!
+//! It exists for acquisition missions where straightforward request/response
+//! tooling is not enough: hostile browser flows, expiring sessions, retries,
+//! persisted continuity, and bounded operator rescue all live inside the
+//! runtime contract instead of being reinvented around the process boundary.
+//!
 //! The supported public API for this crate is intentionally narrow:
 //!
 //! - [`abi`] exposes the mission-module describe schema and runtime snapshot types.

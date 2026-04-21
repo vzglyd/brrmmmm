@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 /// The mission-module ABI version supported by this release of `brrmmmm`.
-pub const ABI_VERSION_V3: u32 = 3;
+pub const ABI_VERSION_V4: u32 = 4;
 
 // ── Mission lifecycle phase ──────────────────────────────────────────
 
@@ -83,6 +83,18 @@ pub struct CooldownPolicy {
     pub authority: PersistenceAuthority,
     /// The minimum delay, in milliseconds, that should be enforced between runs.
     pub min_interval_ms: u64,
+}
+
+// ── Operator fallback policy ────────────────────────────────────────
+
+/// Timeout classification applied when a rescue window expires without help.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum OperatorTimeoutOutcome {
+    /// Close the attempt as retryable and allow orchestration to schedule another attempt.
+    RetryableFailure,
+    /// Close the attempt as terminal and require a code or policy change before retrying.
+    TerminalFailure,
 }
 
 // ── Env var specification ────────────────────────────────────────────
@@ -208,6 +220,18 @@ pub struct MissionModuleDescribe {
     /// Optional hard timeout, in seconds, for completing one acquisition mission.
     #[serde(default)]
     pub acquisition_timeout_secs: Option<u32>,
+    /// Optional bounded human-rescue contract for operator-driven fallback.
+    #[serde(default)]
+    pub operator_fallback: Option<OperatorFallbackPolicy>,
+}
+
+/// Declared human-rescue policy for one mission module.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct OperatorFallbackPolicy {
+    /// Maximum time, in milliseconds, that the runtime should leave operator rescue open.
+    pub timeout_ms: u64,
+    /// Final classification to apply when the rescue window expires.
+    pub on_timeout: OperatorTimeoutOutcome,
 }
 
 impl std::fmt::Display for PollStrategy {
@@ -275,7 +299,7 @@ pub enum ActiveMode {
 // ── Mission outcome ──────────────────────────────────────────────────
 
 /// Terminal mission outcome reported by a mission module or synthesized by the host.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum MissionOutcomeStatus {
     /// The mission published its final artifact successfully.
@@ -286,6 +310,16 @@ pub enum MissionOutcomeStatus {
     TerminalFailure,
     /// The mission requires an operator action before it can continue.
     OperatorActionRequired,
+}
+
+impl OperatorTimeoutOutcome {
+    /// Convert the timeout classification into the corresponding terminal mission status.
+    pub fn mission_status(self) -> MissionOutcomeStatus {
+        match self {
+            Self::RetryableFailure => MissionOutcomeStatus::RetryableFailure,
+            Self::TerminalFailure => MissionOutcomeStatus::TerminalFailure,
+        }
+    }
 }
 
 /// Typed terminal outcome for one acquisition mission.
@@ -303,9 +337,104 @@ pub struct MissionOutcome {
     /// Optional operator task required before the mission can continue.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub operator_action: Option<String>,
+    /// Optional per-attempt override for the operator rescue timeout, in milliseconds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub operator_timeout_ms: Option<u64>,
+    /// Optional per-attempt override for how the runtime should classify an expired rescue window.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub operator_timeout_outcome: Option<OperatorTimeoutOutcome>,
     /// Optional primary artifact kind produced by the mission.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub primary_artifact_kind: Option<String>,
+}
+
+/// Runtime-classified assurance posture for the current or most recent mission attempt.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum MissionRiskPosture {
+    /// The mission objective was met without an active recovery condition.
+    #[default]
+    Nominal,
+    /// The mission is closed safely but remains in an automated recovery loop.
+    Degraded,
+    /// The mission is waiting for a bounded operator rescue action.
+    AwaitingOperator,
+    /// The runtime requires changed conditions before another automated attempt.
+    AwaitingChangedConditions,
+    /// The attempt has been closed safely and will not continue automatically.
+    ClosedSafe,
+}
+
+/// Runtime guidance for how the next mission attempt may proceed.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum NextAttemptPolicy {
+    /// No further automated action is required or planned for this attempt.
+    #[default]
+    None,
+    /// A later attempt may begin after the declared cooldown expires.
+    AfterCooldown,
+    /// A later attempt may begin only after some external condition has changed.
+    AfterObservedChange,
+    /// The mission is paused inside a bounded operator rescue window.
+    OperatorRescue,
+    /// A human or orchestrator must make an explicit decision before retrying.
+    ManualOnly,
+}
+
+/// Stable explanation tags describing why the host closed an attempt the way it did.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum DecisionBasisTag {
+    /// The mission objective was met.
+    ObjectiveMet,
+    /// The mission objective was not met.
+    ObjectiveNotMet,
+    /// The runtime explicitly closed the current attempt into a safe state.
+    SafeStateEntered,
+    /// The runtime applied a cooldown before another attempt is allowed.
+    CooldownApplied,
+    /// The mission module requested a specific retry delay.
+    RetryAfterRequested,
+    /// The mission exhausted declared automation before asking for help.
+    AutomationExhausted,
+    /// The runtime refused further automation until inputs or conditions change.
+    ChangedConditionsRequired,
+    /// The runtime opened a bounded operator rescue window.
+    OperatorRescueOpened,
+    /// The runtime observed that a bounded rescue window has expired.
+    RescueWindowExpired,
+    /// The host synthesized the terminal mission outcome.
+    HostSynthesized,
+    /// The host wrote a durable mission record for the attempt.
+    DurableRecordWritten,
+}
+
+/// Runtime-owned interpretation of the final mission outcome.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct HostDecisionState {
+    /// Stable coarse-grained category used for exit-code and operator reporting.
+    pub category: String,
+    /// Whether the final outcome was synthesized by the host instead of reported by the module.
+    pub synthesized: bool,
+    /// The host-classified assurance posture for the attempt.
+    pub risk_posture: MissionRiskPosture,
+    /// The host-approved path, if any, for a subsequent attempt.
+    pub next_attempt_policy: NextAttemptPolicy,
+    /// Stable explanation tags describing why the host chose this closure.
+    #[serde(default)]
+    pub basis: Vec<DecisionBasisTag>,
+}
+
+/// Resolved operator-rescue window for the current mission attempt.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct OperatorEscalationState {
+    /// Human-readable operator task required to rescue the mission.
+    pub action: String,
+    /// Absolute deadline, in Unix milliseconds, when the rescue window closes.
+    pub deadline_at_ms: u64,
+    /// Final classification to apply if the rescue window expires.
+    pub timeout_outcome: OperatorTimeoutOutcome,
 }
 
 // ── Host-side runtime state snapshot ────────────────────────────────
@@ -344,6 +473,10 @@ pub struct MissionRuntimeState {
     pub last_outcome_at_ms: Option<u64>,
     /// Source of the most recent terminal mission outcome report.
     pub last_outcome_reported_by: Option<String>,
+    /// Runtime-owned interpretation of the most recent terminal mission outcome.
+    pub last_host_decision: Option<HostDecisionState>,
+    /// Active bounded operator-rescue window for the current mission attempt, when one exists.
+    pub pending_operator_action: Option<OperatorEscalationState>,
     /// Populated once describe() has been called.
     pub describe: Option<MissionModuleDescribe>,
     /// Persistent key-value storage for session state.

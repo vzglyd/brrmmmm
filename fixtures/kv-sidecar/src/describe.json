@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
   "logical_id": "brrmmmm.fixture.kv",
-  "name": "KV Fixture Sidecar",
+  "name": "KV Fixture Mission Module",
   "description": "Exercises the host key-value imports and leaves one persisted value behind.",
-  "abi_version": 3,
+  "abi_version": 4,
   "run_modes": ["managed_polling"],
   "state_persistence": "host_persisted",
   "required_env_vars": [],

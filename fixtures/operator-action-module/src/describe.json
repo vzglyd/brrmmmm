@@ -1,0 +1,26 @@
+{
+  "schema_version": 1,
+  "logical_id": "brrmmmm.fixture.operator_action",
+  "name": "Operator Action Fixture Mission Module",
+  "description": "Reports a bounded operator rescue requirement so explainability and timeout classification can be exercised.",
+  "abi_version": 4,
+  "run_modes": ["managed_polling"],
+  "state_persistence": "host_persisted",
+  "required_env_vars": [],
+  "optional_env_vars": [],
+  "params": {
+    "fields": []
+  },
+  "capabilities_needed": [],
+  "poll_strategy": {
+    "kind": "fixed_interval",
+    "interval_secs": 60
+  },
+  "cooldown_policy": null,
+  "artifact_types": ["published_output"],
+  "acquisition_timeout_secs": 30,
+  "operator_fallback": {
+    "timeout_ms": 60000,
+    "on_timeout": "terminal_failure"
+  }
+}

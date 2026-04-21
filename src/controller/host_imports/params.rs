@@ -63,7 +63,7 @@ pub(super) fn register(
                         message: msg.to_string(),
                     });
                 } else {
-                    eprintln!("[sidecar] {msg}");
+                    eprintln!("[mission-module] {msg}");
                 }
             }
             0

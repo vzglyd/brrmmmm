@@ -1,20 +1,20 @@
 {
   "schema_version": 1,
   "logical_id": "brrmmmm.fixture.env",
-  "name": "Env Fixture Sidecar",
+  "name": "Env Fixture Mission Module",
   "description": "Publishes selected environment variables for CLI precedence tests.",
-  "abi_version": 3,
+  "abi_version": 4,
   "run_modes": ["managed_polling"],
   "state_persistence": "volatile",
   "required_env_vars": [],
   "optional_env_vars": [
     {
       "name": "FIXTURE_LABEL",
-      "description": "Primary label read by the sidecar."
+      "description": "Primary label read by the mission module."
     },
     {
       "name": "EXTRA_LABEL",
-      "description": "Secondary label read by the sidecar."
+      "description": "Secondary label read by the mission module."
     }
   ],
   "params": {

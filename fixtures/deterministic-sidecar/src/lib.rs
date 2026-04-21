@@ -15,7 +15,7 @@ extern "C" {
 
 #[no_mangle]
 pub extern "C" fn brrmmmm_module_abi_version() -> u32 {
-    3
+    4
 }
 
 #[no_mangle]

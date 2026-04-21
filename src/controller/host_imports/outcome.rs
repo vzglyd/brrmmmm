@@ -1,6 +1,6 @@
 use std::sync::{Arc, Mutex};
 
-use crate::abi::MissionOutcome;
+use crate::abi::{MissionOutcome, MissionOutcomeStatus};
 use crate::events::{EventSink, diag};
 
 use super::super::io::{
@@ -20,7 +20,9 @@ pub(super) fn register(
         "brrmmmm_host",
         "mission_outcome_report",
         move |mut caller: WasmCaller<'_>, ptr: i32, len: i32| -> i32 {
-            let limits = lock_runtime(&shared, "host_state").config.limits.clone();
+            let host_config = lock_runtime(&shared, "host_state").config.clone();
+            let limits = host_config.limits.clone();
+            let assurance = host_config.assurance;
             let payload = match read_limited_memory_from_caller(
                 &mut caller,
                 ptr,
@@ -30,36 +32,85 @@ pub(super) fn register(
             ) {
                 Ok(payload) => payload,
                 Err(error) => {
-                    diag(
+                    return reject_outcome_report(
+                        &runtime_state,
                         &event_sink,
+                        &assurance,
                         &format!("[brrmmmm] mission_outcome_report memory error: {error}"),
                     );
-                    return -1;
                 }
             };
 
             let outcome = match serde_json::from_slice::<MissionOutcome>(&payload) {
                 Ok(outcome) => outcome,
                 Err(error) => {
-                    diag(
+                    return reject_outcome_report(
+                        &runtime_state,
                         &event_sink,
+                        &assurance,
                         &format!("[brrmmmm] mission_outcome_report decode error: {error}"),
                     );
-                    return -1;
                 }
             };
 
             if outcome.reason_code.trim().is_empty() || outcome.message.trim().is_empty() {
-                diag(
+                return reject_outcome_report(
+                    &runtime_state,
                     &event_sink,
+                    &assurance,
                     "[brrmmmm] mission_outcome_report requires non-empty reason_code and message",
                 );
-                return -1;
             }
 
-            update_mission_outcome_state(&runtime_state, &event_sink, outcome, "module");
-            0
+            match update_mission_outcome_state(
+                &runtime_state,
+                &event_sink,
+                outcome,
+                "module",
+                &assurance,
+            ) {
+                Ok(()) => 0,
+                Err(error) => reject_outcome_report(
+                    &runtime_state,
+                    &event_sink,
+                    &assurance,
+                    &format!("[brrmmmm] mission_outcome_report contract error: {error}"),
+                ),
+            }
         },
     )?;
     Ok(())
+}
+
+fn reject_outcome_report(
+    runtime_state: &Arc<Mutex<MissionRuntimeState>>,
+    event_sink: &EventSink,
+    assurance: &crate::config::RuntimeAssurance,
+    message: &str,
+) -> i32 {
+    diag(event_sink, message);
+    let protocol_failure = MissionOutcome {
+        status: MissionOutcomeStatus::TerminalFailure,
+        reason_code: "mission_protocol_error".to_string(),
+        message: message.to_string(),
+        retry_after_ms: None,
+        operator_action: None,
+        operator_timeout_ms: None,
+        operator_timeout_outcome: None,
+        primary_artifact_kind: None,
+    };
+    if let Err(error) = update_mission_outcome_state(
+        runtime_state,
+        event_sink,
+        protocol_failure,
+        "host",
+        assurance,
+    )
+    {
+        diag(
+            event_sink,
+            &format!("[brrmmmm] failed to persist mission protocol error outcome: {error}"),
+        );
+    }
+    -1
 }

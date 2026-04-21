@@ -31,6 +31,7 @@ The automated gate must prove:
 - docs build with `missing_docs` denied
 - the deterministic mission-module fixture builds
 - `validate`, `inspect`, `run --once`, `run --once --events`, and `explain` work against fixtures
+- `rehearse` works against at least one fixture with operator fallback
 - the TUI build and tests pass
 
 ## Runtime invariants
@@ -42,8 +43,10 @@ Do not release unless tests cover:
 - bounded params, artifacts, KV state, and host payloads
 - validated runtime phase transitions
 - deterministic config/input exit behavior
-- v3 ABI validation, including `brrmmmm_module_start` and `brrmmmm_host.mission_outcome_report`
+- v4 ABI validation, including `brrmmmm_module_start`, `brrmmmm_host.mission_outcome_report`, and bounded operator fallback validation
 - durable mission-record generation for success, timeout, and failure paths
+- host decision rendering with `risk_posture`, `next_attempt_policy`, and `basis`
+- repeat-failure gating for unchanged inputs, including `--override-retry-gate`
 
 ## Manual real-mission gate
 
@@ -65,7 +68,8 @@ Accept the release only if:
 
 - `inspect.json` contains the real contract, including host imports and artifacts
 - `payload.json` is the intended consumer payload
-- `mission.json` is a valid schema-v2 mission record with `outcome`, `host_decision`, and `explanation`
+- `mission.json` is a valid schema-v4 mission record with `host_decision.risk_posture`, `host_decision.next_attempt_policy`, and `host_decision.basis`
 - `events.ndjson` is valid NDJSON with no raw payload line mixed into the stream
-- `brrmmmm explain mission.json` gives the next operator action without replaying the mission
+- `brrmmmm explain mission.json` gives the next operator action or expired rescue classification without replaying the mission
+- `brrmmmm rehearse path/to/mission-module.wasm` renders the expected host-side closure drills
 - the TUI surfaces `published_output`, params, mission outcome, and logs coherently

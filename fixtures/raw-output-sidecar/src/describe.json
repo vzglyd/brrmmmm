@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
   "logical_id": "brrmmmm.fixture.raw_output",
-  "name": "Raw Output Fixture Sidecar",
+  "name": "Raw Output Fixture Mission Module",
   "description": "Publishes non-JSON, non-UTF-8 bytes as the mission result.",
-  "abi_version": 3,
+  "abi_version": 4,
   "run_modes": ["managed_polling"],
   "state_persistence": "volatile",
   "required_env_vars": [],

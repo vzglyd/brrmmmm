@@ -47,6 +47,26 @@ impl Default for RuntimeLimits {
     }
 }
 
+/// Runtime assurance settings that control retry discipline and safe closure.
+#[derive(Clone, Debug)]
+pub struct RuntimeAssurance {
+    /// Number of identical failures with unchanged inputs allowed before the runtime
+    /// requires changed conditions before another automated attempt.
+    pub same_reason_retry_limit: u32,
+    /// Default cooldown, in milliseconds, applied to retryable failures that do
+    /// not specify their own `retry_after_ms`.
+    pub default_retry_after_ms: u64,
+}
+
+impl Default for RuntimeAssurance {
+    fn default() -> Self {
+        Self {
+            same_reason_retry_limit: 3,
+            default_retry_after_ms: 300_000,
+        }
+    }
+}
+
 /// Resolved runtime configuration for one `brrmmmm` process.
 #[derive(Clone, Debug)]
 pub struct Config {
@@ -64,6 +84,8 @@ pub struct Config {
     pub state_dir: PathBuf,
     /// API key used for Anthropic-backed AI requests, when configured.
     pub anthropic_api_key: Option<String>,
+    /// Runtime assurance defaults for retry and safe-state behavior.
+    pub assurance: RuntimeAssurance,
     /// Runtime resource and size limits.
     pub limits: RuntimeLimits,
 }
@@ -119,6 +141,7 @@ impl Config {
             identity_dir,
             state_dir,
             anthropic_api_key,
+            assurance: RuntimeAssurance::default(),
             limits,
         })
     }

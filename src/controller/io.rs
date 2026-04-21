@@ -3,9 +3,11 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use wasmtime::{Caller, Engine, Linker, Store, StoreLimits, StoreLimitsBuilder};
 
 use crate::abi::{
-    ArtifactMeta, MissionOutcome, MissionOutcomeStatus, MissionPhase, MissionRuntimeState,
+    ArtifactMeta, DecisionBasisTag, HostDecisionState, MissionModuleDescribe, MissionOutcome,
+    MissionOutcomeStatus, MissionPhase, MissionRiskPosture, MissionRuntimeState,
+    NextAttemptPolicy, OperatorEscalationState,
 };
-use crate::config::RuntimeLimits;
+use crate::config::{RuntimeAssurance, RuntimeLimits};
 use crate::events::{Event, EventSink, diag, now_ms, now_ts};
 use crate::host::host_request::ErrorKind;
 
@@ -228,46 +230,205 @@ pub(super) fn update_mission_outcome_state(
     event_sink: &EventSink,
     outcome: MissionOutcome,
     reported_by: &str,
-) {
+    assurance: &RuntimeAssurance,
+) -> Result<(), String> {
     let now = now_ms();
-    {
+    let (escalation, host_decision) = {
         let mut state = lock_runtime(runtime_state, "runtime_state");
-        match outcome.status {
+        let escalation = match outcome.status {
             MissionOutcomeStatus::Published => {
                 state.phase = MissionPhase::Publishing;
                 state.last_success_at_ms = Some(now);
                 state.consecutive_failures = 0;
                 state.last_error = None;
+                state.next_allowed_at_ms = None;
+                state.cooldown_until_ms = None;
+                state.backoff_ms = None;
+                state.pending_operator_action = None;
+                None
             }
             MissionOutcomeStatus::RetryableFailure => {
                 state.phase = MissionPhase::Failed;
                 state.last_failure_at_ms = Some(now);
                 state.consecutive_failures = state.consecutive_failures.saturating_add(1);
                 state.last_error = Some(outcome.message.clone());
-                if let Some(retry_after_ms) = outcome.retry_after_ms {
+                state.next_allowed_at_ms = None;
+                state.cooldown_until_ms = None;
+                state.backoff_ms = None;
+                state.pending_operator_action = None;
+                if let Some(retry_after_ms) = resolved_retry_after_ms(&outcome, assurance) {
                     let wake_at = now.saturating_add(retry_after_ms);
                     state.next_allowed_at_ms = Some(wake_at);
                     state.cooldown_until_ms = Some(wake_at);
                     state.backoff_ms = Some(retry_after_ms);
                 }
+                None
             }
-            MissionOutcomeStatus::TerminalFailure
-            | MissionOutcomeStatus::OperatorActionRequired => {
+            MissionOutcomeStatus::TerminalFailure => {
                 state.phase = MissionPhase::Failed;
                 state.last_failure_at_ms = Some(now);
                 state.consecutive_failures = state.consecutive_failures.saturating_add(1);
                 state.last_error = Some(outcome.message.clone());
+                state.next_allowed_at_ms = None;
+                state.cooldown_until_ms = None;
+                state.backoff_ms = None;
+                state.pending_operator_action = None;
+                None
             }
-        }
+            MissionOutcomeStatus::OperatorActionRequired => {
+                let escalation =
+                    resolve_operator_escalation(state.describe.as_ref(), &outcome, now)?;
+                state.phase = MissionPhase::Failed;
+                state.last_failure_at_ms = Some(now);
+                state.consecutive_failures = state.consecutive_failures.saturating_add(1);
+                state.last_error = Some(outcome.message.clone());
+                state.next_allowed_at_ms = None;
+                state.cooldown_until_ms = None;
+                state.backoff_ms = None;
+                state.pending_operator_action = Some(escalation.clone());
+                Some(escalation)
+            }
+        };
+        let host_decision = host_decision_for_outcome(&outcome, reported_by, escalation.as_ref());
         state.last_outcome = Some(outcome.clone());
         state.last_outcome_at_ms = Some(now);
         state.last_outcome_reported_by = Some(reported_by.to_string());
-    }
+        state.last_host_decision = Some(host_decision.clone());
+        (escalation, host_decision)
+    };
     event_sink.emit(Event::MissionOutcome {
         ts: now_ts(),
         reported_by: reported_by.to_string(),
         outcome,
+        host_decision,
+        escalation,
     });
+    Ok(())
+}
+
+pub(super) fn resolved_retry_after_ms(
+    outcome: &MissionOutcome,
+    assurance: &RuntimeAssurance,
+) -> Option<u64> {
+    if outcome.status != MissionOutcomeStatus::RetryableFailure {
+        return None;
+    }
+    if outcome.reason_code == "changed_conditions_required" {
+        return None;
+    }
+    outcome
+        .retry_after_ms
+        .or(Some(assurance.default_retry_after_ms))
+}
+
+pub(super) fn category_for_outcome(outcome: &MissionOutcome) -> &'static str {
+    if outcome.reason_code == "acquisition_timeout" {
+        return "timeout";
+    }
+    category_for_status(outcome.status)
+}
+
+pub(super) fn category_for_status(status: MissionOutcomeStatus) -> &'static str {
+    match status {
+        MissionOutcomeStatus::Published => "published",
+        MissionOutcomeStatus::RetryableFailure => "retryable_failure",
+        MissionOutcomeStatus::TerminalFailure => "terminal_failure",
+        MissionOutcomeStatus::OperatorActionRequired => "operator_action_required",
+    }
+}
+
+pub(super) fn host_decision_for_outcome(
+    outcome: &MissionOutcome,
+    reported_by: &str,
+    escalation: Option<&OperatorEscalationState>,
+) -> HostDecisionState {
+    let mut basis = Vec::new();
+    let synthesized = reported_by == "host";
+    if synthesized {
+        basis.push(DecisionBasisTag::HostSynthesized);
+    }
+
+    let (risk_posture, next_attempt_policy) = match outcome.status {
+        MissionOutcomeStatus::Published => {
+            basis.push(DecisionBasisTag::ObjectiveMet);
+            (MissionRiskPosture::Nominal, NextAttemptPolicy::None)
+        }
+        MissionOutcomeStatus::RetryableFailure => {
+            basis.push(DecisionBasisTag::ObjectiveNotMet);
+            basis.push(DecisionBasisTag::SafeStateEntered);
+            if outcome.reason_code == "changed_conditions_required" {
+                basis.push(DecisionBasisTag::ChangedConditionsRequired);
+                (
+                    MissionRiskPosture::AwaitingChangedConditions,
+                    NextAttemptPolicy::ManualOnly,
+                )
+            } else {
+                if outcome.retry_after_ms.is_some() {
+                    basis.push(DecisionBasisTag::RetryAfterRequested);
+                }
+                basis.push(DecisionBasisTag::CooldownApplied);
+                (
+                    MissionRiskPosture::Degraded,
+                    NextAttemptPolicy::AfterCooldown,
+                )
+            }
+        }
+        MissionOutcomeStatus::TerminalFailure => {
+            basis.push(DecisionBasisTag::ObjectiveNotMet);
+            basis.push(DecisionBasisTag::SafeStateEntered);
+            (MissionRiskPosture::ClosedSafe, NextAttemptPolicy::ManualOnly)
+        }
+        MissionOutcomeStatus::OperatorActionRequired => {
+            basis.push(DecisionBasisTag::ObjectiveNotMet);
+            basis.push(DecisionBasisTag::AutomationExhausted);
+            if escalation.is_some() {
+                basis.push(DecisionBasisTag::OperatorRescueOpened);
+            }
+            (
+                MissionRiskPosture::AwaitingOperator,
+                NextAttemptPolicy::OperatorRescue,
+            )
+        }
+    };
+
+    HostDecisionState {
+        category: category_for_outcome(outcome).to_string(),
+        synthesized,
+        risk_posture,
+        next_attempt_policy,
+        basis,
+    }
+}
+
+fn resolve_operator_escalation(
+    describe: Option<&MissionModuleDescribe>,
+    outcome: &MissionOutcome,
+    now_ms: u64,
+) -> Result<OperatorEscalationState, String> {
+    let policy = describe
+        .and_then(|describe| describe.operator_fallback.as_ref())
+        .ok_or_else(|| {
+            "mission module reported operator_action_required without describe.operator_fallback"
+                .to_string()
+        })?;
+    let timeout_ms = outcome.operator_timeout_ms.unwrap_or(policy.timeout_ms);
+    if timeout_ms == 0 {
+        return Err(
+            "mission module reported operator_action_required with a zero timeout".to_string(),
+        );
+    }
+    let action = outcome
+        .operator_action
+        .clone()
+        .unwrap_or_else(|| "Perform the required operator action before retrying.".to_string());
+    let timeout_outcome = outcome
+        .operator_timeout_outcome
+        .unwrap_or(policy.on_timeout);
+    Ok(OperatorEscalationState {
+        action,
+        deadline_at_ms: now_ms.saturating_add(timeout_ms),
+        timeout_outcome,
+    })
 }
 
 // ── Memory helpers ───────────────────────────────────────────────────

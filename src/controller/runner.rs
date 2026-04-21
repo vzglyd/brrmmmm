@@ -7,17 +7,18 @@ use anyhow::{Context, Result};
 use futures::FutureExt as _;
 use wasmtime::{Engine, Module};
 
-use crate::abi::{MissionOutcome, MissionOutcomeStatus, MissionRuntimeState, PersistenceAuthority};
+use crate::abi::{MissionModuleDescribe, MissionOutcome, MissionOutcomeStatus, MissionRuntimeState, PersistenceAuthority};
 use crate::events::{Event, EventSink, diag, now_ts};
 use crate::host::{ArtifactStore, HostState};
 use crate::identity::{InstallationIdentity, ModuleHash};
 use crate::mission_ledger;
 use crate::persistence;
+use crate::utils::{base64url, sha256_digest};
 
 use super::host_imports::register_brrmmmm_host_on_linker;
 use super::inspection::read_static_describe;
 use super::io::{
-    RuntimePolicy, WasmLinker, WasmStore, build_wasm_store, lock_runtime, update_failure_state,
+    RuntimePolicy, WasmLinker, WasmStore, build_wasm_store, lock_runtime,
     update_mission_outcome_state,
 };
 
@@ -34,6 +35,7 @@ pub(super) struct WasmRunConfig {
     pub(super) module_hash: ModuleHash,
     pub(super) attestation_identity: Option<InstallationIdentity>,
     pub(super) policy: RuntimePolicy,
+    pub(super) override_retry_gate: bool,
 }
 
 pub(super) struct WasmRunContext {
@@ -63,6 +65,7 @@ pub(super) async fn run_wasm_instance(
         module_hash,
         attestation_identity,
         policy,
+        override_retry_gate,
     } = config;
     let WasmRunContext {
         artifact_store,
@@ -115,6 +118,7 @@ pub(super) async fn run_wasm_instance(
             &artifact_store,
             Some(&shared_host_state),
             &error,
+            &brrmmmm_config.assurance,
         );
         return Err(error);
     }
@@ -141,6 +145,7 @@ pub(super) async fn run_wasm_instance(
                 &artifact_store,
                 Some(&shared_host_state),
                 &error,
+                &brrmmmm_config.assurance,
             );
             return Err(error);
         }
@@ -155,6 +160,8 @@ pub(super) async fn run_wasm_instance(
     });
 
     let mut entry_timeout_secs = policy.default_acquisition_timeout_secs;
+    let mut prior_ledger = None;
+    let mut input_fingerprint = None;
     let describe_result = run_guest_phase(
         "read mission module describe",
         call_describe(&instance, &mut store, &policy),
@@ -163,11 +170,16 @@ pub(super) async fn run_wasm_instance(
 
     match describe_result {
         Ok(Some(describe)) => {
+            let ledger = mission_ledger::load(brrmmmm_config, &describe.logical_id, module_hash)
+                .ok()
+                .flatten();
             entry_timeout_secs = describe
                 .acquisition_timeout_secs
                 .filter(|timeout_secs| *timeout_secs > 0)
                 .map(u64::from)
                 .unwrap_or(policy.default_acquisition_timeout_secs);
+            let fingerprint =
+                compute_input_fingerprint(module_hash, params_bytes.as_deref(), &describe, &env_vars);
             event_sink.emit(Event::Describe {
                 ts: now_ts(),
                 describe: describe.clone(),
@@ -179,12 +191,12 @@ pub(super) async fn run_wasm_instance(
             {
                 let mut state = lock_runtime(&runtime_state, "runtime_state");
                 state.describe = Some(describe.clone());
-                if let Ok(Some(ledger)) =
-                    mission_ledger::load(brrmmmm_config, &describe.logical_id, module_hash)
-                {
+                if let Some(ledger) = ledger.as_ref() {
                     mission_ledger::apply_to_runtime_state(&mut state, &ledger);
                 }
             }
+            prior_ledger = ledger;
+            input_fingerprint = Some(fingerprint);
         }
         Ok(None) => diag(
             &event_sink,
@@ -198,9 +210,54 @@ pub(super) async fn run_wasm_instance(
                 &artifact_store,
                 Some(&shared_host_state),
                 &error,
+                &brrmmmm_config.assurance,
             );
             return Err(error);
         }
+    }
+
+    if let (Some(ledger), Some(fingerprint)) = (prior_ledger.as_ref(), input_fingerprint.as_deref())
+        && mission_ledger::repeat_failure_gate_active(ledger, fingerprint)
+        && !override_retry_gate
+    {
+        let outcome = changed_conditions_required_outcome(ledger);
+        if let Err(error) = update_mission_outcome_state(
+            &runtime_state,
+            &event_sink,
+            outcome,
+            "host",
+            &brrmmmm_config.assurance,
+        ) {
+            diag(
+                &event_sink,
+                &format!("[brrmmmm] failed to apply repeat-failure gate: {error}"),
+            );
+        }
+        event_sink.emit(Event::ModuleExit {
+            ts: now_ts(),
+            reason: "repeat_failure_gate".to_string(),
+        });
+        persist_runtime_and_ledger(
+            &runtime_state,
+            &event_sink,
+            brrmmmm_config,
+            &wasm_hash,
+            module_hash,
+            input_fingerprint.as_deref(),
+            prior_ledger.as_ref(),
+        );
+        return Ok(());
+    }
+
+    {
+        let mut state = lock_runtime(&runtime_state, "runtime_state");
+        // Continuity from the ledger informs retries and cooldowns, but a fresh
+        // attempt must not begin with the previous attempt's terminal outcome.
+        state.last_outcome = None;
+        state.last_outcome_at_ms = None;
+        state.last_outcome_reported_by = None;
+        state.last_host_decision = None;
+        state.pending_operator_action = None;
     }
 
     // Set hard epoch deadline: epoch timer increments at ~10 Hz (100ms intervals),
@@ -248,49 +305,34 @@ pub(super) async fn run_wasm_instance(
         &event_sink,
         &artifact_store,
         call_result.as_ref().err(),
+        &brrmmmm_config.assurance,
     );
     event_sink.emit(Event::ModuleExit {
         ts: now_ts(),
         reason: reason.to_string(),
     });
 
-    if let Err(error) = &call_result {
-        update_failure_state(&runtime_state, &error.to_string());
-        if is_host_import_panic(error) {
-            mark_runtime_corrupted(
-                &stop_signal,
-                &artifact_store,
-                Some(&shared_host_state),
-                &event_sink,
-            );
-        }
+    if let Err(error) = &call_result
+        && is_host_import_panic(error)
+    {
+        mark_runtime_corrupted(
+            &stop_signal,
+            &artifact_store,
+            Some(&shared_host_state),
+            &event_sink,
+        );
     }
 
-    // Save persisted state if the sidecar requests it.
     if !call_result.as_ref().err().is_some_and(is_host_import_panic) {
-        let state = lock_runtime(&runtime_state, "runtime_state");
-        let should_persist = state
-            .describe
-            .as_ref()
-            .map(|d| d.state_persistence == PersistenceAuthority::HostPersisted)
-            .unwrap_or(false);
-
-        if should_persist && let Err(error) = persistence::save(brrmmmm_config, &wasm_hash, &state)
-        {
-            diag(
-                &event_sink,
-                &format!("[brrmmmm] failed to persist runtime state: {error:#}"),
-            );
-        }
-        if let Some(describe) = state.describe.as_ref()
-            && let Err(error) =
-                mission_ledger::save(brrmmmm_config, &describe.logical_id, module_hash, &state)
-        {
-            diag(
-                &event_sink,
-                &format!("[brrmmmm] failed to persist mission ledger: {error:#}"),
-            );
-        }
+        persist_runtime_and_ledger(
+            &runtime_state,
+            &event_sink,
+            brrmmmm_config,
+            &wasm_hash,
+            module_hash,
+            input_fingerprint.as_deref(),
+            prior_ledger.as_ref(),
+        );
     } else {
         diag(
             &event_sink,
@@ -374,6 +416,7 @@ fn finish_failed_run(
     artifact_store: &Arc<Mutex<ArtifactStore>>,
     host_state: Option<&Arc<Mutex<HostState>>>,
     error: &anyhow::Error,
+    assurance: &crate::config::RuntimeAssurance,
 ) {
     let reason = if is_host_import_panic(error) {
         mark_runtime_corrupted(stop_signal, artifact_store, host_state, event_sink);
@@ -383,8 +426,7 @@ fn finish_failed_run(
     } else {
         "error"
     };
-    update_failure_state(runtime_state, &error.to_string());
-    ensure_terminal_outcome(runtime_state, event_sink, artifact_store, Some(error));
+    ensure_terminal_outcome(runtime_state, event_sink, artifact_store, Some(error), assurance);
     event_sink.emit(Event::ModuleExit {
         ts: now_ts(),
         reason: reason.to_string(),
@@ -477,6 +519,7 @@ fn ensure_terminal_outcome(
     event_sink: &EventSink,
     artifact_store: &Arc<Mutex<ArtifactStore>>,
     error: Option<&anyhow::Error>,
+    assurance: &crate::config::RuntimeAssurance,
 ) {
     if lock_runtime(runtime_state, "runtime_state")
         .last_outcome
@@ -498,6 +541,8 @@ fn ensure_terminal_outcome(
                 message: format!("{error:#}"),
                 retry_after_ms: None,
                 operator_action: None,
+                operator_timeout_ms: None,
+                operator_timeout_outcome: None,
                 primary_artifact_kind: artifact_kind,
             }
         } else {
@@ -507,6 +552,8 @@ fn ensure_terminal_outcome(
                 message: format!("{error:#}"),
                 retry_after_ms: None,
                 operator_action: None,
+                operator_timeout_ms: None,
+                operator_timeout_outcome: None,
                 primary_artifact_kind: artifact_kind,
             }
         }
@@ -517,6 +564,8 @@ fn ensure_terminal_outcome(
             message: "mission module published an output artifact".to_string(),
             retry_after_ms: None,
             operator_action: None,
+            operator_timeout_ms: None,
+            operator_timeout_outcome: None,
             primary_artifact_kind: artifact_kind,
         }
     } else {
@@ -526,11 +575,127 @@ fn ensure_terminal_outcome(
             message: "mission module exited without reporting a final outcome".to_string(),
             retry_after_ms: None,
             operator_action: None,
+            operator_timeout_ms: None,
+            operator_timeout_outcome: None,
             primary_artifact_kind: None,
         }
     };
 
-    update_mission_outcome_state(runtime_state, event_sink, synthesized, "host");
+    if let Err(error) = update_mission_outcome_state(
+        runtime_state,
+        event_sink,
+        synthesized,
+        "host",
+        assurance,
+    )
+    {
+        diag(
+            event_sink,
+            &format!("[brrmmmm] failed to record synthesized mission outcome: {error}"),
+        );
+    }
+}
+
+fn persist_runtime_and_ledger(
+    runtime_state: &Arc<Mutex<MissionRuntimeState>>,
+    event_sink: &EventSink,
+    brrmmmm_config: &crate::config::Config,
+    wasm_hash: &str,
+    module_hash: ModuleHash,
+    input_fingerprint: Option<&str>,
+    prior_ledger: Option<&mission_ledger::MissionLedgerRecord>,
+) {
+    let state = lock_runtime(runtime_state, "runtime_state");
+    let should_persist = state
+        .describe
+        .as_ref()
+        .map(|describe| describe.state_persistence == PersistenceAuthority::HostPersisted)
+        .unwrap_or(false);
+
+    if should_persist && let Err(error) = persistence::save(brrmmmm_config, wasm_hash, &state) {
+        diag(
+            event_sink,
+            &format!("[brrmmmm] failed to persist runtime state: {error:#}"),
+        );
+    }
+    if let Some(describe) = state.describe.as_ref()
+        && let Err(error) = mission_ledger::save(
+            brrmmmm_config,
+            &describe.logical_id,
+            module_hash,
+            &state,
+            input_fingerprint,
+            prior_ledger,
+            brrmmmm_config.assurance.same_reason_retry_limit,
+        )
+    {
+        diag(
+            event_sink,
+            &format!("[brrmmmm] failed to persist mission ledger: {error:#}"),
+        );
+    }
+}
+
+fn compute_input_fingerprint(
+    module_hash: ModuleHash,
+    params_bytes: Option<&[u8]>,
+    describe: &MissionModuleDescribe,
+    env_vars: &[(String, String)],
+) -> String {
+    let mut material = Vec::new();
+    material.extend_from_slice(module_hash.as_bytes());
+    material.extend_from_slice(b"\0params\0");
+    material.extend_from_slice(params_bytes.unwrap_or_default());
+
+    let env_map = env_vars
+        .iter()
+        .map(|(key, value)| (key.as_str(), value.as_str()))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    let mut env_names = describe
+        .required_env_vars
+        .iter()
+        .chain(describe.optional_env_vars.iter())
+        .map(|env| env.name.as_str())
+        .collect::<Vec<_>>();
+    env_names.sort_unstable();
+    env_names.dedup();
+
+    for name in env_names {
+        material.extend_from_slice(b"\0env\0");
+        material.extend_from_slice(name.as_bytes());
+        material.extend_from_slice(b"\0");
+        if let Some(value) = env_map.get(name) {
+            material.extend_from_slice(value.as_bytes());
+        } else {
+            material.extend_from_slice(b"<unset>");
+        }
+    }
+
+    base64url(&sha256_digest(&material))
+}
+
+fn changed_conditions_required_outcome(
+    ledger: &mission_ledger::MissionLedgerRecord,
+) -> MissionOutcome {
+    let blocked_reason = ledger
+        .repeat_failure_gate
+        .as_ref()
+        .map(|gate| gate.reason_code.as_str())
+        .or_else(|| ledger.last_outcome.as_ref().map(|outcome| outcome.reason_code.as_str()))
+        .unwrap_or("repeated_failure");
+
+    MissionOutcome {
+        status: MissionOutcomeStatus::RetryableFailure,
+        reason_code: "changed_conditions_required".to_string(),
+        message: format!(
+            "automation already hit the same failure ({blocked_reason}) with unchanged inputs; change the inputs, environment, or module before launching another automated attempt"
+        ),
+        retry_after_ms: None,
+        operator_action: None,
+        operator_timeout_ms: None,
+        operator_timeout_outcome: None,
+        primary_artifact_kind: None,
+    }
 }
 
 #[cfg(test)]
@@ -546,12 +711,16 @@ mod tests {
     use super::*;
     use crate::abi::MissionRuntimeState;
 
-    fn describe_json(acquisition_timeout_secs: Option<u32>) -> String {
+    fn describe_json(
+        acquisition_timeout_secs: Option<u32>,
+        operator_fallback: Option<&str>,
+    ) -> String {
         let acquisition = acquisition_timeout_secs
             .map(|value| value.to_string())
             .unwrap_or_else(|| "null".to_string());
+        let operator_fallback = operator_fallback.unwrap_or("null");
         format!(
-            r#"{{"schema_version":1,"logical_id":"test.mission","name":"Test Mission Module","description":"test mission module","abi_version":3,"run_modes":["managed_polling"],"state_persistence":"volatile","required_env_vars":[],"optional_env_vars":[],"params":{{"fields":[]}},"capabilities_needed":[],"poll_strategy":null,"cooldown_policy":null,"artifact_types":["published_output"],"acquisition_timeout_secs":{acquisition}}}"#
+            r#"{{"schema_version":1,"logical_id":"test.mission","name":"Test Mission Module","description":"test mission module","abi_version":4,"run_modes":["managed_polling"],"state_persistence":"volatile","required_env_vars":[],"optional_env_vars":[],"params":{{"fields":[]}},"capabilities_needed":[],"poll_strategy":null,"cooldown_policy":null,"artifact_types":["published_output"],"acquisition_timeout_secs":{acquisition},"operator_fallback":{operator_fallback}}}"#
         )
     }
 
@@ -575,7 +744,7 @@ mod tests {
                 (data (i32.const 16) "{describe_data}")
                 (data (i32.const 1024) "published_output")
                 (func (export "brrmmmm_module_abi_version") (result i32)
-                    i32.const 3)
+                    i32.const 4)
                 (func (export "brrmmmm_module_describe_ptr") (result i32)
                     i32.const 16)
                 (func (export "brrmmmm_module_describe_len") (result i32)
@@ -629,12 +798,13 @@ mod tests {
                 env_vars: Vec::new(),
                 params_bytes,
                 log_channel: false,
-                abi_version: 3,
+                abi_version: 4,
                 wasm_size_bytes: wat.len(),
                 wasm_hash: "test-wasm".to_string(),
                 module_hash: ModuleHash([0u8; 32]),
                 attestation_identity: None,
                 policy,
+                override_retry_gate: false,
             },
             WasmRunContext {
                 artifact_store: artifact_store.clone(),
@@ -678,7 +848,7 @@ mod tests {
                 call $artifact_publish
                 drop
             "#,
-            &describe_json(None),
+            &describe_json(None, None),
         );
 
         let (result, _runtime_state, artifact_store) =
@@ -694,7 +864,7 @@ mod tests {
 
     #[test]
     fn params_without_host_imports_are_rejected() {
-        let wat = wat_module("", "", &describe_json(None));
+        let wat = wat_module("", "", &describe_json(None, None));
 
         let (result, runtime_state, _artifact_store) =
             run_test_wat(&wat, Some(br#"{"x":1}"#.to_vec()), RuntimePolicy::default());
@@ -741,7 +911,7 @@ mod tests {
                 memory.grow
                 drop
             "#,
-            &describe_json(None),
+            &describe_json(None, None),
         );
 
         let (result, runtime_state, _artifact_store) = run_test_wat(&wat, None, policy);
@@ -768,7 +938,7 @@ mod tests {
                 (loop $spin
                     br $spin)
             "#,
-            &describe_json(None),
+            &describe_json(None, None),
         );
 
         let (result, runtime_state, _artifact_store) = run_test_wat(&wat, None, policy);
@@ -781,6 +951,96 @@ mod tests {
                 .as_ref()
                 .is_some()
         );
+    }
+
+    #[test]
+    fn operator_rescue_outcome_sets_pending_escalation_state() {
+        let outcome = r#"{"status":"operator_action_required","reason_code":"captcha_blocked","message":"automation exhausted","operator_action":"Complete the upstream login challenge.","operator_timeout_ms":50,"operator_timeout_outcome":"retryable_failure"}"#;
+        let describe = describe_json(
+            None,
+            Some(r#"{"timeout_ms":60000,"on_timeout":"terminal_failure"}"#),
+        );
+        let outcome_len = outcome.len();
+        let wat = format!(
+            r#"(module
+                (import "brrmmmm_host" "mission_outcome_report" (func $mission_outcome_report (param i32 i32) (result i32)))
+                (memory (export "memory") 1)
+                (data (i32.const 16) "{describe_data}")
+                (data (i32.const 2048) "{outcome_data}")
+                (func (export "brrmmmm_module_abi_version") (result i32)
+                    i32.const 4)
+                (func (export "brrmmmm_module_describe_ptr") (result i32)
+                    i32.const 16)
+                (func (export "brrmmmm_module_describe_len") (result i32)
+                    i32.const {describe_len})
+                (func (export "brrmmmm_module_start")
+                    i32.const 2048
+                    i32.const {outcome_len}
+                    call $mission_outcome_report
+                    drop)
+            )"#,
+            describe_data = wat_bytes(describe.as_bytes()),
+            describe_len = describe.len(),
+            outcome_data = wat_bytes(outcome.as_bytes()),
+            outcome_len = outcome_len,
+        );
+
+        let (result, runtime_state, _artifact_store) =
+            run_test_wat(&wat, None, RuntimePolicy::default());
+
+        assert!(result.is_ok(), "run failed: {result:?}");
+        let state = lock_runtime(&runtime_state, "runtime_state").clone();
+        assert_eq!(
+            state.last_outcome.expect("outcome").status,
+            MissionOutcomeStatus::OperatorActionRequired
+        );
+        let escalation = state.pending_operator_action.expect("pending escalation");
+        assert_eq!(escalation.action, "Complete the upstream login challenge.");
+        assert_eq!(
+            escalation.timeout_outcome.mission_status(),
+            MissionOutcomeStatus::RetryableFailure
+        );
+        assert!(escalation.deadline_at_ms >= state.last_outcome_at_ms.unwrap_or_default());
+    }
+
+    #[test]
+    fn operator_rescue_without_declared_fallback_is_rejected() {
+        let outcome = r#"{"status":"operator_action_required","reason_code":"captcha_blocked","message":"automation exhausted","operator_action":"Complete the upstream login challenge."}"#;
+        let describe = describe_json(None, None);
+        let outcome_len = outcome.len();
+        let wat = format!(
+            r#"(module
+                (import "brrmmmm_host" "mission_outcome_report" (func $mission_outcome_report (param i32 i32) (result i32)))
+                (memory (export "memory") 1)
+                (data (i32.const 16) "{describe_data}")
+                (data (i32.const 2048) "{outcome_data}")
+                (func (export "brrmmmm_module_abi_version") (result i32)
+                    i32.const 4)
+                (func (export "brrmmmm_module_describe_ptr") (result i32)
+                    i32.const 16)
+                (func (export "brrmmmm_module_describe_len") (result i32)
+                    i32.const {describe_len})
+                (func (export "brrmmmm_module_start")
+                    i32.const 2048
+                    i32.const {outcome_len}
+                    call $mission_outcome_report
+                    drop)
+            )"#,
+            describe_data = wat_bytes(describe.as_bytes()),
+            describe_len = describe.len(),
+            outcome_data = wat_bytes(outcome.as_bytes()),
+            outcome_len = outcome_len,
+        );
+
+        let (result, runtime_state, _artifact_store) =
+            run_test_wat(&wat, None, RuntimePolicy::default());
+
+        assert!(result.is_ok(), "run failed: {result:?}");
+        let state = lock_runtime(&runtime_state, "runtime_state").clone();
+        let outcome = state.last_outcome.expect("terminal outcome");
+        assert_eq!(outcome.status, MissionOutcomeStatus::TerminalFailure);
+        assert_eq!(outcome.reason_code, "mission_protocol_error");
+        assert!(state.pending_operator_action.is_none());
     }
 
     #[test]

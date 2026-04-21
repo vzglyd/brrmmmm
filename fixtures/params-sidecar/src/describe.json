@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
   "logical_id": "brrmmmm.fixture.params",
-  "name": "Params Fixture Sidecar",
+  "name": "Params Fixture Mission Module",
   "description": "Reads host-owned params and republishes them for CLI precedence tests.",
-  "abi_version": 3,
+  "abi_version": 4,
   "run_modes": ["managed_polling"],
   "state_persistence": "volatile",
   "required_env_vars": [],

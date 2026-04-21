@@ -31,6 +31,24 @@ pub(crate) fn cmd_validate(wasm_path: &Path, output: OutputFormat) -> Result<()>
                 if !describe.run_modes.is_empty() {
                     eprintln!("[brrmmmm]   modes: {}", describe.run_modes.join(", "));
                 }
+                eprintln!(
+                    "[brrmmmm]   persistence: {}",
+                    serde_json::to_string(&describe.state_persistence)?
+                        .trim_matches('"')
+                        .to_string()
+                );
+                if let Some(timeout_secs) = describe.acquisition_timeout_secs {
+                    eprintln!("[brrmmmm]   acquisition timeout: {timeout_secs}s");
+                }
+                if let Some(fallback) = &describe.operator_fallback {
+                    eprintln!("[brrmmmm]   operator timeout: {} ms", fallback.timeout_ms);
+                    eprintln!(
+                        "[brrmmmm]   operator timeout outcome: {}",
+                        serde_json::to_string(&fallback.on_timeout)?
+                            .trim_matches('"')
+                            .to_string()
+                    );
+                }
             }
             if !inspection.brrmmmm_exports.is_empty() {
                 eprintln!(
@@ -55,6 +73,9 @@ pub(crate) fn cmd_validate(wasm_path: &Path, output: OutputFormat) -> Result<()>
                 "name": describe.map(|value| &value.name),
                 "logical_id": describe.map(|value| &value.logical_id),
                 "modes": describe.map(|value| &value.run_modes),
+                "persistence": describe.and_then(|value| serde_json::to_value(&value.state_persistence).ok()),
+                "acquisition_timeout_secs": describe.and_then(|value| value.acquisition_timeout_secs),
+                "operator_fallback": describe.and_then(|value| value.operator_fallback.as_ref()),
                 "exports": inspection.brrmmmm_exports,
                 "host_imports": inspection.host_imports,
             });
@@ -76,6 +97,24 @@ pub(crate) fn cmd_validate(wasm_path: &Path, output: OutputFormat) -> Result<()>
                 rows.push(("logical_id", describe.logical_id.clone()));
                 if !describe.run_modes.is_empty() {
                     rows.push(("modes", describe.run_modes.join(", ")));
+                }
+                rows.push((
+                    "persistence",
+                    serde_json::to_string(&describe.state_persistence)?
+                        .trim_matches('"')
+                        .to_string(),
+                ));
+                if let Some(timeout_secs) = describe.acquisition_timeout_secs {
+                    rows.push(("acq_timeout", format!("{timeout_secs}s")));
+                }
+                if let Some(fallback) = &describe.operator_fallback {
+                    rows.push(("operator_ttl", format!("{} ms", fallback.timeout_ms)));
+                    rows.push((
+                        "operator_on",
+                        serde_json::to_string(&fallback.on_timeout)?
+                            .trim_matches('"')
+                            .to_string(),
+                    ));
                 }
             }
             if !inspection.brrmmmm_exports.is_empty() {

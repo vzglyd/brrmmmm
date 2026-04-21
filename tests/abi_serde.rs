@@ -1,7 +1,9 @@
 use brrmmmm::abi::{
-    ActiveMode, ArtifactMeta, CooldownPolicy, EnvVarSpec, GuestEvent, MissionModuleDescribe,
-    MissionParamField, MissionParamOption, MissionParamType, MissionParamsSchema, MissionPhase,
-    MissionRuntimeState, PersistenceAuthority, PollStrategy,
+    ActiveMode, ArtifactMeta, CooldownPolicy, DecisionBasisTag, EnvVarSpec, GuestEvent,
+    HostDecisionState, MissionModuleDescribe, MissionParamField, MissionParamOption,
+    MissionParamType, MissionParamsSchema, MissionPhase, MissionRiskPosture, MissionRuntimeState,
+    NextAttemptPolicy, OperatorFallbackPolicy, OperatorTimeoutOutcome, PersistenceAuthority,
+    PollStrategy,
 };
 
 fn roundtrip<T: serde::Serialize + for<'de> serde::Deserialize<'de>>(value: &T) -> String {
@@ -114,12 +116,93 @@ fn cooldown_policy_roundtrip() {
 }
 
 #[test]
+fn operator_fallback_policy_roundtrip() {
+    let policy = OperatorFallbackPolicy {
+        timeout_ms: 15_000,
+        on_timeout: OperatorTimeoutOutcome::RetryableFailure,
+    };
+    let json = roundtrip(&policy);
+    let decoded: OperatorFallbackPolicy = serde_json::from_str(&json).unwrap();
+    assert_eq!(decoded.timeout_ms, 15_000);
+    assert_eq!(decoded.on_timeout, OperatorTimeoutOutcome::RetryableFailure);
+}
+
+#[test]
+fn mission_risk_posture_roundtrips_all_variants() {
+    for posture in [
+        MissionRiskPosture::Nominal,
+        MissionRiskPosture::Degraded,
+        MissionRiskPosture::AwaitingOperator,
+        MissionRiskPosture::AwaitingChangedConditions,
+        MissionRiskPosture::ClosedSafe,
+    ] {
+        let json = roundtrip(&posture);
+        let decoded: MissionRiskPosture = serde_json::from_str(&json).unwrap();
+        assert_eq!(decoded, posture);
+    }
+}
+
+#[test]
+fn next_attempt_policy_roundtrips_all_variants() {
+    for policy in [
+        NextAttemptPolicy::None,
+        NextAttemptPolicy::AfterCooldown,
+        NextAttemptPolicy::AfterObservedChange,
+        NextAttemptPolicy::OperatorRescue,
+        NextAttemptPolicy::ManualOnly,
+    ] {
+        let json = roundtrip(&policy);
+        let decoded: NextAttemptPolicy = serde_json::from_str(&json).unwrap();
+        assert_eq!(decoded, policy);
+    }
+}
+
+#[test]
+fn decision_basis_tag_roundtrips_all_variants() {
+    for tag in [
+        DecisionBasisTag::ObjectiveMet,
+        DecisionBasisTag::ObjectiveNotMet,
+        DecisionBasisTag::SafeStateEntered,
+        DecisionBasisTag::CooldownApplied,
+        DecisionBasisTag::RetryAfterRequested,
+        DecisionBasisTag::AutomationExhausted,
+        DecisionBasisTag::ChangedConditionsRequired,
+        DecisionBasisTag::OperatorRescueOpened,
+        DecisionBasisTag::RescueWindowExpired,
+        DecisionBasisTag::HostSynthesized,
+        DecisionBasisTag::DurableRecordWritten,
+    ] {
+        let json = roundtrip(&tag);
+        let decoded: DecisionBasisTag = serde_json::from_str(&json).unwrap();
+        assert_eq!(decoded, tag);
+    }
+}
+
+#[test]
+fn host_decision_state_roundtrip() {
+    let decision = HostDecisionState {
+        category: "retryable_failure".to_string(),
+        synthesized: true,
+        risk_posture: MissionRiskPosture::AwaitingChangedConditions,
+        next_attempt_policy: NextAttemptPolicy::ManualOnly,
+        basis: vec![
+            DecisionBasisTag::HostSynthesized,
+            DecisionBasisTag::ChangedConditionsRequired,
+        ],
+    };
+    let json = roundtrip(&decision);
+    let decoded: HostDecisionState = serde_json::from_str(&json).unwrap();
+    assert_eq!(decoded, decision);
+}
+
+#[test]
 fn sidecar_runtime_state_default_roundtrip() {
     let state = MissionRuntimeState::default();
     let json = serde_json::to_string(&state).unwrap();
     let decoded: MissionRuntimeState = serde_json::from_str(&json).unwrap();
     let json2 = serde_json::to_string(&decoded).unwrap();
     assert_eq!(json, json2);
+    assert!(decoded.last_host_decision.is_none());
 }
 
 #[test]
@@ -302,9 +385,9 @@ fn sidecar_describe_acquisition_timeout_defaults_to_none() {
     let describe: MissionModuleDescribe = serde_json::from_value(serde_json::json!({
         "schema_version": 1,
         "logical_id": "brrmmmm.test",
-        "name": "Test Sidecar",
-        "description": "Test sidecar",
-        "abi_version": 1,
+        "name": "Test Mission Module",
+        "description": "Test mission module",
+        "abi_version": 4,
         "run_modes": ["managed_polling"],
         "state_persistence": "volatile",
         "required_env_vars": [],
@@ -325,9 +408,9 @@ fn sidecar_describe_acquisition_timeout_roundtrips() {
     let describe: MissionModuleDescribe = serde_json::from_value(serde_json::json!({
         "schema_version": 1,
         "logical_id": "brrmmmm.test",
-        "name": "Test Sidecar",
-        "description": "Test sidecar",
-        "abi_version": 1,
+        "name": "Test Mission Module",
+        "description": "Test mission module",
+        "abi_version": 4,
         "run_modes": ["managed_polling"],
         "state_persistence": "volatile",
         "required_env_vars": [],
@@ -335,6 +418,7 @@ fn sidecar_describe_acquisition_timeout_roundtrips() {
         "params": {"fields": []},
         "capabilities_needed": ["browser", "ai"],
         "acquisition_timeout_secs": 90,
+        "operator_fallback": {"timeout_ms": 15000, "on_timeout": "terminal_failure"},
         "poll_strategy": null,
         "cooldown_policy": null,
         "artifact_types": ["published_output"]
@@ -345,4 +429,11 @@ fn sidecar_describe_acquisition_timeout_roundtrips() {
     let decoded: MissionModuleDescribe = serde_json::from_str(&json).unwrap();
 
     assert_eq!(decoded.acquisition_timeout_secs, Some(90));
+    assert_eq!(
+        decoded
+            .operator_fallback
+            .expect("operator fallback")
+            .on_timeout,
+        OperatorTimeoutOutcome::TerminalFailure
+    );
 }

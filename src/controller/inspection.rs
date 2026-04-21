@@ -6,7 +6,7 @@ use anyhow::{Context, Result};
 use serde::Serialize;
 use wasmtime::{Config, Engine, Module};
 
-use crate::abi::{ABI_VERSION_V3, ActiveMode, MissionModuleDescribe, MissionRuntimeState};
+use crate::abi::{ABI_VERSION_V4, ActiveMode, MissionModuleDescribe, MissionRuntimeState};
 use crate::events::EventSink;
 use crate::host::HostState;
 
@@ -63,15 +63,15 @@ async fn inspect_module_contract_async(wasm_path: &str) -> Result<MissionInspect
         .any(|e| e.name() == "brrmmmm_module_abi_version");
     if !has_abi_export {
         anyhow::bail!(
-            "WASM module does not export brrmmmm_module_abi_version; supported ABI version is {ABI_VERSION_V3}"
+            "WASM module does not export brrmmmm_module_abi_version; supported ABI version is {ABI_VERSION_V4}"
         );
     }
 
     let (mut store, instance) = instantiate_for_inspection(&engine, &module).await?;
     let exported_abi = call_exported_abi_version(&instance, &mut store).await?;
-    if exported_abi != ABI_VERSION_V3 {
+    if exported_abi != ABI_VERSION_V4 {
         anyhow::bail!(
-            "unsupported mission-module ABI version {exported_abi}; supported ABI version is {ABI_VERSION_V3}"
+            "unsupported mission-module ABI version {exported_abi}; supported ABI version is {ABI_VERSION_V4}"
         );
     }
 
@@ -148,14 +148,21 @@ fn validate_describe_contract(describe: &MissionModuleDescribe) -> Result<()> {
     if describe.description.trim().is_empty() {
         anyhow::bail!("describe.description is required");
     }
-    if describe.abi_version != 0 && describe.abi_version != ABI_VERSION_V3 {
+    if describe.abi_version != 0 && describe.abi_version != ABI_VERSION_V4 {
         anyhow::bail!(
-            "describe.abi_version must be {ABI_VERSION_V3} when present, got {}",
+            "describe.abi_version must be {ABI_VERSION_V4} when present, got {}",
             describe.abi_version
         );
     }
     if describe.acquisition_timeout_secs == Some(0) {
         anyhow::bail!("describe.acquisition_timeout_secs must be greater than zero when present");
+    }
+    if describe
+        .operator_fallback
+        .as_ref()
+        .is_some_and(|fallback| fallback.timeout_ms == 0)
+    {
+        anyhow::bail!("describe.operator_fallback.timeout_ms must be greater than zero");
     }
     for mode in &describe.run_modes {
         match mode.as_str() {
@@ -290,4 +297,57 @@ fn find_entry_export(module: &Module) -> Option<String> {
     module
         .get_export("brrmmmm_module_start")
         .map(|_| "brrmmmm_module_start".to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::abi::{OperatorFallbackPolicy, OperatorTimeoutOutcome, PersistenceAuthority};
+
+    fn valid_inspection() -> MissionInspection {
+        MissionInspection {
+            wasm_path: "test.wasm".to_string(),
+            wasm_size_bytes: 1,
+            abi_version: ABI_VERSION_V4,
+            active_mode: ActiveMode::ManagedPolling,
+            entrypoint: Some("brrmmmm_module_start".to_string()),
+            brrmmmm_exports: vec!["brrmmmm_module_start".to_string()],
+            host_imports: vec!["mission_outcome_report".to_string()],
+            describe: Some(MissionModuleDescribe {
+                schema_version: 1,
+                logical_id: "brrmmmm.test".to_string(),
+                name: "Test Mission Module".to_string(),
+                description: "Test mission module".to_string(),
+                abi_version: ABI_VERSION_V4,
+                run_modes: vec!["managed_polling".to_string()],
+                state_persistence: PersistenceAuthority::Volatile,
+                required_env_vars: vec![],
+                optional_env_vars: vec![],
+                params: None,
+                capabilities_needed: vec![],
+                poll_strategy: None,
+                cooldown_policy: None,
+                artifact_types: vec!["published_output".to_string()],
+                acquisition_timeout_secs: Some(30),
+                operator_fallback: None,
+            }),
+            diagnostics: vec![],
+        }
+    }
+
+    #[test]
+    fn validate_rejects_zero_operator_fallback_timeout() {
+        let mut inspection = valid_inspection();
+        inspection.describe.as_mut().unwrap().operator_fallback = Some(OperatorFallbackPolicy {
+            timeout_ms: 0,
+            on_timeout: OperatorTimeoutOutcome::RetryableFailure,
+        });
+
+        let error = validate_module_inspection(&inspection).expect_err("validation must fail");
+        assert!(
+            error
+                .to_string()
+                .contains("describe.operator_fallback.timeout_ms must be greater than zero")
+        );
+    }
 }

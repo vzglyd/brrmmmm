@@ -30,6 +30,7 @@ EXAMPLES:
   brrmmmm inspect  mission-module.wasm --output table
   brrmmmm validate mission-module.wasm
   brrmmmm validate mission-module.wasm --output table
+  brrmmmm rehearse mission-module.wasm
   brrmmmm explain  mission.json",
     version
 )]
@@ -98,6 +99,10 @@ pub(crate) enum Commands {
         /// Disable structured NDJSON events configured by default
         #[arg(long = "no-events", conflicts_with = "events")]
         no_events: bool,
+
+        /// Allow one attempt even when the repeat-failure gate requires changed conditions
+        #[arg(long)]
+        override_retry_gate: bool,
     },
 
     /// Inspect a mission-module WASM module and print its contract
@@ -109,6 +114,13 @@ pub(crate) enum Commands {
 
     /// Validate that a mission-module WASM module loads correctly
     Validate {
+        /// Path to the mission-module `.wasm` file. Falls back to mission.wasm in ./brrmmmm.toml.
+        #[arg(value_name = "WASM", value_hint = ValueHint::FilePath)]
+        wasm_path: Option<PathBuf>,
+    },
+
+    /// Rehearse host decision paths without launching a live mission attempt
+    Rehearse {
         /// Path to the mission-module `.wasm` file. Falls back to mission.wasm in ./brrmmmm.toml.
         #[arg(value_name = "WASM", value_hint = ValueHint::FilePath)]
         wasm_path: Option<PathBuf>,

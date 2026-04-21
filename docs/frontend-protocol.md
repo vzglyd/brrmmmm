@@ -36,7 +36,7 @@ Frontends should handle at least these event types:
 | `request_start` / `request_done` / `request_error` | Network request lifecycle. |
 | `artifact_received` | New `raw_source_payload`, `normalized_payload`, or `published_output`. |
 | `sleep_start` | Runtime entered a managed cooldown or backoff. |
-| `mission_outcome` | Final typed mission outcome, reported by the module or synthesized by the host. |
+| `mission_outcome` | Final typed mission outcome plus the runtime-owned `host_decision`, including bounded operator-rescue metadata when the mission escalates to a human. |
 | `module_exit` | Wasm execution terminated. |
 | `log` | Runtime or mission-module log line. |
 
@@ -56,5 +56,5 @@ primary consumer contract.
 
 | Mode | Meaning |
 |---|---|
-| `managed_polling` | The module declares params, artifacts, cooldown policy, and capabilities; `inspect` is the contract source. |
+| `managed_polling` | The module declares params, artifacts, cooldown policy, operator fallback, and capabilities; `inspect` is the contract source. |
 | `interactive` | Params may change while the module is alive; the module should re-read `params_len` / `params_read`. |

@@ -42,6 +42,7 @@ fn run(cli: Cli) -> Result<()> {
                     None,
                     None,
                     None,
+                    false,
                     &config.limits,
                 )?;
                 execute_run(resolved, cli.output.unwrap_or(OutputFormat::Text), &config)
@@ -63,6 +64,7 @@ fn run(cli: Cli) -> Result<()> {
                 no_log_channel,
                 events,
                 no_events,
+                override_retry_gate,
             } => {
                 let resolved = resolve_run(
                     discovered_config.as_ref(),
@@ -73,6 +75,7 @@ fn run(cli: Cli) -> Result<()> {
                     result_path.as_deref(),
                     bool_override(events, no_events),
                     bool_override(log_channel, no_log_channel),
+                    override_retry_gate,
                     &config.limits,
                 )?;
                 execute_run(resolved, cli.output.unwrap_or(OutputFormat::Text), &config)
@@ -80,10 +83,16 @@ fn run(cli: Cli) -> Result<()> {
             Commands::Inspect { wasm_path } => cmd::cmd_inspect(
                 &resolve_wasm_path(discovered_config.as_ref(), wasm_path.as_deref())?,
                 cli.output.unwrap_or(OutputFormat::Json),
+                &config,
             ),
             Commands::Validate { wasm_path } => cmd::cmd_validate(
                 &resolve_wasm_path(discovered_config.as_ref(), wasm_path.as_deref())?,
                 cli.output.unwrap_or(OutputFormat::Text),
+            ),
+            Commands::Rehearse { wasm_path } => cmd::cmd_rehearse(
+                &resolve_wasm_path(discovered_config.as_ref(), wasm_path.as_deref())?,
+                cli.output.unwrap_or(OutputFormat::Text),
+                &config,
             ),
             Commands::Explain { record_path } => {
                 cmd::cmd_explain(&record_path, cli.output.unwrap_or(OutputFormat::Text))
@@ -104,6 +113,7 @@ fn execute_run(
         mission_recorder: resolved.mission_recorder,
         log_channel: resolved.log_channel,
         events_mode: resolved.events_mode,
+        override_retry_gate: resolved.override_retry_gate,
         output,
         config,
     })
@@ -131,6 +141,7 @@ fn resolve_run(
     result_path: Option<&std::path::Path>,
     events_override: Option<bool>,
     log_channel_override: Option<bool>,
+    override_retry_gate: bool,
     limits: &brrmmmm::config::RuntimeLimits,
 ) -> Result<app_config::ResolvedRun> {
     if let Some(discovered_config) = discovered_config {
@@ -142,6 +153,7 @@ fn resolve_run(
             result_path,
             events_override,
             log_channel_override,
+            override_retry_gate,
             limits,
         )
     } else {
@@ -153,6 +165,7 @@ fn resolve_run(
             result_path,
             events_override,
             log_channel_override,
+            override_retry_gate,
             limits,
         )
     }

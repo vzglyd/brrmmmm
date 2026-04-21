@@ -19,6 +19,7 @@ pub(crate) struct RunOptions<'a> {
     pub(crate) mission_recorder: Option<MissionRecorder>,
     pub(crate) log_channel: bool,
     pub(crate) events_mode: bool,
+    pub(crate) override_retry_gate: bool,
     pub(crate) output: OutputFormat,
     pub(crate) config: &'a Config,
 }
@@ -31,6 +32,7 @@ pub(crate) fn cmd_run(options: RunOptions<'_>) -> Result<()> {
         mission_recorder,
         log_channel,
         events_mode,
+        override_retry_gate,
         output,
         config,
     } = options;
@@ -55,6 +57,7 @@ pub(crate) fn cmd_run(options: RunOptions<'_>) -> Result<()> {
         mission_recorder,
         log_channel,
         events_mode,
+        override_retry_gate,
         output,
         sink,
         config,
@@ -68,6 +71,7 @@ struct RunOnceOptions<'a> {
     mission_recorder: Option<MissionRecorder>,
     log_channel: bool,
     events_mode: bool,
+    override_retry_gate: bool,
     output: OutputFormat,
     sink: EventSink,
     config: &'a Config,
@@ -81,6 +85,7 @@ fn run_once(options: RunOnceOptions<'_>) -> Result<()> {
         mission_recorder,
         log_channel,
         events_mode,
+        override_retry_gate,
         output,
         sink,
         config,
@@ -98,6 +103,7 @@ fn run_once(options: RunOnceOptions<'_>) -> Result<()> {
         env_vars,
         params_bytes.clone(),
         log_channel,
+        override_retry_gate,
         sink,
         config,
     )
@@ -137,13 +143,15 @@ fn run_once(options: RunOnceOptions<'_>) -> Result<()> {
                     if completion.outcome.reason_code == "acquisition_timeout" {
                         Err(BrrmmmmError::Timeout(completion.outcome.message).into())
                     } else {
-                        Err(BrrmmmmError::RuntimeFailure(completion.outcome.message).into())
+                        Err(BrrmmmmError::RetryableFailure(completion.outcome.message).into())
                     }
                 }
-                MissionOutcomeStatus::TerminalFailure
-                | MissionOutcomeStatus::OperatorActionRequired => {
+                MissionOutcomeStatus::TerminalFailure => {
                     Err(BrrmmmmError::RuntimeFailure(completion.outcome.message).into())
                 }
+                MissionOutcomeStatus::OperatorActionRequired => Err(
+                    BrrmmmmError::OperatorActionRequired(completion.outcome.message).into(),
+                ),
             };
         }
 

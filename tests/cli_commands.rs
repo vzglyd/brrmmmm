@@ -64,7 +64,7 @@ fn validate_accepts_deterministic_fixture() {
     );
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("WASM module validates successfully"));
-    assert!(stderr.contains("Deterministic Fixture Sidecar"));
+    assert!(stderr.contains("Deterministic Fixture Mission Module"));
     assert!(stderr.contains("managed_polling, interactive"));
 }
 
@@ -80,13 +80,15 @@ fn inspect_prints_real_contract_json() {
         String::from_utf8_lossy(&output.stderr)
     );
     let json: Value = serde_json::from_slice(&output.stdout).expect("inspect stdout is JSON");
-    assert_eq!(json["abi_version"], 3);
+    assert_eq!(json["abi_version"], 4);
     assert_eq!(
         json["describe"]["logical_id"],
         "brrmmmm.fixture.deterministic"
     );
     assert_eq!(json["describe"]["artifact_types"][2], "published_output");
     assert_eq!(json["entrypoint"], "brrmmmm_module_start");
+    assert_eq!(json["assurance_defaults"]["same_reason_retry_limit"], 3);
+    assert_eq!(json["assurance_defaults"]["default_retry_after_ms"], 300000);
     assert!(json["host_imports"].as_array().is_some_and(|imports| {
         imports
             .iter()
@@ -132,6 +134,11 @@ fn events_mode_outputs_ndjson_without_payload_leakage() {
     assert!(has_event(&events, "env_snapshot"));
     assert!(has_event(&events, "started"));
     assert!(has_event(&events, "describe"));
+    assert!(events.iter().any(|event| {
+        event["type"] == "mission_outcome"
+            && event["host_decision"]["risk_posture"] == "nominal"
+            && event["host_decision"]["next_attempt_policy"] == "none"
+    }));
     assert!(events.iter().any(|event| {
         event["type"] == "artifact_received" && event["kind"] == "published_output"
     }));

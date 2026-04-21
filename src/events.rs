@@ -6,7 +6,10 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::Serialize;
 
-use crate::abi::{ArtifactMeta, MissionModuleDescribe, MissionOutcome, MissionPhase};
+use crate::abi::{
+    ArtifactMeta, HostDecisionState, MissionModuleDescribe, MissionOutcome, MissionPhase,
+    OperatorEscalationState,
+};
 
 // ── Timestamp helpers ────────────────────────────────────────────────
 
@@ -173,6 +176,10 @@ pub enum Event {
         reported_by: String,
         /// Structured terminal mission outcome.
         outcome: MissionOutcome,
+        /// Runtime-owned interpretation of the outcome and next-attempt rules.
+        host_decision: HostDecisionState,
+        /// Resolved bounded operator-rescue window for this attempt, when one exists.
+        escalation: Option<OperatorEscalationState>,
     },
     /// Emitted when the mission module's WASM execution terminates.
     ModuleExit {

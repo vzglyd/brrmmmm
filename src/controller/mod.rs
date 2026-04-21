@@ -1,4 +1,4 @@
-//! Sidecar inspection, validation, and runtime control APIs.
+//! Mission-module inspection, validation, and runtime control APIs.
 
 mod host_imports;
 mod inspection;
@@ -16,7 +16,7 @@ use std::thread;
 use anyhow::{Context, Result};
 use wasmtime::{Config as WasmtimeConfig, Engine, Module};
 
-use crate::abi::{ABI_VERSION_V3, ActiveMode, MissionOutcome, MissionPhase, MissionRuntimeState};
+use crate::abi::{ABI_VERSION_V4, ActiveMode, MissionOutcome, MissionPhase, MissionRuntimeState};
 use crate::config::Config;
 use crate::events::EventSink;
 use crate::host::ArtifactStore;
@@ -67,6 +67,7 @@ impl MissionController {
         env_vars: Vec<(String, String)>,
         params_bytes: Option<Vec<u8>>,
         log_channel: bool,
+        override_retry_gate: bool,
         event_sink: EventSink,
         config: &Config,
     ) -> Result<Self> {
@@ -101,6 +102,8 @@ impl MissionController {
         runtime_state.last_outcome = None;
         runtime_state.last_outcome_at_ms = None;
         runtime_state.last_outcome_reported_by = None;
+        runtime_state.last_host_decision = None;
+        runtime_state.pending_operator_action = None;
         runtime_state.last_raw_artifact = None;
         runtime_state.last_output_artifact = None;
         let runtime_state = Arc::new(Mutex::new(runtime_state));
@@ -158,12 +161,13 @@ impl MissionController {
                 env_vars,
                 params_bytes,
                 log_channel,
-                abi_version: ABI_VERSION_V3,
+                abi_version: ABI_VERSION_V4,
                 wasm_size_bytes: wasm_bytes_for_thread.len(),
                 wasm_hash,
                 module_hash,
                 attestation_identity,
                 policy,
+                override_retry_gate,
             };
             let context = WasmRunContext {
                 artifact_store: artifact_store_clone,
