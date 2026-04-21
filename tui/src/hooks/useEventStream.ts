@@ -1,6 +1,6 @@
 import { useEffect, useRef, useCallback } from "react";
 import { spawnEventStream, type StreamHandle } from "../stream.js";
-import { type BrrEvent } from "../types.js";
+import { type BrrmmmmEvent } from "../types.js";
 
 /**
  * Spawn the Rust binary event stream and dispatch events.
@@ -11,7 +11,7 @@ export function useEventStream(
   rustBin: string,
   wasmPath: string,
   extraArgs: string[],
-  dispatch: (event: BrrEvent) => void,
+  dispatch: (event: BrrmmmmEvent) => void,
   onExit: (code: number | null) => void
 ): (cmd: string) => void {
   const handleRef = useRef<StreamHandle | null>(null);

@@ -1,6 +1,7 @@
 import {
-  type BrrEvent,
+  type BrrmmmmEvent,
   type MergedEnvVar,
+  type MissionOutcomeView,
   type TuiState,
 } from "./types.js";
 import { formatLocalTime } from "./format.js";
@@ -21,6 +22,7 @@ export function initialState(wasmPath: string): TuiState {
       consecutiveFailures: 0,
       backoffMs: null,
     },
+    missionOutcome: null,
     lastRequest: null,
     requests: [],
     artifacts: { raw: null, normalized: null, published: null },
@@ -33,7 +35,7 @@ export function initialState(wasmPath: string): TuiState {
 
 // ── Reducer ──────────────────────────────────────────────────────────
 
-export function reducer(state: TuiState, event: BrrEvent): TuiState {
+export function reducer(state: TuiState, event: BrrmmmmEvent): TuiState {
   switch (event.type) {
     case "started":
       return {
@@ -172,13 +174,31 @@ export function reducer(state: TuiState, event: BrrEvent): TuiState {
       };
     }
 
+    case "mission_outcome": {
+      const escalation = event.escalation;
+      const rescueWindowOpen = escalation
+        ? Date.now() <= escalation.deadline_at_ms
+        : undefined;
+      const outcome: MissionOutcomeView = {
+        status: event.outcome.status,
+        reason_code: event.outcome.reason_code,
+        risk_posture: event.host_decision.risk_posture,
+        next_attempt_policy: event.host_decision.next_attempt_policy,
+        basis: event.host_decision.basis,
+        operator_action: event.outcome.operator_action,
+        escalation_deadline: escalation?.deadline_at,
+        rescue_window_open: rescueWindowOpen,
+      };
+      return { ...state, missionOutcome: outcome };
+    }
+
     case "log": {
       const logs = [...state.logs, `${formatLocalTime(event.ts)} ${event.message}`];
       return { ...state, logs: logs.slice(-50) };
     }
 
-    case "sidecar_exit":
-      return { ...state, isRunning: false, error: `Sidecar exited: ${event.reason}` };
+    case "module_exit":
+      return { ...state, isRunning: false, error: `Mission module exited: ${event.reason}` };
 
     default:
       return state;

@@ -1,4 +1,4 @@
-import { type LastRequestView, type SidecarDescribe } from "../types.js";
+import { type LastRequestView, type ModuleDescribe } from "../types.js";
 import { formatBytes, formatDuration } from "../format.js";
 
 export function buildVScrollbar(
@@ -18,7 +18,7 @@ export function buildVScrollbar(
   );
 }
 
-export function formatPollStrategy(describe: SidecarDescribe): string {
+export function formatPollStrategy(describe: ModuleDescribe): string {
   const strategy = describe.poll_strategy;
   if (!strategy) return "freshness unspecified";
   switch (strategy.kind) {
@@ -28,6 +28,8 @@ export function formatPollStrategy(describe: SidecarDescribe): string {
       return `backoff ${formatDuration(strategy.base_secs * 1000)}-${formatDuration(strategy.max_secs * 1000)}`;
     case "jittered":
       return `fresh every ${formatDuration(strategy.base_secs * 1000)} + jitter`;
+    default:
+      return "freshness unspecified";
   }
 }
 

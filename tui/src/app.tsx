@@ -1,7 +1,7 @@
 import React, { useReducer, useCallback, useEffect, useState } from "react";
 import { Box, useApp, useInput } from "ink";
 
-import { type BrrEvent, type SidecarParamField } from "./types.js";
+import { type BrrmmmmEvent, type ModuleParamField } from "./types.js";
 import { initialState, reducer } from "./store.js";
 import { useEventStream } from "./hooks/useEventStream.js";
 import { useTerminalSize } from "./hooks/useTerminalSize.js";
@@ -35,14 +35,14 @@ export function App({ wasmPath, rustBin, extraArgs }: AppProps) {
   );
 
   const onEvent = useCallback(
-    (event: BrrEvent) => dispatch(event),
+    (event: BrrmmmmEvent) => dispatch(event),
     [dispatch]
   );
 
   const onExit = useCallback(
     (code: number | null) => {
       dispatch({
-        type: "sidecar_exit",
+        type: "module_exit",
         ts: new Date().toISOString(),
         reason: code === 0 ? "completed" : `exit code ${code ?? "null"}`,
       });
@@ -53,10 +53,10 @@ export function App({ wasmPath, rustBin, extraArgs }: AppProps) {
   const sendCommand = useEventStream(rustBin, wasmPath, extraArgs, onEvent, onExit);
 
   const { rows } = useTerminalSize();
-  const { describe, polling } = state;
+  const { describe, polling, missionOutcome } = state;
   const pipelineHeight = pipelineHeightForRows(rows);
   const helpHeight = Math.max(8, rows - 9);
-  const paramFields = describe?.params?.fields ?? [];
+  const paramFields: ModuleParamField[] = describe?.params?.fields ?? [];
   const paramFieldKey = paramFields.map((field) => `${field.key}:${field.type}`).join("|");
 
   useEffect(() => {
@@ -145,6 +145,7 @@ export function App({ wasmPath, rustBin, extraArgs }: AppProps) {
                 backoffMs={polling.backoffMs}
                 pollStrategy={describe?.poll_strategy}
                 persistenceAuthority={describe?.state_persistence}
+                missionOutcome={missionOutcome}
               />
             </Box>
           </Box>
@@ -205,7 +206,7 @@ function paramDefaultText(value: unknown): string {
   return typeof value === "string" ? value : JSON.stringify(value);
 }
 
-function buildParamsJson(fields: SidecarParamField[], values: Record<string, string>): string | null {
+function buildParamsJson(fields: ModuleParamField[], values: Record<string, string>): string | null {
   if (fields.length === 0) return null;
   const params: Record<string, unknown> = {};
   for (const field of fields) {
@@ -216,7 +217,7 @@ function buildParamsJson(fields: SidecarParamField[], values: Record<string, str
   return JSON.stringify(params);
 }
 
-function coerceParamValue(field: SidecarParamField, text: string): unknown {
+function coerceParamValue(field: ModuleParamField, text: string): unknown {
   switch (field.type) {
     case "integer":
       return Number.parseInt(text, 10);

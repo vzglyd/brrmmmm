@@ -18,25 +18,25 @@ export interface EnvVarSpec {
   description: string;
 }
 
-export type SidecarParamType = "string" | "integer" | "number" | "boolean" | "json";
+export type ModuleParamType = "string" | "integer" | "number" | "boolean" | "json";
 
-export interface SidecarParamOption {
+export interface ModuleParamOption {
   value: unknown;
   label?: string;
 }
 
-export interface SidecarParamField {
+export interface ModuleParamField {
   key: string;
-  type: SidecarParamType;
+  type: ModuleParamType;
   required: boolean;
   label?: string;
   help?: string;
   default?: unknown;
-  options: SidecarParamOption[];
+  options: ModuleParamOption[];
 }
 
-export interface SidecarParamsSchema {
-  fields: SidecarParamField[];
+export interface ModuleParamsSchema {
+  fields: ModuleParamField[];
 }
 
 export type PersistenceAuthority = "volatile" | "host_persisted" | "vendor_backed";
@@ -46,7 +46,7 @@ export type PollStrategy =
   | { kind: "exponential_backoff"; base_secs: number; max_secs: number }
   | { kind: "jittered"; base_secs: number; jitter_secs: number };
 
-export interface SidecarDescribe {
+export interface ModuleDescribe {
   schema_version: number;
   logical_id: string;
   name: string;
@@ -56,14 +56,14 @@ export interface SidecarDescribe {
   state_persistence: PersistenceAuthority;
   required_env_vars: EnvVarSpec[];
   optional_env_vars: EnvVarSpec[];
-  params?: SidecarParamsSchema | null;
+  params?: ModuleParamsSchema | null;
   capabilities_needed: string[];
   poll_strategy?: PollStrategy;
   cooldown_policy?: { authority: PersistenceAuthority; min_interval_ms: number };
   artifact_types: string[];
 }
 
-export type SidecarPhase =
+export type MissionPhase =
   | "idle"
   | "cooling_down"
   | "fetching"
@@ -73,9 +73,9 @@ export type SidecarPhase =
 
 export type ActiveMode = "v1_legacy" | "managed_polling" | "interactive";
 
-export interface SidecarRuntimeState {
+export interface MissionRuntimeState {
   mode: ActiveMode;
-  phase: SidecarPhase;
+  phase: MissionPhase;
   next_allowed_at_ms?: number;
   next_scheduled_poll_at_ms?: number;
   last_success_at_ms?: number;
@@ -86,12 +86,25 @@ export interface SidecarRuntimeState {
   last_raw_artifact?: ArtifactMeta;
   last_output_artifact?: ArtifactMeta;
   last_error?: string;
-  describe?: SidecarDescribe;
+  describe?: ModuleDescribe;
+}
+
+// ── Mission outcome view ─────────────────────────────────────────────
+
+export interface MissionOutcomeView {
+  status: string;
+  reason_code: string;
+  risk_posture: string;
+  next_attempt_policy: string;
+  basis: string[];
+  operator_action?: string;
+  escalation_deadline?: string;
+  rescue_window_open?: boolean;
 }
 
 // ── Event union ──────────────────────────────────────────────────────
 
-export type BrrEvent =
+export type BrrmmmmEvent =
   | {
       type: "started";
       ts: string;
@@ -102,7 +115,7 @@ export type BrrEvent =
   | {
       type: "describe";
       ts: string;
-      describe: SidecarDescribe;
+      describe: ModuleDescribe;
     }
   | {
       type: "env_snapshot";
@@ -112,7 +125,7 @@ export type BrrEvent =
   | {
       type: "phase";
       ts: string;
-      phase: SidecarPhase;
+      phase: MissionPhase;
     }
   | {
       type: "guest_event_fwd";
@@ -158,8 +171,32 @@ export type BrrEvent =
       duration_ms: number;
       wake_at: string;
     }
+  | {
+      type: "mission_outcome";
+      ts: string;
+      reported_by: string;
+      outcome: {
+        status: string;
+        reason_code: string;
+        message: string;
+        retry_after_ms?: number;
+        operator_action?: string;
+      };
+      host_decision: {
+        risk_posture: string;
+        next_attempt_policy: string;
+        basis: string[];
+        synthesized: boolean;
+      };
+      escalation?: {
+        action: string;
+        deadline_at: string;
+        deadline_at_ms: number;
+        timeout_outcome: string;
+      };
+    }
   | { type: "log"; ts: string; message: string }
-  | { type: "sidecar_exit"; ts: string; reason: string };
+  | { type: "module_exit"; ts: string; reason: string };
 
 // ── TUI state ────────────────────────────────────────────────────────
 
@@ -186,17 +223,18 @@ export interface LastRequestView {
 export interface TuiState {
   wasmPath: string;
   abiVersion: number;
-  describe: SidecarDescribe | null;
+  describe: ModuleDescribe | null;
   envVars: EnvVarStatus[];
   // Combined env var list: spec (from describe) merged with snapshot (from --env args).
   mergedEnvVars: MergedEnvVar[];
   polling: {
-    phase: SidecarPhase;
+    phase: MissionPhase;
     sleepUntilMs: number | null;
     lastSuccessAt: string | null;
     consecutiveFailures: number;
     backoffMs: number | null;
   };
+  missionOutcome: MissionOutcomeView | null;
   lastRequest: LastRequestView | null;
   requests: LastRequestView[];
   artifacts: {

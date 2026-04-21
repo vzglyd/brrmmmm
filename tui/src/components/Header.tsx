@@ -1,6 +1,6 @@
 import React from "react";
 import { Box, Text } from "ink";
-import { type SidecarDescribe } from "../types.js";
+import { type ModuleDescribe } from "../types.js";
 
 // ── 8×8 bitmap pixel font (half-block encoded) ───────────────────────
 //
@@ -34,14 +34,14 @@ const LOGO_ROWS: readonly string[] = [0, 1, 2].map((row) =>
 interface Props {
   wasmPath: string;
   abiVersion: number;
-  describe: SidecarDescribe | null;
+  describe: ModuleDescribe | null;
 }
 
 const AMBER = "#FFB300";
 
 export function Header({ wasmPath, abiVersion, describe }: Props) {
   const name = describe?.name ?? wasmPath.split("/").pop() ?? wasmPath;
-  const desc = describe?.description ?? "waiting for sidecar manifest";
+  const desc = describe?.description ?? "waiting for module contract";
   const modes = describe?.run_modes?.join(", ") ?? "starting";
 
   return (
@@ -62,7 +62,7 @@ export function Header({ wasmPath, abiVersion, describe }: Props) {
         ))}
       </Box>
 
-      {/* Sidecar info */}
+      {/* Module info */}
       <Box flexDirection="column" alignItems="flex-end">
         <Text bold color={AMBER}>
           {name}

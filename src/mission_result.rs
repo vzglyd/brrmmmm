@@ -273,6 +273,11 @@ pub(crate) struct MissionExplainView {
     pub(crate) timeout_outcome: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) rescue_window_open: Option<bool>,
+    pub(crate) consecutive_failures: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) last_success_at: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) cooldown_until: Option<String>,
     pub(crate) started_at: String,
     pub(crate) finished_at: String,
 }
@@ -315,6 +320,9 @@ pub(crate) fn explain_record(record: &MissionRecord, now_ms: u64) -> MissionExpl
             .as_ref()
             .map(|escalation| status_name(escalation.timeout_outcome.mission_status()).to_string()),
         rescue_window_open: analysis.rescue_window_open,
+        consecutive_failures: record.stats.consecutive_failures,
+        last_success_at: record.stats.last_success_at_ms.map(ms_to_iso8601),
+        cooldown_until: record.stats.cooldown_until_ms.map(ms_to_iso8601),
         started_at: record.timing.started_at.clone(),
         finished_at: record.timing.finished_at.clone(),
     }

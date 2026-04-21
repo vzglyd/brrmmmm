@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { Box, Text, useInput } from "ink";
-import { type LastRequestView, type ArtifactView, type SidecarDescribe } from "../types.js";
+import { type LastRequestView, type ArtifactView, type ModuleDescribe } from "../types.js";
 import { formatBytes, formatLocalTime } from "../format.js";
 import { buildVScrollbar, clip, formatPollStrategy, formatRequestStatus } from "../utils/requestPanel.js";
 
@@ -12,7 +12,7 @@ interface Props {
     normalized: ArtifactView | null;
     published: ArtifactView | null;
   };
-  describe: SidecarDescribe | null;
+  describe: ModuleDescribe | null;
   isFocused: boolean;
   height: number;
 }

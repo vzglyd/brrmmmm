@@ -32,6 +32,40 @@ pub(crate) fn cmd_rehearse(wasm_path: &Path, output: OutputFormat, config: &Conf
 
     let mut scenarios = vec![
         rehearsal_scenario(
+            "published",
+            module_record(&wasm_str, describe, inspection.abi_version),
+            MissionOutcome {
+                status: MissionOutcomeStatus::Published,
+                reason_code: "published_output".to_string(),
+                message: "rehearsal: mission module published its final artifact".to_string(),
+                retry_after_ms: None,
+                operator_action: None,
+                operator_timeout_ms: None,
+                operator_timeout_outcome: None,
+                primary_artifact_kind: Some("published_output".to_string()),
+            },
+            None,
+            now,
+        ),
+        rehearsal_scenario(
+            "retryable_failure",
+            module_record(&wasm_str, describe, inspection.abi_version),
+            MissionOutcome {
+                status: MissionOutcomeStatus::RetryableFailure,
+                reason_code: "source_unavailable".to_string(),
+                message:
+                    "rehearsal: mission module reported a retryable failure; runtime entered safe state with cooldown"
+                        .to_string(),
+                retry_after_ms: Some(config.assurance.default_retry_after_ms),
+                operator_action: None,
+                operator_timeout_ms: None,
+                operator_timeout_outcome: None,
+                primary_artifact_kind: None,
+            },
+            None,
+            now,
+        ),
+        rehearsal_scenario(
             "timeout",
             module_record(&wasm_str, describe, inspection.abi_version),
             MissionOutcome {

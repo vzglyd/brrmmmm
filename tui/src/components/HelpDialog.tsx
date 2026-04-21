@@ -1,9 +1,9 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { Box, Text, useInput } from "ink";
-import { type SidecarDescribe } from "../types.js";
+import { type ModuleDescribe } from "../types.js";
 
 interface Props {
-  describe: SidecarDescribe | null;
+  describe: ModuleDescribe | null;
   height: number;
 }
 
@@ -92,7 +92,7 @@ export function HelpDialog({ describe, height }: Props) {
   );
 }
 
-function buildHelpLines(describe: SidecarDescribe | null): string[] {
+function buildHelpLines(describe: ModuleDescribe | null): string[] {
   const manifestModes = describe?.run_modes?.length
     ? describe.run_modes.join(", ")
     : "not declared yet";
@@ -107,9 +107,9 @@ function buildHelpLines(describe: SidecarDescribe | null): string[] {
     "# Use The Output",
     "Read published_output as the payload your code consumes.",
     "raw_source_payload is the upstream response; normalized_payload is intermediate.",
-    "For scripts: brrmmmm run sidecar.wasm --once > payload.json",
+    "For scripts: brrmmmm run mission-module.wasm --once > payload.json",
     "Then parse payload.json with the payload type expected by your slide or app.",
-    "For hosts: implement WASI preview1 plus vzglyd_host, run the entry point,",
+    "For hosts: implement WASI preview1 plus brrmmmm_host, run the entry point,",
     "and read channel_push or artifact_publish(\"published_output\", bytes).",
     "Do not scrape the TUI; it is a debugger for the same event stream.",
     "",
@@ -122,7 +122,7 @@ function buildHelpLines(describe: SidecarDescribe | null): string[] {
     "# Runtime Modes",
     "v1_legacy: no reliable manifest. Provide env/params externally.",
     "  Treat output as an opaque JSON payload and validate it in your consumer.",
-    "managed_polling: the sidecar declares params, artifacts, polling, and cooldown.",
+    "managed_polling: the module declares params, artifacts, polling, and cooldown.",
     "  Use describe/inspect as the contract and consume published_output.",
     "  Let host sleep/force-refresh imports control the cadence.",
     "interactive: params may change while the process is alive.",
@@ -132,7 +132,7 @@ function buildHelpLines(describe: SidecarDescribe | null): string[] {
     "Default TUI: inspect params, polling state, requests, artifacts, and logs.",
     "--once: run until the first published payload, print JSON to stdout, exit.",
     "daemon run: keep the sidecar alive and let it poll until Ctrl+C.",
-    "inspect: print the sidecar contract for tooling and code review.",
+    "inspect: print the module contract for tooling and code review.",
     "validate: confirm the WASM loads and required exports resolve.",
     "",
     "# Keys",

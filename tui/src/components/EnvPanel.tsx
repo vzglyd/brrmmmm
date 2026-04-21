@@ -1,12 +1,12 @@
 import React from "react";
 import { Box, Text, useInput } from "ink";
-import { type MergedEnvVar, type SidecarParamsSchema } from "../types.js";
+import { type MergedEnvVar, type ModuleParamsSchema } from "../types.js";
 
 const AMBER = "#FFB300";
 
 interface Props {
   vars: MergedEnvVar[];
-  params: SidecarParamsSchema | null;
+  params: ModuleParamsSchema | null;
   manifestPending: boolean;
   isFocused: boolean;
   values: Record<string, string>;
@@ -69,7 +69,7 @@ export function EnvPanel({
     >
       <Text bold color={AMBER}>Parameters</Text>
       {manifestPending ? (
-        <Text dimColor>Waiting for sidecar manifest...</Text>
+        <Text dimColor>Waiting for module contract...</Text>
       ) : declared.length === 0 && extras.length === 0 && paramFields.length === 0 ? (
         <Text dimColor>No parameters declared · use --env KEY=VALUE or --params-json</Text>
       ) : (

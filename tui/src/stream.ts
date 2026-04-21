@@ -1,8 +1,8 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { createInterface } from "node:readline";
-import { type BrrEvent } from "./types.js";
+import { type BrrmmmmEvent } from "./types.js";
 
-export type EventCallback = (event: BrrEvent) => void;
+export type EventCallback = (event: BrrmmmmEvent) => void;
 export type ExitCallback = (code: number | null) => void;
 
 export interface StreamHandle {
@@ -38,7 +38,7 @@ export function spawnEventStream(
   rl.on("line", (line: string) => {
     if (!line.trim()) return;
     try {
-      const event = JSON.parse(line) as BrrEvent;
+      const event = JSON.parse(line) as BrrmmmmEvent;
       onEvent(event);
     } catch {
       // Silently ignore malformed lines (should not happen in practice).

@@ -114,8 +114,8 @@ describe("reducer", () => {
     expect(s.logs[0]).toContain("hello");
   });
 
-  it("sidecar_exit sets isRunning false", () => {
-    const s = reducer(makeState(), { type: "sidecar_exit", ts: TS, reason: "done" });
+  it("module_exit sets isRunning false", () => {
+    const s = reducer(makeState(), { type: "module_exit", ts: TS, reason: "done" });
     expect(s.isRunning).toBe(false);
     expect(s.error).toContain("done");
   });
