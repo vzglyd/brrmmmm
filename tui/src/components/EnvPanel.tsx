@@ -7,7 +7,7 @@ const AMBER = "#FFB300";
 interface Props {
   vars: MergedEnvVar[];
   params: ModuleParamsSchema | null;
-  manifestPending: boolean;
+  hasStarted: boolean;
   isFocused: boolean;
   values: Record<string, string>;
   onChange: (key: string, value: string) => void;
@@ -16,7 +16,7 @@ interface Props {
 export function EnvPanel({
   vars,
   params,
-  manifestPending,
+  hasStarted,
   isFocused,
   values,
   onChange,
@@ -72,8 +72,8 @@ export function EnvPanel({
       flexGrow={1}
     >
       <Text bold color={AMBER}>PRE-FLIGHT</Text>
-      {manifestPending ? (
-        <Text dimColor>Waiting for module contract...</Text>
+      {!hasStarted ? (
+        <Text dimColor>Waiting for daemon launch...</Text>
       ) : (
         <>
           <Text bold color={goColor}>{goStatus}</Text>

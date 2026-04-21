@@ -65,6 +65,7 @@ describe("terminal rendering", () => {
         requests={[]}
         artifacts={{ raw: null, normalized: null, published }}
         describe={null}
+        hasStarted={true}
         isFocused={true}
         height={8}
       />,
@@ -73,6 +74,22 @@ describe("terminal rendering", () => {
     expect(output).toContain("COMMS");
     expect(output).toContain("published_output");
     expect(output).toContain("11B");
+  });
+
+  it("shows daemon launch placeholder before mission start", async () => {
+    const output = await renderToText(
+      <RequestPanel
+        request={null}
+        requests={[]}
+        artifacts={{ raw: null, normalized: null, published: null }}
+        describe={null}
+        hasStarted={false}
+        isFocused={true}
+        height={8}
+      />,
+    );
+
+    expect(output).toContain("Waiting for daemon launch...");
   });
 });
 

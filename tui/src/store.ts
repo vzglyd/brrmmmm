@@ -11,7 +11,8 @@ import { formatLocalTime } from "./format.js";
 export function initialState(wasmPath: string): TuiState {
   return {
     wasmPath,
-    abiVersion: 1,
+    abiVersion: null,
+    hasStarted: false,
     describe: null,
     envVars: [],
     mergedEnvVars: [],
@@ -40,6 +41,7 @@ export function reducer(state: TuiState, event: BrrmmmmEvent): TuiState {
     case "started":
       return {
         ...state,
+        hasStarted: true,
         abiVersion: event.abi_version,
         wasmPath: event.wasm_path,
       };
@@ -190,6 +192,16 @@ export function reducer(state: TuiState, event: BrrmmmmEvent): TuiState {
         rescue_window_open: rescueWindowOpen,
       };
       return { ...state, missionOutcome: outcome };
+    }
+
+    case "fatal_error": {
+      const logs = [...state.logs, `${formatLocalTime(event.ts)} ${event.message}`];
+      return {
+        ...state,
+        isRunning: false,
+        error: event.message,
+        logs: logs.slice(-50),
+      };
     }
 
     case "log": {

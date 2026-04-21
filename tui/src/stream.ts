@@ -83,8 +83,7 @@ export function spawnEventStream(
       missionName = await launchMission();
       openWatch(missionName);
     } catch (error) {
-      emitLog(asErrorMessage(error));
-      onExit(1);
+      emitFatalError(asErrorMessage(error));
     }
   }
 
@@ -105,8 +104,7 @@ export function spawnEventStream(
       missionName = await launchMission(currentMission);
       openWatch(missionName);
     } catch (error) {
-      emitLog(asErrorMessage(error));
-      onExit(1);
+      emitFatalError(asErrorMessage(error));
     } finally {
       restarting = false;
     }
@@ -132,6 +130,7 @@ export function spawnEventStream(
   function openWatch(mission: string): void {
     const generation = ++watchGeneration;
     const socket = createConnection(socketPath);
+    let failed = false;
     watchSocket = socket;
     const lines = createInterface({ input: socket });
 
@@ -156,21 +155,21 @@ export function spawnEventStream(
           // Ignore malformed daemon event payloads.
         }
       } else if (response.type === "error") {
-        emitLog(`daemon watch error: ${response.message}`);
-        onExit(1);
+        failed = true;
+        emitFatalError(`daemon watch error: ${response.message}`);
       }
     });
 
     socket.on("error", (error) => {
       if (!stopped && generation === watchGeneration) {
-        emitLog(`daemon socket error: ${error.message}`);
-        onExit(1);
+        failed = true;
+        emitFatalError(`daemon socket error: ${error.message}`);
       }
     });
 
     socket.on("close", () => {
       lines.close();
-      if (!stopped && generation === watchGeneration && !restarting) {
+      if (!stopped && generation === watchGeneration && !restarting && !failed) {
         onExit(0);
       }
     });
@@ -182,9 +181,9 @@ export function spawnEventStream(
     watchSocket = null;
   }
 
-  function emitLog(message: string): void {
+  function emitFatalError(message: string): void {
     onEvent({
-      type: "log",
+      type: "fatal_error",
       ts: new Date().toISOString(),
       message,
     });

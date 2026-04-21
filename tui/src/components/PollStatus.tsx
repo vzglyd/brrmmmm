@@ -5,6 +5,7 @@ import { useCountdown } from "../hooks/useCountdown.js";
 import { formatDuration, formatLocalTime } from "../format.js";
 
 interface Props {
+  hasStarted: boolean;
   phase: MissionPhase;
   sleepUntilMs: number | null;
   lastSuccessAt: string | null;
@@ -68,6 +69,7 @@ const PHASE_SEQ_LABELS: Record<string, string> = {
 };
 
 export function PollStatus({
+  hasStarted,
   phase,
   sleepUntilMs,
   lastSuccessAt,
@@ -77,6 +79,15 @@ export function PollStatus({
   persistenceAuthority,
   missionOutcome,
 }: Props) {
+  if (!hasStarted) {
+    return (
+      <Box borderStyle="single" flexDirection="column" paddingX={1} flexGrow={1}>
+        <Text bold>MISSION STATUS</Text>
+        <Text dimColor>Waiting for daemon launch...</Text>
+      </Box>
+    );
+  }
+
   const countdown = useCountdown(sleepUntilMs);
   const isSleeping = sleepUntilMs !== null && countdown !== "" && countdown !== "0s";
   const isOffSeq = !PHASE_SEQ.includes(phase);

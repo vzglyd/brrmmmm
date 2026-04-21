@@ -55,7 +55,7 @@ export function App({ wasmPath, rustBin, extraArgs }: AppProps) {
   const sendCommand = useEventStream(rustBin, wasmPath, extraArgs, onEvent, onExit);
 
   const { rows } = useTerminalSize();
-  const { describe, polling, missionOutcome } = state;
+  const { describe, polling, missionOutcome, hasStarted } = state;
   const pipelineHeight = pipelineHeightForRows(rows);
   const helpHeight = Math.max(8, rows - 9);
   const paramFields: ModuleParamField[] = describe?.params?.fields ?? [];
@@ -117,7 +117,9 @@ export function App({ wasmPath, rustBin, extraArgs }: AppProps) {
       <Header
         wasmPath={state.wasmPath}
         abiVersion={state.abiVersion}
+        hasStarted={hasStarted}
         describe={describe}
+        error={state.error}
         startTimeMs={startTimeMs}
       />
 
@@ -131,7 +133,7 @@ export function App({ wasmPath, rustBin, extraArgs }: AppProps) {
               <EnvPanel
                 vars={state.mergedEnvVars}
                 params={describe?.params ?? null}
-                manifestPending={describe == null}
+                hasStarted={hasStarted}
                 isFocused={focusPane === "params"}
                 values={paramValues}
                 onChange={(key, value) => {
@@ -141,6 +143,7 @@ export function App({ wasmPath, rustBin, extraArgs }: AppProps) {
             </Box>
             <Box width="50%">
               <PollStatus
+                hasStarted={hasStarted}
                 phase={polling.phase}
                 sleepUntilMs={polling.sleepUntilMs}
                 lastSuccessAt={polling.lastSuccessAt}
@@ -159,6 +162,7 @@ export function App({ wasmPath, rustBin, extraArgs }: AppProps) {
             requests={state.requests}
             artifacts={state.artifacts}
             describe={state.describe}
+            hasStarted={hasStarted}
             isFocused={focusPane === "pipeline"}
             height={pipelineHeight}
           />

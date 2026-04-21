@@ -12,6 +12,8 @@ describe("initialState", () => {
   it("sets wasmPath and defaults", () => {
     const s = makeState();
     expect(s.wasmPath).toBe(WASM);
+    expect(s.abiVersion).toBeNull();
+    expect(s.hasStarted).toBe(false);
     expect(s.isRunning).toBe(true);
     expect(s.cycleCount).toBe(0);
     expect(s.artifacts.raw).toBeNull();
@@ -118,6 +120,18 @@ describe("reducer", () => {
     const s = reducer(makeState(), { type: "module_exit", ts: TS, reason: "done" });
     expect(s.isRunning).toBe(false);
     expect(s.error).toContain("done");
+  });
+
+  it("fatal_error records transport failure without inventing module exit", () => {
+    const s = reducer(makeState(), {
+      type: "fatal_error",
+      ts: TS,
+      message: "cannot connect to brrmmmm daemon",
+    });
+    expect(s.hasStarted).toBe(false);
+    expect(s.isRunning).toBe(false);
+    expect(s.error).toBe("cannot connect to brrmmmm daemon");
+    expect(s.logs.at(-1)).toContain("cannot connect to brrmmmm daemon");
   });
 
   it("sleep_start records sleep info", () => {

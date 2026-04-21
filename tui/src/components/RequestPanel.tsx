@@ -13,6 +13,7 @@ interface Props {
     published: ArtifactView | null;
   };
   describe: ModuleDescribe | null;
+  hasStarted: boolean;
   isFocused: boolean;
   height: number;
 }
@@ -24,7 +25,7 @@ interface PipelineRow {
   node: React.ReactNode;
 }
 
-export function RequestPanel({ request, requests, artifacts, describe, isFocused, height }: Props) {
+export function RequestPanel({ request, requests, artifacts, describe, hasStarted, isFocused, height }: Props) {
   const hasAnyActivity =
     requests.length > 0 ||
     request !== null ||
@@ -36,7 +37,16 @@ export function RequestPanel({ request, requests, artifacts, describe, isFocused
 
   const rows = useMemo<PipelineRow[]>(() => {
     if (!hasAnyActivity) {
-      return [{ key: "waiting", node: <Text dimColor wrap="truncate">Waiting for first cycle...</Text> }];
+      return [
+        {
+          key: "waiting",
+          node: (
+            <Text dimColor wrap="truncate">
+              {hasStarted ? "Waiting for first cycle..." : "Waiting for daemon launch..."}
+            </Text>
+          ),
+        },
+      ];
     }
 
     const content: PipelineRow[] = [];
@@ -110,7 +120,7 @@ export function RequestPanel({ request, requests, artifacts, describe, isFocused
     }
 
     return content;
-  }, [artifacts, describe, hasAnyActivity, request, requests]);
+  }, [artifacts, describe, hasAnyActivity, hasStarted, request, requests]);
 
   const maxScroll = Math.max(0, rows.length - visibleRows);
   const safeTop = Math.min(scrollTop, maxScroll);
@@ -167,4 +177,3 @@ export function RequestPanel({ request, requests, artifacts, describe, isFocused
     </Box>
   );
 }
-

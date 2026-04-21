@@ -34,18 +34,23 @@ const LOGO_ROWS: readonly string[] = [0, 1, 2].map((row) =>
 
 interface Props {
   wasmPath: string;
-  abiVersion: number;
+  abiVersion: number | null;
+  hasStarted: boolean;
   describe: ModuleDescribe | null;
+  error: string | null;
   startTimeMs: number;
 }
 
 const AMBER = "#FFB300";
 
-export function Header({ wasmPath, abiVersion, describe, startTimeMs }: Props) {
+export function Header({ wasmPath, abiVersion, hasStarted, describe, error, startTimeMs }: Props) {
   const met = useMissionClock(startTimeMs);
-  const name = describe?.name ?? wasmPath.split("/").pop() ?? wasmPath;
-  const desc = describe?.description ?? "waiting for module contract";
-  const modes = describe?.run_modes?.join(", ") ?? "starting";
+  const name = hasStarted ? (describe?.name ?? wasmPath.split("/").pop() ?? wasmPath) : "daemon";
+  const desc = hasStarted
+    ? (describe?.description ?? "waiting for module contract")
+    : (error ? "mission launch failed before startup" : "waiting for mission launch");
+  const modes = hasStarted ? (describe?.run_modes?.join(", ") ?? "starting") : (error ? "disconnected" : "connecting");
+  const abiLabel = abiVersion === null ? "--" : String(abiVersion);
 
   return (
     <Box
@@ -73,10 +78,10 @@ export function Header({ wasmPath, abiVersion, describe, startTimeMs }: Props) {
         <Text dimColor>{desc}</Text>
         <Text color={AMBER}>{met}</Text>
         <Text dimColor>
-          ABI v{abiVersion}{"  "}
+          ABI v{abiLabel}{"  "}
           <Text color={AMBER}>{modes}</Text>
         </Text>
-        <Text dimColor>{wasmPath}</Text>
+        <Text dimColor>{hasStarted ? wasmPath : `target ${wasmPath}`}</Text>
       </Box>
     </Box>
   );

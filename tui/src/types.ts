@@ -195,6 +195,7 @@ export type BrrmmmmEvent =
         timeout_outcome: string;
       };
     }
+  | { type: "fatal_error"; ts: string; message: string }
   | { type: "log"; ts: string; message: string }
   | { type: "module_exit"; ts: string; reason: string };
 
@@ -222,7 +223,8 @@ export interface LastRequestView {
 
 export interface TuiState {
   wasmPath: string;
-  abiVersion: number;
+  abiVersion: number | null;
+  hasStarted: boolean;
   describe: ModuleDescribe | null;
   envVars: EnvVarStatus[];
   // Combined env var list: spec (from describe) merged with snapshot (from --env args).
