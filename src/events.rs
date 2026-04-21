@@ -1,3 +1,5 @@
+//! Structured runtime events and timestamp helpers.
+
 use std::io::Write;
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -8,6 +10,7 @@ use crate::abi::{ArtifactMeta, SidecarDescribe, SidecarPhase};
 
 // ── Timestamp helpers ────────────────────────────────────────────────
 
+/// Return the current Unix timestamp in milliseconds.
 pub fn now_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -15,10 +18,12 @@ pub fn now_ms() -> u64 {
         .as_millis() as u64
 }
 
+/// Return the current UTC time encoded as an ISO-8601 string with millisecond precision.
 pub fn now_ts() -> String {
     ms_to_iso8601(now_ms())
 }
 
+/// Convert a Unix timestamp in milliseconds to an ISO-8601 UTC string.
 pub fn ms_to_iso8601(ms: u64) -> String {
     let secs = ms / 1000;
     let millis = ms % 1000;
@@ -46,126 +51,208 @@ fn civil_from_days(z: i64) -> (i64, i64, i64) {
 
 // ── Event enum ───────────────────────────────────────────────────────
 
+/// Structured event emitted by the runtime in `--events` mode.
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Event {
     /// Emitted once after WASM is loaded and ABI version is negotiated.
     Started {
+        /// Event timestamp in ISO-8601 UTC format.
         ts: String,
+        /// Path to the loaded WASM module.
         wasm_path: String,
+        /// Size of the loaded WASM module in bytes.
         wasm_size_bytes: usize,
+        /// ABI version reported by the sidecar.
         abi_version: u32,
     },
     /// Emitted when a sidecar's describe() blob is received.
     Describe {
+        /// Event timestamp in ISO-8601 UTC format.
         ts: String,
+        /// Full describe contract emitted by the sidecar.
         describe: SidecarDescribe,
     },
     /// Emitted once at startup to record which env vars are present.
-    EnvSnapshot { ts: String, vars: Vec<EnvVarStatus> },
+    EnvSnapshot {
+        /// Event timestamp in ISO-8601 UTC format.
+        ts: String,
+        /// Presence snapshot for CLI-provided environment variables.
+        vars: Vec<EnvVarStatus>,
+    },
     /// Emitted when the sidecar's phase changes.
-    Phase { ts: String, phase: SidecarPhase },
+    Phase {
+        /// Event timestamp in ISO-8601 UTC format.
+        ts: String,
+        /// Newly observed lifecycle phase.
+        phase: SidecarPhase,
+    },
     /// Forwarded from a sidecar's take_events() ring buffer.
     #[allow(dead_code)]
     GuestEventFwd {
+        /// Event timestamp in ISO-8601 UTC format.
         ts: String,
+        /// Guest-provided timestamp in Unix milliseconds.
         guest_ts_ms: u64,
+        /// Guest-defined event kind.
         kind: String,
+        /// Guest-defined structured attributes.
         attrs: serde_json::Value,
     },
     /// Emitted when any artifact_publish (or channel_push alias) is received.
     ArtifactReceived {
+        /// Event timestamp in ISO-8601 UTC format.
         ts: String,
+        /// Artifact kind such as `published_output`.
         kind: String,
+        /// Size of the artifact payload in bytes.
         size_bytes: usize,
         /// First 500 bytes of the artifact as a UTF-8 preview.
         preview: String,
+        /// Structured artifact metadata snapshot.
         artifact: ArtifactMeta,
     },
     /// Emitted when a network_request starts (before any I/O).
     RequestStart {
+        /// Event timestamp in ISO-8601 UTC format.
         ts: String,
+        /// Runtime-generated request identifier for correlation.
         request_id: String,
+        /// Action kind such as `http` or `tcp_connect`.
         kind: String,
+        /// Remote host or authority being contacted.
         host: String,
+        /// Request path when one is available.
         path: Option<String>,
     },
     /// Emitted when a network_request completes successfully.
     RequestDone {
+        /// Event timestamp in ISO-8601 UTC format.
         ts: String,
+        /// Runtime-generated request identifier for correlation.
         request_id: String,
+        /// HTTP status code when the action returned an HTTP response.
         status_code: Option<u16>,
+        /// Total elapsed time in milliseconds.
         elapsed_ms: u64,
+        /// Response payload size in bytes.
         response_size_bytes: usize,
     },
     /// Emitted when a network_request fails.
     RequestError {
+        /// Event timestamp in ISO-8601 UTC format.
         ts: String,
+        /// Runtime-generated request identifier for correlation.
         request_id: String,
+        /// Stable runtime error kind.
         error_kind: String,
+        /// Human-readable error message.
         message: String,
     },
     /// Emitted when the sidecar announces it is about to sleep.
     SleepStart {
+        /// Event timestamp in ISO-8601 UTC format.
         ts: String,
+        /// Requested sleep duration in milliseconds.
         duration_ms: i64,
+        /// Planned wake time in ISO-8601 UTC format.
         wake_at: String,
     },
     /// Emitted when the sidecar produces a log_info message.
-    Log { ts: String, message: String },
+    Log {
+        /// Event timestamp in ISO-8601 UTC format.
+        ts: String,
+        /// Sidecar or runtime log message.
+        message: String,
+    },
     /// Emitted when the sidecar's WASM execution terminates.
-    SidecarExit { ts: String, reason: String },
+    SidecarExit {
+        /// Event timestamp in ISO-8601 UTC format.
+        ts: String,
+        /// Human-readable termination reason.
+        reason: String,
+    },
     /// Emitted when a browser_action starts.
     BrowserAction {
+        /// Event timestamp in ISO-8601 UTC format.
         ts: String,
+        /// Browser action kind.
         action: String,
         /// Loggable detail (selector or URL); never includes secret values.
         detail: String,
     },
     /// Emitted when a browser_action completes.
     BrowserActionDone {
+        /// Event timestamp in ISO-8601 UTC format.
         ts: String,
+        /// Browser action kind.
         action: String,
+        /// Total elapsed time in milliseconds.
         elapsed_ms: u64,
+        /// Whether the browser action succeeded.
         ok: bool,
+        /// Error description when the action failed.
         error: Option<String>,
     },
     /// Emitted when an ai_request starts.
     AiRequest {
+        /// Event timestamp in ISO-8601 UTC format.
         ts: String,
+        /// AI action kind.
         action: String,
+        /// Prompt length in bytes.
         prompt_len: usize,
     },
     /// Emitted when an ai_request completes.
     AiRequestDone {
+        /// Event timestamp in ISO-8601 UTC format.
         ts: String,
+        /// AI action kind.
         action: String,
+        /// Total elapsed time in milliseconds.
         elapsed_ms: u64,
+        /// Whether the AI request succeeded.
         ok: bool,
+        /// Error description when the action failed.
         error: Option<String>,
     },
     /// Emitted when a kv_get is called.
     KvGet {
+        /// Event timestamp in ISO-8601 UTC format.
         ts: String,
+        /// Requested key.
         key: String,
+        /// Whether the key existed.
         found: bool,
     },
     /// Emitted when a kv_set is called.
     KvSet {
+        /// Event timestamp in ISO-8601 UTC format.
         ts: String,
+        /// Written key.
         key: String,
+        /// Value length in bytes.
         value_len: usize,
     },
     /// Emitted when a kv_delete is called.
-    KvDelete { ts: String, key: String },
+    KvDelete {
+        /// Event timestamp in ISO-8601 UTC format.
+        ts: String,
+        /// Deleted key.
+        key: String,
+    },
 }
 
 // ── Env var status ───────────────────────────────────────────────────
 
+/// Environment-variable presence summary included in startup events.
 #[derive(Debug, Clone, Serialize)]
 pub struct EnvVarStatus {
+    /// Environment variable name.
     pub name: String,
+    /// Whether the variable is known to be required by the sidecar.
     pub required: bool,
+    /// Whether the variable was provided by the caller.
     pub set: bool,
 }
 
@@ -186,6 +273,7 @@ impl EnvVarStatus {
 
 // ── EventSink ────────────────────────────────────────────────────────
 
+/// Event sink that either discards runtime events or writes them as NDJSON.
 #[derive(Clone)]
 pub struct EventSink {
     inner: Arc<Mutex<EventSinkInner>>,
@@ -210,10 +298,12 @@ impl EventSink {
         }
     }
 
+    /// Return `true` when the sink actively emits structured events.
     pub fn is_enabled(&self) -> bool {
         lock_sink(&self.inner).enabled
     }
 
+    /// Emit one structured event if the sink is enabled.
     pub fn emit(&self, event: Event) {
         if !lock_sink(&self.inner).enabled {
             return;

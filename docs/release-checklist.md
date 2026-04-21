@@ -8,6 +8,7 @@ Run:
 
 ```bash
 moon run core:ci
+moon run core:docs
 moon run core:release-dry-run
 ```
 
@@ -15,6 +16,7 @@ If Moon is not installed globally, use:
 
 ```bash
 npx --package @moonrepo/cli@2.2.1 moon run core:ci
+npx --package @moonrepo/cli@2.2.1 moon run core:docs
 npx --package @moonrepo/cli@2.2.1 moon run core:release-dry-run
 ```
 
@@ -35,6 +37,7 @@ The automated gate must prove:
 
 - The Rust CLI compiles.
 - Rust formatting and clippy pass with warnings denied.
+- Public API docs build cleanly with `missing_docs` denied.
 - The deterministic WASM fixture builds.
 - `validate`, `inspect`, `run --once`, and `run --once --events` work against the fixture.
 - The Ink TUI TypeScript build passes.

@@ -17,10 +17,6 @@ macro_rules! define_id_type {
         pub struct $name(pub [u8; $size]);
 
         impl $name {
-            pub fn from_bytes(bytes: [u8; $size]) -> Self {
-                Self(bytes)
-            }
-
             pub fn as_bytes(&self) -> &[u8; $size] {
                 &self.0
             }
@@ -101,11 +97,6 @@ impl IdentitySigner {
     fn new(signing_key: SigningKey) -> Self {
         Self { signing_key }
     }
-
-    pub fn sign_message(&self, message: &[u8]) -> ed25519_dalek::Signature {
-        use ed25519_dalek::Signer as _;
-        self.signing_key.sign(message)
-    }
 }
 
 #[derive(Clone)]
@@ -141,10 +132,6 @@ impl InstallationIdentity {
 
     pub fn public_key(&self) -> PublicKey {
         self.metadata.public_key
-    }
-
-    pub fn sign_message(&self, message: &[u8]) -> ed25519_dalek::Signature {
-        self.signer.sign_message(message)
     }
 }
 
@@ -191,14 +178,7 @@ pub fn load_or_create_at(dir: &Path) -> Result<InstallationIdentity> {
     }
 }
 
-pub fn load_at(dir: &Path) -> Result<InstallationIdentity> {
-    load_existing_at(dir).map_err(Into::into)
-}
-
-pub fn validate_at(dir: &Path) -> Result<IdentityMetadata> {
-    Ok(load_existing_at(dir)?.metadata)
-}
-
+#[cfg(test)]
 pub fn repair_at(dir: &Path) -> Result<InstallationIdentity> {
     let identity = load_existing_at_ignoring_mismatch(dir)
         .map_err(|e| anyhow::anyhow!("repair failed: {e}"))?;

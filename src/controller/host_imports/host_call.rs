@@ -15,6 +15,7 @@ use super::ai::SharedAiSession;
 use super::browser::SharedBrowserSession;
 use super::network::NetworkSession;
 
+#[allow(clippy::too_many_arguments)]
 pub(super) fn register(
     linker: &mut WasmLinker,
     shared: Arc<Mutex<HostState>>,
@@ -145,6 +146,7 @@ pub(super) fn register(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn dispatch(
     call: HostCall,
     shared: &Arc<Mutex<HostState>>,

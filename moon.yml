@@ -40,6 +40,15 @@ tasks:
       - 'tests/**/*'
       - 'fixtures/deterministic-sidecar/**/*'
 
+  docs:
+    command: 'cargo doc'
+    args:
+      - '--no-deps'
+    inputs:
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'src/**/*'
+
   test:
     command: 'cargo test'
     deps:
@@ -96,6 +105,7 @@ tasks:
     deps:
       - 'fmt'
       - 'clippy'
+      - 'docs'
       - 'check'
       - 'test'
       - 'tui:check'

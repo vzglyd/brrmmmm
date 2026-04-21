@@ -1,19 +1,32 @@
+//! Runtime configuration loaded from environment variables.
+
 use std::ffi::OsString;
 use std::path::PathBuf;
 
 use crate::error::{BrrmmmmError, BrrmmmmResult};
 
+/// Runtime-enforced limits used to bound sidecar input and host output sizes.
 #[derive(Clone, Debug)]
 pub struct RuntimeLimits {
+    /// Maximum UTF-8 byte length for a persisted KV key.
     pub kv_max_key_bytes: usize,
+    /// Maximum byte length for a persisted KV value.
     pub kv_max_value_bytes: usize,
+    /// Maximum combined byte budget for all persisted KV entries.
     pub kv_max_total_bytes: usize,
+    /// Maximum byte length accepted for the raw params JSON payload.
     pub max_params_bytes: usize,
+    /// Maximum nesting depth accepted for params JSON values.
     pub max_json_depth: usize,
+    /// Maximum byte length allowed for decoded host-call payloads.
     pub max_host_payload_bytes: usize,
+    /// Maximum artifact size, in bytes, that may be stored by the runtime.
     pub max_artifact_bytes: usize,
+    /// Maximum number of UTF-8 characters included in artifact previews.
     pub max_artifact_preview_chars: usize,
+    /// Maximum HTTP response body size, in bytes, accepted from network actions.
     pub max_http_response_bytes: usize,
+    /// Maximum AI response body size, in bytes, accepted from AI actions.
     pub max_ai_response_bytes: usize,
 }
 
@@ -34,19 +47,32 @@ impl Default for RuntimeLimits {
     }
 }
 
+/// Resolved runtime configuration for one `brrmmmm` process.
 #[derive(Clone, Debug)]
 pub struct Config {
+    /// Optional path to the packaged TUI entrypoint.
     pub tui_path: Option<String>,
+    /// Default AI model name used for AI host calls.
     pub ai_model: String,
+    /// Whether browser actions should default to headless mode.
     pub browser_headless: bool,
+    /// Whether attestation and identity disclosure are disabled.
     pub attestation_disabled: bool,
+    /// Directory where installation identity material is stored.
     pub identity_dir: PathBuf,
+    /// Directory where persisted runtime state is stored.
     pub state_dir: PathBuf,
+    /// API key used for Anthropic-backed AI requests, when configured.
     pub anthropic_api_key: Option<String>,
+    /// Runtime resource and size limits.
     pub limits: RuntimeLimits,
 }
 
 impl Config {
+    /// Load runtime configuration and limits from the process environment.
+    ///
+    /// Returns [`crate::error::BrrmmmmError::ConfigInvalid`] when any configured
+    /// value is malformed or out of range.
     pub fn load() -> BrrmmmmResult<Self> {
         let limits = RuntimeLimits::load()?;
 

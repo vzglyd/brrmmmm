@@ -1,5 +1,6 @@
 mod inspect;
 mod output;
+mod params;
 mod run;
 mod validate;
 

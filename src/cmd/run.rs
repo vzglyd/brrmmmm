@@ -4,10 +4,10 @@ use std::path::Path;
 use brrmmmm::config::Config;
 use brrmmmm::controller::SidecarController;
 use brrmmmm::events::{EnvVarStatus, Event, EventSink, now_ts};
-use brrmmmm::params;
 
 use crate::cli::OutputFormat;
 
+use super::params;
 use super::output::write_payload;
 
 pub(crate) struct RunOptions<'a> {

@@ -1,3 +1,5 @@
+//! WASM sidecar inspection and contract validation.
+
 use std::sync::{Arc, Mutex, atomic::AtomicBool};
 
 use anyhow::{Context, Result};
@@ -13,18 +15,28 @@ use super::io::{RuntimePolicy, WasmLinker, WasmStore, build_wasm_store};
 
 // ── Inspection ───────────────────────────────────────────────────────
 
+/// Summary of the static contract discovered in a sidecar WASM module.
 #[derive(Debug, Clone, Serialize)]
 pub struct SidecarInspection {
+    /// Path to the inspected WASM module.
     pub wasm_path: String,
+    /// WASM file size in bytes.
     pub wasm_size_bytes: usize,
+    /// ABI version exported by the sidecar.
     pub abi_version: u32,
+    /// Runtime mode inferred for inspection output.
     pub active_mode: ActiveMode,
+    /// Recognized entrypoint export, when one exists.
     pub entrypoint: Option<String>,
+    /// Export names in the `brrmmmm`/`vzglyd` host namespace.
     pub brrmmmm_exports: Vec<String>,
+    /// Static describe contract when the sidecar exports one.
     pub describe: Option<SidecarDescribe>,
+    /// Non-fatal inspection warnings and omissions.
     pub diagnostics: Vec<String>,
 }
 
+/// Inspect a sidecar WASM module without executing an acquisition mission.
 pub fn inspect_wasm_contract(wasm_path: &str) -> Result<SidecarInspection> {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -87,6 +99,7 @@ async fn inspect_wasm_contract_async(wasm_path: &str) -> Result<SidecarInspectio
     })
 }
 
+/// Validate that an inspection result satisfies the minimum runnable contract.
 pub fn validate_inspection(inspection: &SidecarInspection) -> Result<()> {
     if inspection.entrypoint.is_none() {
         anyhow::bail!("WASM module has no recognised entry point");

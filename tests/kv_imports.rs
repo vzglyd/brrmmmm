@@ -4,7 +4,6 @@ use std::sync::OnceLock;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use brrmmmm::abi::SidecarRuntimeState;
-use brrmmmm::persistence;
 
 fn bin() -> PathBuf {
     PathBuf::from(env!("CARGO_BIN_EXE_brrmmmm"))
@@ -83,9 +82,16 @@ fn kv_sidecar_uses_imports_and_persists_host_state() {
     assert_eq!(payload["roundtrip"], "abc-123");
     assert_eq!(payload["deleted_missing"], true);
 
-    let wasm_bytes = std::fs::read(&wasm).unwrap();
-    let wasm_hash = persistence::wasm_identity(&wasm_bytes);
-    let state_path = state_dir.join(format!("{wasm_hash}.json"));
+    let mut state_paths = std::fs::read_dir(&state_dir)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .filter(|path| path.extension().and_then(|ext| ext.to_str()) == Some("json"))
+        .collect::<Vec<_>>();
+    state_paths.sort();
+    let state_path = state_paths
+        .into_iter()
+        .next()
+        .expect("persisted runtime state file exists");
     let state_bytes = std::fs::read(&state_path).unwrap_or_else(|error| {
         panic!(
             "failed to read persisted state at {}: {error}",

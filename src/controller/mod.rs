@@ -1,3 +1,5 @@
+//! Sidecar inspection, validation, and runtime control APIs.
+
 mod host_imports;
 mod inspection;
 mod io;

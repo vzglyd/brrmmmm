@@ -1,21 +1,35 @@
+//! Structured runtime, configuration, and persistence errors for `brrmmmm`.
+
 use crate::abi::SidecarPhase;
 
+/// Convenience alias for results that return [`BrrmmmmError`].
 pub type BrrmmmmResult<T> = Result<T, BrrmmmmError>;
 
+/// Stable coarse-grained error category used for logging and exit-code mapping.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ErrorCategory {
+    /// Persisted state existed but could not be decoded or trusted.
     StateCorruption,
+    /// A configured byte or depth budget was exceeded.
     BudgetExceeded,
+    /// A runtime phase transition violated controller invariants.
     InvalidTransition,
+    /// CLI-provided params were malformed or outside configured limits.
     ParamsInvalid,
+    /// Host-managed state could not be read, written, or synced.
     PersistenceFailure,
+    /// Installation identity creation, loading, or validation failed.
     IdentityFailure,
+    /// Environment-derived runtime configuration was invalid.
     ConfigInvalid,
+    /// A sidecar mission exceeded its allowed time budget.
     Timeout,
+    /// A runtime failure occurred outside a narrower category.
     RuntimeFailure,
 }
 
 impl ErrorCategory {
+    /// Return the stable snake_case string emitted in structured logs.
     pub fn as_str(self) -> &'static str {
         match self {
             Self::StateCorruption => "state_corruption",
@@ -30,6 +44,7 @@ impl ErrorCategory {
         }
     }
 
+    /// Return the process exit code associated with this category.
     pub fn exit_code(self) -> i32 {
         match self {
             Self::ConfigInvalid | Self::ParamsInvalid | Self::BudgetExceeded => 64,
@@ -41,36 +56,52 @@ impl ErrorCategory {
     }
 }
 
+/// Concrete error type returned by runtime and configuration operations.
 #[derive(thiserror::Error, Debug)]
 pub enum BrrmmmmError {
+    /// Persisted runtime state was present but malformed or otherwise inconsistent.
     #[error("state corruption: {0}")]
     StateCorruption(String),
+    /// A configured resource budget was exceeded.
     #[error("{resource} budget exceeded: {actual} bytes exceeds limit of {limit} bytes")]
     BudgetExceeded {
+        /// Resource name used in the error message.
         resource: &'static str,
+        /// Observed size or depth.
         actual: usize,
+        /// Configured limit that was exceeded.
         limit: usize,
     },
+    /// The runtime attempted an invalid lifecycle transition.
     #[error("invalid phase transition: {from:?} -> {to:?}")]
     InvalidTransition {
+        /// Source lifecycle phase.
         from: SidecarPhase,
+        /// Target lifecycle phase.
         to: SidecarPhase,
     },
+    /// CLI params or sidecar-supplied params were invalid.
     #[error("invalid params: {0}")]
     ParamsInvalid(String),
+    /// Host-managed persistence work failed.
     #[error("persistence failure: {0}")]
     PersistenceFailure(String),
+    /// Installation identity work failed.
     #[error("identity failure: {0}")]
     IdentityFailure(String),
+    /// Environment-derived runtime configuration was invalid.
     #[error("invalid configuration: {0}")]
     ConfigInvalid(String),
+    /// A time budget or wait deadline was exceeded.
     #[error("timeout: {0}")]
     Timeout(String),
+    /// An uncategorized runtime failure occurred.
     #[error("runtime failure: {0}")]
     RuntimeFailure(String),
 }
 
 impl BrrmmmmError {
+    /// Return the coarse-grained category for this error.
     pub fn category(&self) -> ErrorCategory {
         match self {
             Self::StateCorruption(_) => ErrorCategory::StateCorruption,
@@ -85,10 +116,12 @@ impl BrrmmmmError {
         }
     }
 
+    /// Return the process exit code associated with this error.
     pub fn exit_code(&self) -> i32 {
         self.category().exit_code()
     }
 
+    /// Construct a standardized budget-exceeded error.
     pub fn budget(resource: &'static str, actual: usize, limit: usize) -> Self {
         Self::BudgetExceeded {
             resource,

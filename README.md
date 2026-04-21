@@ -4,6 +4,20 @@ An acquisition runtime for portable WASM sidecars.
 
 ---
 
+## Legal / Ethical Use
+
+`brrmmmm` can run sidecars that automate network access, browser login flows,
+session refresh, and CAPTCHA remediation. That capability does not grant
+authorization, override third-party Terms of Service, or determine whether a
+workflow is lawful in your jurisdiction.
+
+Legal compliance, contractual compliance, target-service authorization, and
+operator review remain solely the responsibility of the sidecar author and the
+party deploying or running the sidecar. The project documents runtime
+capabilities only; it does not provide legal advice.
+
+---
+
 ## What is brrmmmm?
 
 `brrmmmm` runs a sidecar and does not stop until it has obtained **one coherent unit
@@ -517,6 +531,7 @@ features are additive.
 
 ```bash
 cargo test
+cargo doc --no-deps
 npm --prefix tui run build
 export CARGO_INCREMENTAL=0 CARGO_TARGET_DIR=/tmp/brrmmmm-coverage-target
 cargo llvm-cov --lib --package brrmmmm --no-report
@@ -528,9 +543,11 @@ With Moonrepo:
 
 ```bash
 moon run core:ci
+moon run core:docs
 moon run core:coverage
 # or without a global install:
 npx --package @moonrepo/cli@2.2.1 moon run core:ci
+npx --package @moonrepo/cli@2.2.1 moon run core:docs
 npx --package @moonrepo/cli@2.2.1 moon run core:coverage
 ```
 
@@ -538,7 +555,8 @@ The Rust coverage report is written to `target/coverage/html`. CI uploads it as 
 `rust-coverage` artifact and summarizes the User-Agent/disclosure tests in the
 workflow output. The coverage task intentionally targets the library unit tests so
 the User-Agent path is observable without rebuilding every integration target under
-coverage instrumentation.
+coverage instrumentation. `core:ci` now includes the docs build, so missing public
+API documentation fails the normal release gate.
 
 ---
 
