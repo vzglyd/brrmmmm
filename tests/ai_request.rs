@@ -4,7 +4,7 @@ use brrmmmm::host::ai_request::{
 
 #[test]
 fn decode_complete_request() {
-    let bytes = br#"{"wire_version":1,"action":"complete","prompt":"summarize"}"#;
+    let bytes = br#"{"wire_version":2,"action":"complete","prompt":"summarize"}"#;
 
     let action = decode_action(bytes).unwrap();
 
@@ -17,7 +17,7 @@ fn decode_complete_request() {
 #[test]
 fn decode_vision_request() {
     let bytes =
-        br#"{"wire_version":1,"action":"vision","prompt":"read it","image_png_b64":"ZmFrZQ=="}"#;
+        br#"{"wire_version":2,"action":"vision","prompt":"read it","image_png_b64":"ZmFrZQ=="}"#;
 
     let action = decode_action(bytes).unwrap();
 
@@ -35,11 +35,11 @@ fn decode_vision_request() {
 
 #[test]
 fn decode_rejects_wrong_wire_version() {
-    let bytes = br#"{"wire_version":2,"action":"complete","prompt":"summarize"}"#;
+    let bytes = br#"{"wire_version":3,"action":"complete","prompt":"summarize"}"#;
 
     let error = decode_action(bytes).unwrap_err().to_string();
 
-    assert!(error.contains("unsupported ai wire_version 2"));
+    assert!(error.contains("unsupported ai wire_version 3"));
 }
 
 #[test]

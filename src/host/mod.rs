@@ -1,5 +1,6 @@
 pub mod ai_request;
 pub mod browser_request;
+pub mod host_call;
 pub mod host_request;
 
 use std::sync::{Arc, Mutex};
@@ -60,14 +61,8 @@ pub struct HostState {
     /// Named artifact store (replaces raw channel_data).
     pub artifact_store: Arc<Mutex<ArtifactStore>>,
 
-    /// Pending response from a network_request, to be read by network_response_read.
+    /// Pending response from a host_call, to be read by host_response_read.
     pub pending_response: Arc<Mutex<Option<Vec<u8>>>>,
-
-    /// Pending response from a browser_action, to be read by browser_response_read.
-    pub pending_browser_response: Arc<Mutex<Option<Vec<u8>>>>,
-
-    /// Pending response from an ai_request, to be read by ai_response_read.
-    pub pending_ai_response: Arc<Mutex<Option<Vec<u8>>>>,
 
     /// Pending value from a kv_get, to be read by kv_response_read.
     pub pending_kv_response: Arc<Mutex<Option<Vec<u8>>>>,
@@ -108,8 +103,6 @@ impl HostState {
         Self {
             artifact_store: Arc::new(Mutex::new(ArtifactStore::default())),
             pending_response: Arc::new(Mutex::new(None)),
-            pending_browser_response: Arc::new(Mutex::new(None)),
-            pending_ai_response: Arc::new(Mutex::new(None)),
             pending_kv_response: Arc::new(Mutex::new(None)),
             log_channel,
             params_bytes,
@@ -174,8 +167,6 @@ impl HostState {
 
     pub fn clear_transient_runtime_outputs(&mut self) {
         clear_mutex_option(&self.pending_response);
-        clear_mutex_option(&self.pending_browser_response);
-        clear_mutex_option(&self.pending_ai_response);
         clear_mutex_option(&self.pending_kv_response);
         lock_or_recover(&self.artifact_store, "artifact_store").clear();
     }

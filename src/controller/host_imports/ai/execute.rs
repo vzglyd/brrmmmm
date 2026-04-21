@@ -1,9 +1,7 @@
-use std::io::Read as _;
-
 use crate::host::ai_request::{AiAction, AiActionResponse};
 
-pub(super) struct AiSession {
-    client: reqwest::blocking::Client,
+pub(crate) struct AiSession {
+    client: reqwest::Client,
     model: String,
     api_key: String,
     max_response_bytes: usize,
@@ -13,7 +11,7 @@ impl AiSession {
     pub fn new(config: &crate::config::Config) -> anyhow::Result<Self> {
         let api_key = config.anthropic_api_key.clone().unwrap_or_default();
         let model = config.ai_model.clone();
-        let client = reqwest::blocking::Client::builder()
+        let client = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(60))
             .build()?;
         Ok(Self {
@@ -36,7 +34,7 @@ impl AiSession {
             .map_err(|e| AiActionResponse::err("request_build_failed", e.to_string()))
     }
 
-    pub fn execute_prepared(
+    pub async fn execute_prepared(
         &self,
         body: Vec<u8>,
         user_agent: String,
@@ -52,7 +50,7 @@ impl AiSession {
         for (name, value) in attestation_headers {
             request = request.header(name, value);
         }
-        let resp = request.body(body).send();
+        let resp = request.body(body).send().await;
 
         let resp = match resp {
             Ok(r) => r,
@@ -72,16 +70,9 @@ impl AiSession {
             );
         }
 
-        let mut reader = resp.take(self.max_response_bytes.saturating_add(1) as u64);
-        let mut body = Vec::new();
-        let text = match std::io::Read::read_to_end(&mut reader, &mut body) {
-            Ok(_) if body.len() <= self.max_response_bytes => match String::from_utf8(body) {
-                Ok(text) => text,
-                Err(error) => {
-                    return AiActionResponse::err("response_read_failed", error.to_string());
-                }
-            },
-            Ok(_) => {
+        let body = match read_capped_body(resp, self.max_response_bytes).await {
+            Ok(body) => body,
+            Err(ReadBodyError::TooLarge) => {
                 return AiActionResponse::err(
                     "response_too_large",
                     format!(
@@ -90,7 +81,13 @@ impl AiSession {
                     ),
                 );
             }
-            Err(e) => return AiActionResponse::err("response_read_failed", e.to_string()),
+            Err(ReadBodyError::Reqwest(error)) => {
+                return AiActionResponse::err("response_read_failed", error.to_string());
+            }
+        };
+        let text = match String::from_utf8(body) {
+            Ok(text) => text,
+            Err(error) => return AiActionResponse::err("response_read_failed", error.to_string()),
         };
 
         if !status.is_success() {
@@ -99,6 +96,25 @@ impl AiSession {
 
         parse_response_text(&text)
     }
+}
+
+enum ReadBodyError {
+    TooLarge,
+    Reqwest(reqwest::Error),
+}
+
+async fn read_capped_body(
+    mut response: reqwest::Response,
+    max_response_bytes: usize,
+) -> Result<Vec<u8>, ReadBodyError> {
+    let mut body = Vec::new();
+    while let Some(chunk) = response.chunk().await.map_err(ReadBodyError::Reqwest)? {
+        if body.len().saturating_add(chunk.len()) > max_response_bytes {
+            return Err(ReadBodyError::TooLarge);
+        }
+        body.extend_from_slice(&chunk);
+    }
+    Ok(body)
 }
 
 fn build_request_body(model: &str, action: &AiAction) -> anyhow::Result<Vec<u8>> {

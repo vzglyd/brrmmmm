@@ -1,126 +1,103 @@
+use brrmmmm::host::host_call::{HostCall, decode_call, encode_error, encode_ok};
 use brrmmmm::host::host_request::{
-    ErrorKind, Header, HostRequest, HostResponse, WIRE_VERSION, decode_response, encode_request,
+    ErrorKind, Header, NetworkAction, NetworkResponseData, WIRE_VERSION,
 };
 
 #[test]
-fn encode_https_get_includes_wire_version_and_kind() {
-    let req = HostRequest::HttpsGet {
-        host: "example.com".to_string(),
-        path: "/api/data".to_string(),
-        headers: vec![],
-    };
-    let bytes = encode_request(&req).unwrap();
-    let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-    assert_eq!(json["wire_version"], WIRE_VERSION as u64);
-    assert_eq!(json["kind"], "https_get");
-    assert_eq!(json["host"], "example.com");
-    assert_eq!(json["path"], "/api/data");
-}
+fn decode_http_request_accepts_full_url_and_headers() {
+    let bytes = br#"{
+        "wire_version":2,
+        "capability":"network",
+        "action":"http",
+        "method":"GET",
+        "url":"https://example.com/api/data",
+        "headers":[{"name":"accept","value":"application/json"}]
+    }"#;
 
-#[test]
-fn encode_tcp_connect_includes_correct_fields() {
-    let req = HostRequest::TcpConnect {
-        host: "db.internal".to_string(),
-        port: 5432,
-        timeout_ms: 3000,
-    };
-    let bytes = encode_request(&req).unwrap();
-    let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-    assert_eq!(json["wire_version"], WIRE_VERSION as u64);
-    assert_eq!(json["kind"], "tcp_connect");
-    assert_eq!(json["host"], "db.internal");
-    assert_eq!(json["port"], 5432);
-}
+    let call = decode_call(bytes).unwrap();
 
-#[test]
-fn decode_http_response_succeeds() {
-    let json = serde_json::json!({
-        "wire_version": WIRE_VERSION,
-        "kind": "http",
-        "status_code": 200u16,
-        "headers": [{"name": "content-type", "value": "application/json"}],
-        "body": [104, 101, 108, 108, 111]
-    });
-    let bytes = serde_json::to_vec(&json).unwrap();
-    let response = decode_response(&bytes).unwrap();
-    match response {
-        HostResponse::Http {
-            status_code,
+    match call {
+        HostCall::Network(NetworkAction::Http {
+            method,
+            url,
             headers,
-            body,
-        } => {
-            assert_eq!(status_code, 200);
+            body_base64,
+            timeout_ms,
+        }) => {
+            assert_eq!(method, "GET");
+            assert_eq!(url, "https://example.com/api/data");
             assert_eq!(headers.len(), 1);
-            assert_eq!(headers[0].name, "content-type");
-            assert_eq!(body, b"hello");
+            assert_eq!(headers[0].name, "accept");
+            assert!(body_base64.is_none());
+            assert_eq!(timeout_ms, 30_000);
         }
-        _ => panic!("expected Http response"),
+        _ => panic!("expected network http action"),
     }
 }
 
 #[test]
-fn decode_rejects_wrong_wire_version() {
-    let json = serde_json::json!({
-        "wire_version": WIRE_VERSION as u64 + 1,
-        "kind": "http",
-        "status_code": 200u16,
-        "headers": [],
-        "body": []
-    });
-    let bytes = serde_json::to_vec(&json).unwrap();
-    let result = decode_response(&bytes);
-    assert!(result.is_err());
-    assert!(result.unwrap_err().contains("wire version mismatch"));
-}
+fn decode_tcp_connect_request_preserves_timeout() {
+    let bytes = br#"{
+        "wire_version":2,
+        "capability":"network",
+        "action":"tcp_connect",
+        "host":"db.internal",
+        "port":5432,
+        "timeout_ms":3000
+    }"#;
 
-#[test]
-fn decode_rejects_malformed_json() {
-    let result = decode_response(b"not json at all {{{}");
-    assert!(result.is_err());
-}
+    let call = decode_call(bytes).unwrap();
 
-#[test]
-fn decode_error_response_preserves_kind_and_message() {
-    let json = serde_json::json!({
-        "wire_version": WIRE_VERSION,
-        "kind": "error",
-        "error_kind": "timeout",
-        "message": "connection timed out"
-    });
-    let bytes = serde_json::to_vec(&json).unwrap();
-    let response = decode_response(&bytes).unwrap();
-    match response {
-        HostResponse::Error {
-            error_kind,
-            message,
-        } => {
-            assert_eq!(error_kind, ErrorKind::Timeout);
-            assert_eq!(message, "connection timed out");
+    match call {
+        HostCall::Network(NetworkAction::TcpConnect {
+            host,
+            port,
+            timeout_ms,
+        }) => {
+            assert_eq!(host, "db.internal");
+            assert_eq!(port, 5432);
+            assert_eq!(timeout_ms, 3000);
         }
-        _ => panic!("expected Error response"),
+        _ => panic!("expected tcp_connect action"),
     }
 }
 
 #[test]
-fn https_get_headers_survive_encode() {
-    let req = HostRequest::HttpsGet {
-        host: "api.example.com".to_string(),
-        path: "/v1/data".to_string(),
-        headers: vec![
-            Header {
-                name: "Authorization".to_string(),
-                value: "Bearer token123".to_string(),
-            },
-            Header {
-                name: "Accept".to_string(),
-                value: "application/json".to_string(),
-            },
-        ],
+fn encode_ok_wraps_network_response_data() {
+    let response = NetworkResponseData::Http {
+        status_code: 200,
+        headers: vec![Header {
+            name: "content-type".to_string(),
+            value: "application/json".to_string(),
+        }],
+        body_base64: "aGVsbG8=".to_string(),
     };
-    let bytes = encode_request(&req).unwrap();
+    let data = serde_json::to_value(response).unwrap();
+
+    let bytes = encode_ok("network", data).unwrap();
     let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-    let headers = json["headers"].as_array().unwrap();
-    assert_eq!(headers.len(), 2);
-    assert_eq!(headers[0]["name"], "Authorization");
-    assert_eq!(headers[1]["name"], "Accept");
+
+    assert_eq!(json["wire_version"], WIRE_VERSION as u64);
+    assert_eq!(json["ok"], true);
+    assert_eq!(json["capability"], "network");
+    assert_eq!(json["data"]["kind"], "http");
+    assert_eq!(json["data"]["status_code"], 200);
+    assert_eq!(json["data"]["body_base64"], "aGVsbG8=");
+}
+
+#[test]
+fn encode_error_wraps_kind_and_message() {
+    let bytes = encode_error(
+        "network",
+        ErrorKind::Timeout.as_str(),
+        "connection timed out",
+    )
+    .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+
+    assert_eq!(json["wire_version"], WIRE_VERSION as u64);
+    assert_eq!(json["ok"], false);
+    assert_eq!(json["capability"], "network");
+    assert_eq!(json["error"]["kind"], "timeout");
+    assert_eq!(json["error"]["message"], "connection timed out");
 }

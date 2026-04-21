@@ -1,22 +1,25 @@
 use std::sync::{Arc, Mutex};
 
+use base64::Engine as _;
+
 use crate::abi::{ArtifactMeta, SidecarRuntimeState};
 use crate::events::{Event, EventSink, now_ms, now_ts};
-use crate::host::host_request::HostResponse;
+use crate::host::host_request::NetworkResponseData;
 use crate::host::{Artifact, HostState};
 
 use super::super::super::io::lock_runtime;
 use super::super::super::io::update_artifact_state;
-use super::state::store_artifact;
 
 pub(super) fn publish_raw_source_payload(
-    response: &HostResponse,
+    response: &NetworkResponseData,
     shared: &Arc<Mutex<HostState>>,
     runtime_state: &Arc<Mutex<SidecarRuntimeState>>,
     sink: &EventSink,
 ) {
-    let HostResponse::Http {
-        status_code, body, ..
+    let NetworkResponseData::Http {
+        status_code,
+        body_base64,
+        ..
     } = response
     else {
         return;
@@ -26,12 +29,16 @@ pub(super) fn publish_raw_source_payload(
         return;
     }
 
+    let Ok(body) = base64::engine::general_purpose::STANDARD.decode(body_base64) else {
+        return;
+    };
+
     let received_at_ms = now_ms();
     let preview_chars = lock_runtime(shared, "host_state")
         .config
         .limits
         .max_artifact_preview_chars;
-    let preview = String::from_utf8_lossy(body)
+    let preview = String::from_utf8_lossy(&body)
         .chars()
         .take(preview_chars)
         .collect();
@@ -40,7 +47,11 @@ pub(super) fn publish_raw_source_payload(
         data: body.clone(),
         received_at_ms,
     };
-    store_artifact(shared, artifact);
+    let artifact_store = {
+        let host = lock_runtime(shared, "host_state");
+        Arc::clone(&host.artifact_store)
+    };
+    lock_runtime(&artifact_store, "artifact_store").store(artifact);
 
     let meta = ArtifactMeta {
         kind: "raw_source_payload".to_string(),

@@ -132,15 +132,15 @@ execute each one.
 | Network timeout / transient 5xx | Retry with exponential backoff | Sidecar logic |
 | Rate limited (429) | Inspect `Retry-After` header from response, sleep, retry | Sidecar logic (full response headers available) |
 | API token expired (401) | Call token refresh endpoint, retry | Sidecar logic |
-| Session expired, login form required | Drive browser login flow, retry | Sidecar logic via `browser_*` imports |
+| Session expired, login form required | Drive browser login flow, retry | Sidecar logic via `host_call` browser actions |
 | MFA prompt | Read TOTP seed from params, compute code, submit | Sidecar logic (seed delivered via `--params-json`) |
-| CAPTCHA | Take screenshot, invoke AI vision model, submit solution | Sidecar logic via `browser_*` + `ai_*` imports |
+| CAPTCHA | Take screenshot, invoke AI vision model, submit solution | Sidecar logic via `host_call` browser + AI actions |
 | IP block / account suspended | Report unrecoverable failure | Sidecar decision |
 | Service permanently gone | Report unrecoverable failure | Sidecar decision |
 
-brrmmmm provides the host capabilities for each level: `network_request` for API
-flows, `browser_*` imports for UI-driven flows, `ai_*` imports for interpretation,
-and `kv_*` imports for persisting session state across runs. The sidecar receives
+brrmmmm provides the host capabilities for each level: `host_call` for network,
+browser, and AI actions, and `kv_*` imports for persisting session state across
+runs. The sidecar receives
 full HTTP responses (status code, all headers, body) so it can inspect `Retry-After`,
 `WWW-Authenticate`, or any other signal and act accordingly.
 
@@ -319,15 +319,9 @@ The runtime exposes the `vzglyd_host` module to every sidecar:
 | `params_read` | `fn(ptr: i32, len: i32) -> i32` | Read params JSON into sidecar memory |
 | `sleep_ms` | `fn(duration_ms: i64) -> i32` | Sleep; host may return early on stop signal |
 | `announce_sleep` | `fn(duration_ms: i64) -> i32` | Non-blocking: tell the host when next poll is planned |
-| `network_request` | `fn(ptr: i32, len: i32) -> i32` | Submit a host-mediated network request |
-| `network_response_len` | `fn() -> i32` | Query size of the pending response |
-| `network_response_read` | `fn(ptr: i32, len: i32) -> i32` | Read the response into sidecar memory |
-| `browser_action` | `fn(ptr: i32, len: i32) -> i32` | Submit a host-mediated browser action |
-| `browser_response_len` | `fn() -> i32` | Query size of the pending browser response |
-| `browser_response_read` | `fn(ptr: i32, len: i32) -> i32` | Read the browser response into sidecar memory |
-| `ai_request` | `fn(ptr: i32, len: i32) -> i32` | Submit a host-mediated AI request |
-| `ai_response_len` | `fn() -> i32` | Query size of the pending AI response |
-| `ai_response_read` | `fn(ptr: i32, len: i32) -> i32` | Read the AI response into sidecar memory |
+| `host_call` | `fn(ptr: i32, len: i32) -> i32` | Submit a host-mediated network, browser, or AI action |
+| `host_response_len` | `fn() -> i32` | Query size of the pending host-call response |
+| `host_response_read` | `fn(ptr: i32, len: i32) -> i32` | Read the host-call response into sidecar memory |
 | `kv_get` | `fn(key_ptr: i32, key_len: i32) -> i32` | Load a host-persisted byte value |
 | `kv_set` | `fn(key_ptr: i32, key_len: i32, value_ptr: i32, value_len: i32) -> i32` | Store a host-persisted byte value |
 | `kv_delete` | `fn(key_ptr: i32, key_len: i32) -> i32` | Delete a host-persisted byte value |
@@ -347,14 +341,14 @@ Runtime params are host-owned. A sidecar that accepts `--params-json` or
 Params must be a JSON object, default to a 1 MiB byte limit, and are rejected if
 their JSON nesting exceeds the configured depth limit.
 
-Network requests use a JSON wire protocol:
+Host calls use a unified JSON wire protocol:
 
 ```json
 // Request (sidecar → host)
-{"wire_version": 1, "kind": "https_get", "host": "api.example.com", "path": "/data", "headers": []}
+{"wire_version": 2, "capability": "network", "action": "http", "method": "GET", "url": "https://api.example.com/data", "headers": []}
 
 // Response (host → sidecar)
-{"wire_version": 1, "kind": "http", "status_code": 200, "headers": [], "body": [...]}
+{"wire_version": 2, "ok": true, "capability": "network", "data": {"kind": "http", "status_code": 200, "headers": [], "body_base64": "aGVsbG8="}}
 ```
 
 ---
@@ -363,7 +357,7 @@ Network requests use a JSON wire protocol:
 
 The following host imports support the full remediation model:
 
-**`browser_*` — browser automation (implemented)**
+**`host_call` with `capability = "browser"` — browser automation (implemented)**
 brrmmmm uses existing browser automation tooling (headless Chrome via CDP) to execute
 browser sessions on behalf of sidecars — it is not a browser automation framework
 itself. Sidecars drive the session via a JSON action protocol (`navigate`, `fill`,
@@ -386,7 +380,7 @@ other tasks that require visual or semantic understanding. The host owns the API
 and model selection.
 Declare `"capabilities_needed": ["ai"]`.
 
-The imports are `ai_request`, `ai_response_len`, and `ai_response_read`. Set
+Use `host_call` with `capability = "ai"`. Set
 `ANTHROPIC_API_KEY` on the brrmmmm process. By default brrmmmm uses
 `claude-haiku-4-5-20251001`; set `BRRMMMM_AI_MODEL` to override it.
 

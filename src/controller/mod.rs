@@ -14,7 +14,7 @@ use std::thread;
 use anyhow::{Context, Result};
 use wasmtime::{Config as WasmtimeConfig, Engine, Module};
 
-use crate::abi::{ABI_VERSION_V1, ActiveMode, SidecarRuntimeState};
+use crate::abi::{ABI_VERSION_V2, ActiveMode, SidecarRuntimeState};
 use crate::config::Config;
 use crate::events::EventSink;
 use crate::host::ArtifactStore;
@@ -84,6 +84,7 @@ impl SidecarController {
 
         let mut engine_config = WasmtimeConfig::new();
         engine_config.epoch_interruption(true);
+        engine_config.async_support(true);
         let engine = Engine::new(&engine_config).context("create wasmtime engine")?;
         let module = Module::from_binary(&engine, &wasm_bytes)
             .with_context(|| format!("compile WASM module: {wasm_path}"))?;
@@ -118,12 +119,22 @@ impl SidecarController {
         let wasm_bytes_for_thread = wasm_bytes.clone();
 
         let handle = thread::spawn(move || {
+            let runtime = match tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .build()
+            {
+                Ok(runtime) => runtime,
+                Err(error) => {
+                    eprintln!("[brrmmmm] failed to build tokio runtime: {error}");
+                    return;
+                }
+            };
             let config = WasmRunConfig {
                 wasm_path: wasm_path_str,
                 env_vars,
                 params_bytes,
                 log_channel,
-                abi_version: ABI_VERSION_V1,
+                abi_version: ABI_VERSION_V2,
                 wasm_size_bytes: wasm_bytes_for_thread.len(),
                 wasm_hash,
                 module_hash,
@@ -138,7 +149,13 @@ impl SidecarController {
                 stop_signal: stop_clone,
                 force_refresh: force_refresh_clone,
             };
-            let result = run_wasm_instance(&engine, &module, config, context, &config_clone);
+            let result = runtime.block_on(run_wasm_instance(
+                &engine,
+                &module,
+                config,
+                context,
+                &config_clone,
+            ));
             if let Err(e) = result {
                 eprintln!("[brrmmmm] WASM execution error: {e:?}");
             }

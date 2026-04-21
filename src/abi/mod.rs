@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
-pub const ABI_VERSION_V1: u32 = 1;
+pub const ABI_VERSION_V2: u32 = 2;
 
 // ── Sidecar lifecycle phase ──────────────────────────────────────────
 

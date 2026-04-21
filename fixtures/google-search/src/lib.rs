@@ -295,9 +295,9 @@ const TOPICS: [Topic; 50] = [
 
 #[link(wasm_import_module = "vzglyd_host")]
 unsafe extern "C" {
-    fn browser_action(ptr: i32, len: i32) -> i32;
-    fn browser_response_len() -> i32;
-    fn browser_response_read(ptr: i32, len: i32) -> i32;
+    fn host_call(ptr: i32, len: i32) -> i32;
+    fn host_response_len() -> i32;
+    fn host_response_read(ptr: i32, len: i32) -> i32;
     fn artifact_publish(kind_ptr: i32, kind_len: i32, data_ptr: i32, data_len: i32) -> i32;
     fn log_info(ptr: i32, len: i32) -> i32;
 }
@@ -307,12 +307,11 @@ unsafe extern "C" {
     fn random_get(buf: *mut u8, buf_len: usize) -> u16;
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Default, Deserialize)]
 struct BrowserResponse {
-    ok: bool,
-    error: Option<String>,
-    message: Option<String>,
+    #[serde(default)]
     url: Option<String>,
+    #[serde(default)]
     value: Option<serde_json::Value>,
 }
 
@@ -347,7 +346,7 @@ struct FailureOutput {
 
 #[no_mangle]
 pub extern "C" fn vzglyd_sidecar_abi_version() -> u32 {
-    1
+    2
 }
 
 #[no_mangle]
@@ -503,34 +502,46 @@ fn get_search_results() -> Result<Vec<SearchResult>, String> {
 }
 
 fn action(request: serde_json::Value) -> Result<BrowserResponse, String> {
-    let json = request.to_string();
-    let rc = unsafe { browser_action(json.as_ptr() as i32, json.len() as i32) };
+    let data = host_call_json("browser", request)?;
+    serde_json::from_value(data).map_err(|error| error.to_string())
+}
+
+fn host_call_json(capability: &str, mut request: serde_json::Value) -> Result<serde_json::Value, String> {
+    let object = request
+        .as_object_mut()
+        .ok_or_else(|| "host call request must be an object".to_string())?;
+    object.insert("wire_version".to_string(), json!(2));
+    object.insert("capability".to_string(), json!(capability));
+    let payload = serde_json::to_vec(&request).map_err(|error| error.to_string())?;
+
+    let rc = unsafe { host_call(payload.as_ptr() as i32, payload.len() as i32) };
     if rc != 0 {
-        return Err(format!("browser_action rc={rc}"));
+        return Err(format!("host_call rc={rc}"));
     }
 
-    let len = unsafe { browser_response_len() };
+    let len = unsafe { host_response_len() };
     if len <= 0 {
-        return Err("empty browser response".to_string());
+        return Err("empty host response".to_string());
     }
 
     let mut buf = vec![0u8; len as usize];
-    let read = unsafe { browser_response_read(buf.as_mut_ptr() as i32, len) };
+    let read = unsafe { host_response_read(buf.as_mut_ptr() as i32, len) };
     if read != len {
-        return Err(format!(
-            "browser response read mismatch: got={read} want={len}"
-        ));
+        return Err(format!("host response read mismatch: got={read} want={len}"));
     }
 
-    let text = String::from_utf8(buf).map_err(|e| e.to_string())?;
-    let response: BrowserResponse = serde_json::from_str(&text).map_err(|e| e.to_string())?;
-    if response.ok {
-        Ok(response)
+    let response: serde_json::Value =
+        serde_json::from_slice(&buf).map_err(|error| error.to_string())?;
+    if response.get("ok").and_then(serde_json::Value::as_bool) == Some(true) {
+        Ok(response
+            .get("data")
+            .cloned()
+            .unwrap_or_else(|| json!({})))
     } else {
-        Err(response
-            .message
-            .or(response.error)
-            .unwrap_or_else(|| text.clone()))
+        Err(response["error"]["message"]
+            .as_str()
+            .map(ToOwned::to_owned)
+            .unwrap_or_else(|| String::from_utf8_lossy(&buf).into_owned()))
     }
 }
 

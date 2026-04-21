@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-pub const WIRE_VERSION: u32 = 1;
+pub const WIRE_VERSION: u32 = 2;
 
 fn default_timeout_ms() -> u32 {
     10_000
@@ -15,7 +15,7 @@ fn default_selector_kind() -> SelectorKind {
     SelectorKind::Css
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SelectorKind {
     Css,
@@ -23,7 +23,7 @@ pub enum SelectorKind {
     XPath,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 #[serde(tag = "action", rename_all = "snake_case")]
 pub enum BrowserAction {
     Navigate {

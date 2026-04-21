@@ -7,12 +7,9 @@ const DESCRIBE: &[u8] = include_bytes!("describe.json");
 
 #[link(wasm_import_module = "vzglyd_host")]
 unsafe extern "C" {
-    fn browser_action(ptr: i32, len: i32) -> i32;
-    fn browser_response_len() -> i32;
-    fn browser_response_read(ptr: i32, len: i32) -> i32;
-    fn ai_request(ptr: i32, len: i32) -> i32;
-    fn ai_response_len() -> i32;
-    fn ai_response_read(ptr: i32, len: i32) -> i32;
+    fn host_call(ptr: i32, len: i32) -> i32;
+    fn host_response_len() -> i32;
+    fn host_response_read(ptr: i32, len: i32) -> i32;
     fn artifact_publish(kind_ptr: i32, kind_len: i32, data_ptr: i32, data_len: i32) -> i32;
     fn log_info(ptr: i32, len: i32) -> i32;
     fn sleep_ms(duration_ms: i64) -> i32;
@@ -20,7 +17,7 @@ unsafe extern "C" {
 
 #[no_mangle]
 pub extern "C" fn vzglyd_sidecar_abi_version() -> u32 {
-    1
+    2
 }
 
 #[no_mangle]
@@ -147,85 +144,85 @@ struct ActionResult {
 }
 
 fn browser_do(json: &str) -> ActionResult {
-    let rc = unsafe { browser_action(json.as_ptr() as i32, json.len() as i32) };
-    if rc != 0 {
+    let response = host_call_json("browser", json);
+    let Ok(value) = response else {
         return ActionResult {
             ok: false,
-            error: format!("browser_action rc={rc}"),
+            error: response.unwrap_err(),
             value: String::new(),
         };
-    }
-
-    let len = unsafe { browser_response_len() };
-    if len <= 0 {
-        return ActionResult {
-            ok: false,
-            error: "empty response".to_string(),
-            value: String::new(),
-        };
-    }
-
-    let mut buf = vec![0u8; len as usize];
-    let read = unsafe { browser_response_read(buf.as_mut_ptr() as i32, len) };
-    if read != len {
-        return ActionResult {
-            ok: false,
-            error: format!("read mismatch: got={read} want={len}"),
-            value: String::new(),
-        };
-    }
-
-    let text = String::from_utf8_lossy(&buf).into_owned();
-    let ok = text.contains(r#""ok":true"#);
-    let value = extract_string_field(&text, "png_b64").unwrap_or_default();
-    let error = if ok {
-        String::new()
-    } else {
-        extract_string_field(&text, "message").unwrap_or_else(|| text.clone())
     };
-    ActionResult { ok, error, value }
+    ActionResult {
+        ok: true,
+        error: String::new(),
+        value: value
+            .get("png_b64")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default()
+            .to_string(),
+    }
 }
 
 // -- AI action helpers --------------------------------------------------
 
 fn ai_do(json: &str) -> ActionResult {
-    let rc = unsafe { ai_request(json.as_ptr() as i32, json.len() as i32) };
-    if rc != 0 {
+    let response = host_call_json("ai", json);
+    let Ok(value) = response else {
         return ActionResult {
             ok: false,
-            error: format!("ai_request rc={rc}"),
+            error: response.unwrap_err(),
             value: String::new(),
         };
+    };
+    ActionResult {
+        ok: true,
+        error: String::new(),
+        value: value
+            .get("text")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default()
+            .to_string(),
+    }
+}
+
+fn host_call_json(capability: &str, json: &str) -> Result<serde_json::Value, String> {
+    let mut request: serde_json::Value = serde_json::from_str(json).map_err(|error| error.to_string())?;
+    let object = request
+        .as_object_mut()
+        .ok_or_else(|| "host call request must be an object".to_string())?;
+    object.insert("wire_version".to_string(), serde_json::json!(2));
+    object.insert("capability".to_string(), serde_json::json!(capability));
+    let payload = serde_json::to_vec(&request).map_err(|error| error.to_string())?;
+
+    let rc = unsafe { host_call(payload.as_ptr() as i32, payload.len() as i32) };
+    if rc != 0 {
+        return Err(format!("host_call rc={rc}"));
     }
 
-    let len = unsafe { ai_response_len() };
+    let len = unsafe { host_response_len() };
     if len <= 0 {
-        return ActionResult {
-            ok: false,
-            error: "empty ai response".to_string(),
-            value: String::new(),
-        };
+        return Err("empty host response".to_string());
     }
 
     let mut buf = vec![0u8; len as usize];
-    let read = unsafe { ai_response_read(buf.as_mut_ptr() as i32, len) };
+    let read = unsafe { host_response_read(buf.as_mut_ptr() as i32, len) };
     if read != len {
-        return ActionResult {
-            ok: false,
-            error: format!("ai read mismatch: got={read} want={len}"),
-            value: String::new(),
-        };
+        return Err(format!("host response read mismatch: got={read} want={len}"));
     }
 
-    let text = String::from_utf8_lossy(&buf).into_owned();
-    let ok = text.contains(r#""ok":true"#);
-    let value = extract_string_field(&text, "text").unwrap_or_default();
-    let error = if ok {
-        String::new()
+    let response: serde_json::Value =
+        serde_json::from_slice(&buf).map_err(|error| error.to_string())?;
+    if response.get("ok").and_then(serde_json::Value::as_bool) == Some(true) {
+        Ok(response
+            .get("data")
+            .cloned()
+            .unwrap_or_else(|| serde_json::json!({})))
     } else {
-        extract_string_field(&text, "message").unwrap_or_else(|| text.clone())
-    };
-    ActionResult { ok, error, value }
+        Err(response["error"]["message"]
+            .as_str()
+            .map(ToOwned::to_owned)
+            .unwrap_or_else(|| String::from_utf8_lossy(&buf).into_owned()))
+    }
 }
 
 // -- Publish helpers ----------------------------------------------------
@@ -270,33 +267,6 @@ fn json_string(s: &str) -> String {
     }
     out.push('"');
     out
-}
-
-fn extract_string_field(json: &str, key: &str) -> Option<String> {
-    let needle = format!(r#""{key}":""#);
-    let start = json.find(&needle)? + needle.len();
-    let rest = &json[start..];
-    // Walk char-by-char to handle escaped quotes correctly.
-    let mut result = String::new();
-    let mut chars = rest.chars().peekable();
-    loop {
-        match chars.next()? {
-            '"' => break,
-            '\\' => match chars.next()? {
-                '"' => result.push('"'),
-                '\\' => result.push('\\'),
-                'n' => result.push('\n'),
-                'r' => result.push('\r'),
-                't' => result.push('\t'),
-                c => {
-                    result.push('\\');
-                    result.push(c);
-                }
-            },
-            c => result.push(c),
-        }
-    }
-    Some(result)
 }
 
 // -- data: URL builder --------------------------------------------------

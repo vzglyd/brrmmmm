@@ -1,3 +1,5 @@
+use serde_json::json;
+
 // Browser login fixture: drives an inline data: URL login form through the full
 // navigate → fill → click → wait_for_selector sequence, then publishes the result.
 // Requires Chrome/Chromium installed on the host. No external network needed.
@@ -8,9 +10,9 @@ const FINAL_DELAY_MS: i64 = 2_500;
 
 #[link(wasm_import_module = "vzglyd_host")]
 unsafe extern "C" {
-    fn browser_action(ptr: i32, len: i32) -> i32;
-    fn browser_response_len() -> i32;
-    fn browser_response_read(ptr: i32, len: i32) -> i32;
+    fn host_call(ptr: i32, len: i32) -> i32;
+    fn host_response_len() -> i32;
+    fn host_response_read(ptr: i32, len: i32) -> i32;
     fn artifact_publish(kind_ptr: i32, kind_len: i32, data_ptr: i32, data_len: i32) -> i32;
     fn log_info(ptr: i32, len: i32) -> i32;
     fn sleep_ms(duration_ms: i64) -> i32;
@@ -18,7 +20,7 @@ unsafe extern "C" {
 
 #[no_mangle]
 pub extern "C" fn vzglyd_sidecar_abi_version() -> u32 {
-    1
+    2
 }
 
 #[no_mangle]
@@ -33,8 +35,6 @@ pub extern "C" fn vzglyd_sidecar_describe_len() -> i32 {
 
 #[no_mangle]
 pub extern "C" fn vzglyd_sidecar_start() {
-    // Inline login form as a data: URL. On submit, reveals #ok.
-    // No external server, no network required — everything runs in the browser process.
     let page_url = data_url(concat!(
         "<style>",
         "body{font-family:Arial,sans-serif;background:#f7f7fb;display:grid;place-items:center;min-height:100vh;margin:0;}",
@@ -64,146 +64,86 @@ pub extern "C" fn vzglyd_sidecar_start() {
         "</script>",
     ));
 
-    log("navigating to login form");
-    let nav = action(&format!(
-        r#"{{"wire_version":1,"action":"navigate","url":"{page_url}"}}"#
-    ));
-    if !nav.ok {
-        publish_failure(&format!("navigate failed: {}", nav.error));
-        return;
+    if let Err(error) = run(&page_url) {
+        publish_failure(&error);
     }
+}
+
+fn run(page_url: &str) -> Result<(), String> {
+    log("navigating to login form");
+    browser_call(json!({"action":"navigate","url":page_url}))?;
     pause("page loaded; pausing before selector wait", STEP_DELAY_MS);
 
     log("waiting for form to be ready");
-    let wait_form = action(
-        r##"{"wire_version":1,"action":"wait_for_selector","selector":"#username","timeout_ms":5000}"##,
-    );
-    if !wait_form.ok {
-        publish_failure(&format!("form did not appear: {}", wait_form.error));
-        return;
-    }
+    browser_call(json!({"action":"wait_for_selector","selector":"#username","timeout_ms":5000}))?;
     pause("form is ready; pausing before username fill", STEP_DELAY_MS);
 
     log("filling username");
-    let fill_u =
-        action(r##"{"wire_version":1,"action":"fill","selector":"#username","value":"testuser"}"##);
-    if !fill_u.ok {
-        publish_failure(&format!("fill username failed: {}", fill_u.error));
-        return;
-    }
-    pause(
-        "username filled; pausing before password fill",
-        STEP_DELAY_MS,
-    );
+    browser_call(json!({"action":"fill","selector":"#username","value":"testuser"}))?;
+    pause("username filled; pausing before password fill", STEP_DELAY_MS);
 
     log("filling password");
-    let fill_p =
-        action(r##"{"wire_version":1,"action":"fill","selector":"#password","value":"hunter2"}"##);
-    if !fill_p.ok {
-        publish_failure(&format!("fill password failed: {}", fill_p.error));
-        return;
-    }
+    browser_call(json!({"action":"fill","selector":"#password","value":"hunter2"}))?;
     pause("password filled; pausing before submit", STEP_DELAY_MS);
 
     log("clicking submit");
-    let click = action(r##"{"wire_version":1,"action":"click","selector":"#submit"}"##);
-    if !click.ok {
-        publish_failure(&format!("click failed: {}", click.error));
-        return;
-    }
-    pause(
-        "submitted; pausing before success selector wait",
-        STEP_DELAY_MS,
-    );
+    browser_call(json!({"action":"click","selector":"#submit"}))?;
+    pause("submitted; pausing before success selector wait", STEP_DELAY_MS);
 
     log("waiting for #ok");
-    let wait = action(
-        r##"{"wire_version":1,"action":"wait_for_selector","selector":"#ok","timeout_ms":5000}"##,
-    );
-    if !wait.ok {
-        publish_failure(&format!("wait_for_selector failed: {}", wait.error));
-        return;
-    }
-    pause(
-        "success marker is visible; pausing before publishing",
-        FINAL_DELAY_MS,
-    );
+    browser_call(json!({"action":"wait_for_selector","selector":"#ok","timeout_ms":5000}))?;
+    pause("success marker is visible; pausing before publishing", FINAL_DELAY_MS);
 
     log("getting current url");
-    let url_resp = action(r#"{"wire_version":1,"action":"current_url"}"#);
-    let url = if url_resp.ok {
-        url_resp.value
-    } else {
-        String::new()
-    };
+    let url = browser_call(json!({"action":"current_url"}))?
+        .get("url")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default()
+        .to_string();
 
     log("done — publishing result");
     let out = format!(r#"{{"ok":true,"logged_in":true,"url":"{url}"}}"#);
     publish("published_output", out.as_bytes());
+    Ok(())
 }
 
-// ── Browser action helpers ────────────────────────────────────────────
-
-struct ActionResult {
-    ok: bool,
-    error: String,
-    value: String,
+fn browser_call(request: serde_json::Value) -> Result<serde_json::Value, String> {
+    host_call_json("browser", request)
 }
 
-fn action(json: &str) -> ActionResult {
-    let rc = unsafe { browser_action(json.as_ptr() as i32, json.len() as i32) };
+fn host_call_json(capability: &str, mut request: serde_json::Value) -> Result<serde_json::Value, String> {
+    let object = request
+        .as_object_mut()
+        .ok_or_else(|| "host call request must be an object".to_string())?;
+    object.insert("wire_version".to_string(), json!(2));
+    object.insert("capability".to_string(), json!(capability));
+    let payload = serde_json::to_vec(&request).map_err(|error| error.to_string())?;
+
+    let rc = unsafe { host_call(payload.as_ptr() as i32, payload.len() as i32) };
     if rc != 0 {
-        return ActionResult {
-            ok: false,
-            error: format!("browser_action rc={rc}"),
-            value: String::new(),
-        };
+        return Err(format!("host_call rc={rc}"));
     }
 
-    let len = unsafe { browser_response_len() };
+    let len = unsafe { host_response_len() };
     if len <= 0 {
-        return ActionResult {
-            ok: false,
-            error: "empty response".to_string(),
-            value: String::new(),
-        };
+        return Err("empty host response".to_string());
     }
 
     let mut buf = vec![0u8; len as usize];
-    let read = unsafe { browser_response_read(buf.as_mut_ptr() as i32, len) };
+    let read = unsafe { host_response_read(buf.as_mut_ptr() as i32, len) };
     if read != len {
-        return ActionResult {
-            ok: false,
-            error: format!("read mismatch: got={read} want={len}"),
-            value: String::new(),
-        };
+        return Err(format!("host response read mismatch: got={read} want={len}"));
     }
 
-    let text = String::from_utf8_lossy(&buf).into_owned();
-
-    // Parse "ok" field from the JSON response.
-    let ok = text.contains(r#""ok":true"#);
-    // Extract "url" field if present (simple scan, no dep on a JSON parser).
-    let url_value = extract_string_field(&text, "url").unwrap_or_default();
-    let error = if ok {
-        String::new()
+    let value: serde_json::Value = serde_json::from_slice(&buf).map_err(|error| error.to_string())?;
+    if value.get("ok").and_then(serde_json::Value::as_bool) == Some(true) {
+        Ok(value.get("data").cloned().unwrap_or_else(|| json!({})))
     } else {
-        extract_string_field(&text, "message").unwrap_or_else(|| text.clone())
-    };
-
-    ActionResult {
-        ok,
-        error,
-        value: url_value,
+        Err(value["error"]["message"]
+            .as_str()
+            .map(ToOwned::to_owned)
+            .unwrap_or_else(|| String::from_utf8_lossy(&buf).into_owned()))
     }
-}
-
-fn extract_string_field(json: &str, key: &str) -> Option<String> {
-    let needle = format!(r#""{key}":""#);
-    let start = json.find(&needle)? + needle.len();
-    let rest = &json[start..];
-    let end = rest.find('"')?;
-    Some(rest[..end].to_string())
 }
 
 // ── Publish helpers ───────────────────────────────────────────────────

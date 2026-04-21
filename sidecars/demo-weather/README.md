@@ -88,6 +88,6 @@ artifacts:    raw_source_payload, normalized_payload, published_output
 
 ## How it works
 
-The sidecar uses `vzglyd_host::network_request` (host-mediated HTTPS) to call the Open-Meteo `/v1/forecast` endpoint. The host runtime (brrmmmm) makes the actual network call and returns the response via `network_response_len` / `network_response_read`. The sidecar parses the JSON inside WASM and publishes three artifact kinds via `artifact_publish`.
+The sidecar uses `vzglyd_host::host_call` with `capability = "network"` to call the Open-Meteo `/v1/forecast` endpoint. The host runtime (brrmmmm) makes the actual network call and returns the response via `host_response_len` / `host_response_read`. The sidecar decodes the base64 body, parses the JSON inside WASM, and publishes three artifact kinds via `artifact_publish`.
 
 No networking code runs inside the WASM sandbox — all TCP/TLS is delegated to the host.

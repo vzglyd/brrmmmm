@@ -5,7 +5,7 @@ use brrmmmm::host::browser_request::{
 
 #[test]
 fn decode_screenshot_action() {
-    let bytes = br#"{"wire_version":1,"action":"screenshot"}"#;
+    let bytes = br#"{"wire_version":2,"action":"screenshot"}"#;
 
     let action = decode_action(bytes).unwrap();
 
@@ -14,7 +14,7 @@ fn decode_screenshot_action() {
 
 #[test]
 fn decode_get_html_accepts_xpath_selector_kind() {
-    let bytes = br#"{"wire_version":1,"action":"get_html","selector":"//div[@role='main']","selector_kind":"xpath","limit":3}"#;
+    let bytes = br#"{"wire_version":2,"action":"get_html","selector":"//div[@role='main']","selector_kind":"xpath","limit":3}"#;
 
     let action = decode_action(bytes).unwrap();
 
@@ -34,7 +34,7 @@ fn decode_get_html_accepts_xpath_selector_kind() {
 
 #[test]
 fn decode_get_html_defaults_to_document_css_mode() {
-    let bytes = br#"{"wire_version":1,"action":"get_html"}"#;
+    let bytes = br#"{"wire_version":2,"action":"get_html"}"#;
 
     let action = decode_action(bytes).unwrap();
 

@@ -1,6 +1,7 @@
 mod ai;
 mod artifacts;
 mod browser;
+mod host_call;
 mod kv;
 mod network;
 mod params;
@@ -49,15 +50,19 @@ pub(super) fn register_vzglyd_host_on_linker(
         stop_signal,
         force_refresh,
     )?;
-    network::register(
+    let network_session = std::sync::Arc::new(network::NetworkSession::new()?);
+    let browser_session = browser::new_session(shared.clone())?;
+    let ai_session = ai::new_session(config)?;
+    host_call::register(
         linker,
         shared.clone(),
         event_sink.clone(),
         runtime_state.clone(),
         request_counter,
+        network_session,
+        browser_session,
+        ai_session,
     )?;
-    browser::register(linker, shared.clone(), event_sink.clone())?;
-    ai::register(linker, shared.clone(), event_sink.clone(), config)?;
     kv::register(linker, shared.clone(), event_sink, runtime_state, wasm_hash)?;
     tracing::register(linker)?;
     ua::register(linker, shared.clone())?;

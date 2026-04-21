@@ -1,3 +1,4 @@
+use base64::Engine as _;
 use serde::Deserialize;
 
 const DESCRIBE: &[u8] = include_bytes!("describe.json");
@@ -9,9 +10,9 @@ const DEFAULT_LOCATION: &str = "Berlin";
 
 #[link(wasm_import_module = "vzglyd_host")]
 unsafe extern "C" {
-    fn network_request(ptr: i32, len: i32) -> i32;
-    fn network_response_len() -> i32;
-    fn network_response_read(ptr: i32, len: i32) -> i32;
+    fn host_call(ptr: i32, len: i32) -> i32;
+    fn host_response_len() -> i32;
+    fn host_response_read(ptr: i32, len: i32) -> i32;
     fn artifact_publish(kind_ptr: i32, kind_len: i32, data_ptr: i32, data_len: i32) -> i32;
     fn log_info(ptr: i32, len: i32) -> i32;
     fn params_len() -> i32;
@@ -25,7 +26,7 @@ struct WeatherParams {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn vzglyd_sidecar_abi_version() -> u32 {
-    1
+    2
 }
 
 #[unsafe(no_mangle)]
@@ -46,69 +47,31 @@ pub extern "C" fn vzglyd_sidecar_start() {
         .or_else(|| env_var("LOCATION_NAME"))
         .unwrap_or_else(|| DEFAULT_LOCATION.to_string());
 
-    let path = format!(
-        "/v1/forecast?latitude={lat}&longitude={lon}&current_weather=true&wind_speed_unit=ms"
+    let url = format!(
+        "https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&current_weather=true&wind_speed_unit=ms"
     );
-
-    let request = serde_json::json!({
-        "wire_version": 1,
-        "kind": "https_get",
-        "host": "api.open-meteo.com",
-        "path": path,
-        "headers": []
-    });
-    let request_bytes = request.to_string();
 
     log(format!("fetching weather for {location} ({lat},{lon})").as_str());
 
-    let rc = unsafe { network_request(request_bytes.as_ptr() as i32, request_bytes.len() as i32) };
-    if rc != 0 {
-        log(format!("network_request failed: {rc}").as_str());
-        publish_error(&location, &format!("network_request rc={rc}"));
-        return;
-    }
-
-    let resp_len = unsafe { network_response_len() };
-    if resp_len <= 0 {
-        log("empty response from network_request");
-        publish_error(&location, "empty response");
-        return;
-    }
-
-    let mut buf = vec![0u8; resp_len as usize];
-    let read_rc = unsafe { network_response_read(buf.as_mut_ptr() as i32, resp_len) };
-    if read_rc != resp_len {
-        log(format!("network_response_read returned {read_rc}, expected {resp_len}").as_str());
-        publish_error(&location, &format!("read mismatch: got={read_rc} want={resp_len}"));
-        return;
-    }
-
-    // Parse the host-wire response envelope
-    let envelope: VersionedResponse = match serde_json::from_slice(&buf) {
-        Ok(v) => v,
-        Err(e) => {
-            log(format!("failed to parse wire envelope: {e}").as_str());
-            publish_error(&location, &format!("envelope parse error: {e}"));
+    let response = match network_call(serde_json::json!({
+        "action": "http",
+        "method": "GET",
+        "url": url,
+        "headers": []
+    })) {
+        Ok(value) => value,
+        Err(error) => {
+            log(format!("network host call failed: {error}").as_str());
+            publish_error(&location, &error);
             return;
         }
     };
 
-    let body = match envelope.payload {
-        WirePayload::Http { status_code, body, .. } => {
-            if status_code != 200 {
-                log(format!("HTTP {status_code}").as_str());
-                publish_error(&location, &format!("HTTP {status_code}"));
-                return;
-            }
-            body
-        }
-        WirePayload::Error { message, .. } => {
-            log(format!("host error: {message}").as_str());
-            publish_error(&location, &format!("host error: {message}"));
-            return;
-        }
-        WirePayload::TcpConnect { .. } => {
-            publish_error(&location, "unexpected tcp_connect response");
+    let body = match decode_http_body(&response) {
+        Ok(body) => body,
+        Err(error) => {
+            log(format!("failed to decode network response: {error}").as_str());
+            publish_error(&location, &error);
             return;
         }
     };
@@ -151,6 +114,76 @@ pub extern "C" fn vzglyd_sidecar_start() {
     publish("published_output", published.to_string().as_bytes());
 
     log(format!("done: {location} {temp}°C {condition}", temp = cw.temperature).as_str());
+}
+
+fn network_call(request: serde_json::Value) -> Result<serde_json::Value, String> {
+    host_call_json("network", request)
+}
+
+fn host_call_json(
+    capability: &str,
+    mut request: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let object = request
+        .as_object_mut()
+        .ok_or_else(|| "host call request must be an object".to_string())?;
+    object.insert("wire_version".to_string(), serde_json::json!(2));
+    object.insert("capability".to_string(), serde_json::json!(capability));
+    let payload = serde_json::to_vec(&request).map_err(|error| error.to_string())?;
+
+    let rc = unsafe { host_call(payload.as_ptr() as i32, payload.len() as i32) };
+    if rc != 0 {
+        return Err(format!("host_call rc={rc}"));
+    }
+
+    let len = unsafe { host_response_len() };
+    if len <= 0 {
+        return Err("empty host response".to_string());
+    }
+
+    let mut buf = vec![0u8; len as usize];
+    let read = unsafe { host_response_read(buf.as_mut_ptr() as i32, len) };
+    if read != len {
+        return Err(format!("host response read mismatch: got={read} want={len}"));
+    }
+
+    let response: serde_json::Value =
+        serde_json::from_slice(&buf).map_err(|error| error.to_string())?;
+    if response.get("ok").and_then(serde_json::Value::as_bool) == Some(true) {
+        Ok(response
+            .get("data")
+            .cloned()
+            .unwrap_or_else(|| serde_json::json!({})))
+    } else {
+        Err(response["error"]["message"]
+            .as_str()
+            .map(ToOwned::to_owned)
+            .unwrap_or_else(|| String::from_utf8_lossy(&buf).into_owned()))
+    }
+}
+
+fn decode_http_body(response: &serde_json::Value) -> Result<Vec<u8>, String> {
+    let kind = response
+        .get("kind")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default();
+    if kind != "http" {
+        return Err(format!("unexpected network response kind: {kind}"));
+    }
+    let status_code = response
+        .get("status_code")
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or(0);
+    if status_code != 200 {
+        return Err(format!("HTTP {status_code}"));
+    }
+    let body = response
+        .get("body_base64")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| "network response body_base64 missing".to_string())?;
+    base64::engine::general_purpose::STANDARD
+        .decode(body)
+        .map_err(|error| error.to_string())
 }
 
 fn publish(kind: &str, data: &[u8]) {
@@ -216,47 +249,6 @@ fn weathercode_to_condition(code: u32) -> &'static str {
         96 | 99 => "thunderstorm with hail",
         _ => "unknown",
     }
-}
-
-// --- wire types ---
-
-// Mirrors the host's HostResponse wire format:
-// {"wire_version":1,"kind":"http","status_code":200,"headers":[...],"body":[...]}
-// {"wire_version":1,"kind":"error","error_kind":"dns","message":"..."}
-#[derive(Deserialize)]
-struct VersionedResponse {
-    #[allow(dead_code)]
-    wire_version: u8,
-    #[serde(flatten)]
-    payload: WirePayload,
-}
-
-#[derive(Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-enum WirePayload {
-    Http {
-        status_code: u16,
-        #[serde(default)]
-        #[allow(dead_code)]
-        headers: Vec<WireHeader>,
-        body: Vec<u8>,
-    },
-    TcpConnect {
-        #[allow(dead_code)]
-        elapsed_ms: u64,
-    },
-    Error {
-        #[allow(dead_code)]
-        error_kind: String,
-        message: String,
-    },
-}
-
-#[derive(Deserialize)]
-#[allow(dead_code)]
-struct WireHeader {
-    name: String,
-    value: String,
 }
 
 #[derive(Deserialize)]

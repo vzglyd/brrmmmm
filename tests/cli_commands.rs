@@ -80,7 +80,7 @@ fn inspect_prints_real_contract_json() {
         String::from_utf8_lossy(&output.stderr)
     );
     let json: Value = serde_json::from_slice(&output.stdout).expect("inspect stdout is JSON");
-    assert_eq!(json["abi_version"], 1);
+    assert_eq!(json["abi_version"], 2);
     assert_eq!(
         json["describe"]["logical_id"],
         "brrmmmm.fixture.deterministic"

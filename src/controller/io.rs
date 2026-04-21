@@ -1,13 +1,11 @@
-use std::io::Read as _;
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use wasmtime::{Caller, Engine, Linker, Store, StoreLimits, StoreLimitsBuilder};
 
 use crate::abi::{ArtifactMeta, SidecarPhase, SidecarRuntimeState};
-use crate::attestation;
 use crate::config::RuntimeLimits;
 use crate::events::{Event, EventSink, diag, now_ms, now_ts};
-use crate::host::host_request::{ErrorKind, Header, HostRequest, HostResponse};
+use crate::host::host_request::ErrorKind;
 
 // ── WASM runtime policy and store types ──────────────────────────────
 
@@ -225,29 +223,6 @@ pub(super) fn update_failure_state(runtime_state: &Arc<Mutex<SidecarRuntimeState
     state.last_error = Some(error.to_string());
 }
 
-// ── Request helpers ──────────────────────────────────────────────────
-
-pub(super) fn describe_request(req: &HostRequest) -> (String, String, Option<String>) {
-    match req {
-        HostRequest::HttpsGet { host, path, .. } => {
-            ("https_get".to_string(), host.clone(), Some(path.clone()))
-        }
-        HostRequest::TcpConnect { host, port, .. } => {
-            ("tcp_connect".to_string(), format!("{host}:{port}"), None)
-        }
-    }
-}
-
-pub(super) fn response_info(resp: &HostResponse) -> (Option<u16>, usize) {
-    match resp {
-        HostResponse::Http {
-            status_code, body, ..
-        } => (Some(*status_code), body.len()),
-        HostResponse::TcpConnect { .. } => (None, 0),
-        HostResponse::Error { .. } => (None, 0),
-    }
-}
-
 // ── Memory helpers ───────────────────────────────────────────────────
 
 pub(super) fn read_memory_from_caller(
@@ -305,149 +280,7 @@ pub(super) fn write_memory_from_caller(
     Ok(())
 }
 
-// ── Response encoding ────────────────────────────────────────────────
-
-pub(super) fn encode_response_for_sidecar(response: &HostResponse) -> Vec<u8> {
-    match response {
-        HostResponse::Http { status_code, headers, body } => serde_json::json!({
-            "wire_version": 1u8,
-            "kind": "http",
-            "status_code": status_code,
-            "headers": headers.iter().map(|h| serde_json::json!({"name": h.name, "value": h.value})).collect::<Vec<_>>(),
-            "body": body.iter().map(|&b| b as u64).collect::<Vec<_>>(),
-        }),
-        HostResponse::TcpConnect { elapsed_ms } => serde_json::json!({
-            "wire_version": 1u8,
-            "kind": "tcp_connect",
-            "elapsed_ms": elapsed_ms,
-        }),
-        HostResponse::Error { error_kind, message } => serde_json::json!({
-            "wire_version": 1u8,
-            "kind": "error",
-            "error_kind": format!("{error_kind:?}").to_lowercase(),
-            "message": message,
-        }),
-    }
-    .to_string()
-    .into_bytes()
-}
-
-// ── Native request execution ─────────────────────────────────────────
-
-pub(super) fn execute_native_request(
-    req: &HostRequest,
-    user_agent: &str,
-    attestation_headers: &[(String, String)],
-    max_response_bytes: usize,
-) -> Result<HostResponse, (ErrorKind, String)> {
-    match req {
-        HostRequest::HttpsGet {
-            host,
-            path,
-            headers,
-        } => {
-            let url = format!("https://{host}{path}");
-
-            let mut builder = reqwest::blocking::Client::builder()
-                .use_rustls_tls()
-                .timeout(std::time::Duration::from_secs(30));
-
-            let mut hm = reqwest::header::HeaderMap::new();
-            for h in headers {
-                if attestation::is_reserved_header(&h.name) {
-                    continue;
-                }
-                if let (Ok(n), Ok(v)) = (
-                    reqwest::header::HeaderName::from_bytes(h.name.as_bytes()),
-                    reqwest::header::HeaderValue::from_bytes(h.value.as_bytes()),
-                ) {
-                    hm.insert(n, v);
-                }
-            }
-            if let Ok(v) = reqwest::header::HeaderValue::from_str(user_agent) {
-                hm.insert(reqwest::header::USER_AGENT, v);
-            }
-            for (name, value) in attestation_headers {
-                if let (Ok(n), Ok(v)) = (
-                    reqwest::header::HeaderName::from_bytes(name.as_bytes()),
-                    reqwest::header::HeaderValue::from_str(value),
-                ) {
-                    hm.insert(n, v);
-                }
-            }
-            builder = builder.default_headers(hm);
-
-            let client = builder
-                .build()
-                .map_err(|e| (ErrorKind::Io, format!("build client: {e}")))?;
-            let resp = client
-                .get(&url)
-                .send()
-                .map_err(|e| classify_reqwest_error(&e, format!("request: {e}")))?;
-            let status_code = resp.status().as_u16();
-
-            let resp_headers: Vec<Header> = resp
-                .headers()
-                .iter()
-                .filter_map(|(n, v)| {
-                    Some(Header {
-                        name: n.as_str().to_string(),
-                        value: v.to_str().ok()?.to_string(),
-                    })
-                })
-                .collect();
-
-            if let Some(content_length) = resp.content_length()
-                && content_length > max_response_bytes as u64
-            {
-                return Err((
-                    ErrorKind::Io,
-                    format!(
-                        "response body is {content_length} bytes, exceeding configured limit of {max_response_bytes} bytes"
-                    ),
-                ));
-            }
-
-            let mut reader = resp.take(max_response_bytes.saturating_add(1) as u64);
-            let mut body = Vec::new();
-            std::io::Read::read_to_end(&mut reader, &mut body)
-                .map_err(|e| (ErrorKind::Io, format!("read body: {e}")))?;
-            if body.len() > max_response_bytes {
-                return Err((
-                    ErrorKind::Io,
-                    format!("response body exceeds configured limit of {max_response_bytes} bytes"),
-                ));
-            }
-
-            Ok(HostResponse::Http {
-                status_code,
-                headers: resp_headers,
-                body,
-            })
-        }
-        HostRequest::TcpConnect {
-            host,
-            port,
-            timeout_ms,
-        } => {
-            let addr = format!("{host}:{port}");
-            let start = std::time::Instant::now();
-            let timeout = std::time::Duration::from_millis(*timeout_ms as u64);
-            let _stream = std::net::TcpStream::connect_timeout(
-                &addr
-                    .parse()
-                    .map_err(|e| (ErrorKind::Io, format!("parse addr: {e}")))?,
-                timeout,
-            )
-            .map_err(|e| classify_io_error(&e, format!("connect: {e}")))?;
-            Ok(HostResponse::TcpConnect {
-                elapsed_ms: start.elapsed().as_millis() as u64,
-            })
-        }
-    }
-}
-
-fn classify_reqwest_error(e: &reqwest::Error, message: String) -> (ErrorKind, String) {
+pub(super) fn classify_reqwest_error(e: &reqwest::Error, message: String) -> (ErrorKind, String) {
     if e.is_timeout() {
         return (ErrorKind::Timeout, message);
     }
@@ -472,7 +305,7 @@ fn classify_reqwest_error(e: &reqwest::Error, message: String) -> (ErrorKind, St
     (ErrorKind::Io, message)
 }
 
-fn classify_io_error(e: &std::io::Error, message: String) -> (ErrorKind, String) {
+pub(super) fn classify_io_error(e: &std::io::Error, message: String) -> (ErrorKind, String) {
     (io_kind_to_error_kind(e.kind()), message)
 }
 

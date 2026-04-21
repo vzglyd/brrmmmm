@@ -8,7 +8,6 @@ use chromiumoxide::cdp::browser_protocol::fetch::{
 use chromiumoxide::cdp::browser_protocol::network::SetUserAgentOverrideParams;
 use chromiumoxide::cdp::browser_protocol::page::CaptureScreenshotParams;
 use futures::StreamExt as _;
-use tokio::runtime::Runtime;
 
 use crate::attestation;
 use crate::host::HostState;
@@ -19,8 +18,7 @@ use crate::mission_state::{self, Capabilities};
 
 use super::super::super::io::lock_runtime;
 
-pub(super) struct BrowserSession {
-    pub runtime: Runtime,
+pub(crate) struct BrowserSession {
     pub browser: Option<Browser>,
     pub active_page: Option<chromiumoxide::Page>,
     pub shared: Arc<Mutex<HostState>>,
@@ -30,11 +28,7 @@ pub(super) struct BrowserSession {
 
 impl BrowserSession {
     pub fn new(shared: Arc<Mutex<HostState>>) -> anyhow::Result<Self> {
-        let runtime = tokio::runtime::Builder::new_multi_thread()
-            .enable_all()
-            .build()?;
         Ok(Self {
-            runtime,
             browser: None,
             active_page: None,
             shared,
@@ -43,8 +37,8 @@ impl BrowserSession {
         })
     }
 
-    pub fn execute(&mut self, action: BrowserAction) -> BrowserActionResponse {
-        match self.ensure_browser() {
+    pub async fn execute(&mut self, action: BrowserAction) -> BrowserActionResponse {
+        match self.ensure_browser().await {
             Ok(()) => {}
             Err(e) => {
                 return BrowserActionResponse::err("browser_launch_failed", e.to_string());
@@ -56,11 +50,9 @@ impl BrowserSession {
         if current_ua != self.last_applied_ua {
             if let Some(page) = self.active_page.as_ref().cloned() {
                 let ua_clone = current_ua.clone();
-                self.runtime.block_on(async move {
-                    let _ = page
-                        .execute(SetUserAgentOverrideParams::new(ua_clone))
-                        .await;
-                });
+                let _ = page
+                    .execute(SetUserAgentOverrideParams::new(ua_clone))
+                    .await;
             }
             self.last_applied_ua = current_ua.clone();
         }
@@ -75,17 +67,18 @@ impl BrowserSession {
         let shared = self.shared.clone();
         let interception_started = &mut self.interception_started;
         let user_agent = current_ua;
-        self.runtime.block_on(run_action(
+        run_action(
             browser,
             active_page,
             action,
             shared,
             interception_started,
             &user_agent,
-        ))
+        )
+        .await
     }
 
-    fn ensure_browser(&mut self) -> anyhow::Result<()> {
+    async fn ensure_browser(&mut self) -> anyhow::Result<()> {
         if self.browser.is_some() {
             return Ok(());
         }
@@ -101,8 +94,8 @@ impl BrowserSession {
             config = config.with_head();
         }
         let config = config.build().map_err(|e| anyhow::anyhow!("{e}"))?;
-        let (browser, mut handler) = self.runtime.block_on(Browser::launch(config))?;
-        self.runtime.spawn(async move {
+        let (browser, mut handler) = Browser::launch(config).await?;
+        tokio::spawn(async move {
             while handler.next().await.is_some() {
                 // Drive chromiumoxide's event handler until the browser exits.
             }

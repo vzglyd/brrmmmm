@@ -4,7 +4,7 @@ use anyhow::{Context, Result};
 use serde::Serialize;
 use wasmtime::{Config, Engine, Module};
 
-use crate::abi::{ABI_VERSION_V1, ActiveMode, SidecarDescribe, SidecarRuntimeState};
+use crate::abi::{ABI_VERSION_V2, ActiveMode, SidecarDescribe, SidecarRuntimeState};
 use crate::events::EventSink;
 use crate::host::HostState;
 
@@ -26,11 +26,20 @@ pub struct SidecarInspection {
 }
 
 pub fn inspect_wasm_contract(wasm_path: &str) -> Result<SidecarInspection> {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .context("build tokio runtime for inspection")?;
+    runtime.block_on(inspect_wasm_contract_async(wasm_path))
+}
+
+async fn inspect_wasm_contract_async(wasm_path: &str) -> Result<SidecarInspection> {
     let wasm_bytes =
         std::fs::read(wasm_path).with_context(|| format!("read WASM file: {wasm_path}"))?;
 
     let mut engine_config = Config::new();
     engine_config.epoch_interruption(true);
+    engine_config.async_support(true);
     let engine = Engine::new(&engine_config).context("create wasmtime engine")?;
     let module = Module::from_binary(&engine, &wasm_bytes)
         .with_context(|| format!("compile WASM module: {wasm_path}"))?;
@@ -40,15 +49,15 @@ pub fn inspect_wasm_contract(wasm_path: &str) -> Result<SidecarInspection> {
         .any(|e| e.name() == "vzglyd_sidecar_abi_version");
     if !has_abi_export {
         anyhow::bail!(
-            "WASM module does not export vzglyd_sidecar_abi_version; supported ABI version is {ABI_VERSION_V1}"
+            "WASM module does not export vzglyd_sidecar_abi_version; supported ABI version is {ABI_VERSION_V2}"
         );
     }
 
-    let (mut store, instance) = instantiate_for_inspection(&engine, &module)?;
-    let exported_abi = call_exported_abi_version(&instance, &mut store)?;
-    if exported_abi != ABI_VERSION_V1 {
+    let (mut store, instance) = instantiate_for_inspection(&engine, &module).await?;
+    let exported_abi = call_exported_abi_version(&instance, &mut store).await?;
+    if exported_abi != ABI_VERSION_V2 {
         anyhow::bail!(
-            "unsupported sidecar ABI version {exported_abi}; supported ABI version is {ABI_VERSION_V1}"
+            "unsupported sidecar ABI version {exported_abi}; supported ABI version is {ABI_VERSION_V2}"
         );
     }
 
@@ -56,14 +65,15 @@ pub fn inspect_wasm_contract(wasm_path: &str) -> Result<SidecarInspection> {
     let brrmmmm_exports = brrmmmm_exports(&module);
     let mut diagnostics = Vec::new();
 
-    let describe = match read_static_describe(&instance, &mut store, &RuntimePolicy::default())? {
-        Some(describe) => Some(describe),
-        None => {
-            diagnostics
-                .push("sidecar is missing vzglyd_sidecar_describe_ptr/len exports".to_string());
-            None
-        }
-    };
+    let describe =
+        match read_static_describe(&instance, &mut store, &RuntimePolicy::default()).await? {
+            Some(describe) => Some(describe),
+            None => {
+                diagnostics
+                    .push("sidecar is missing vzglyd_sidecar_describe_ptr/len exports".to_string());
+                None
+            }
+        };
 
     Ok(SidecarInspection {
         wasm_path: wasm_path.to_string(),
@@ -104,9 +114,9 @@ fn validate_describe_contract(describe: &SidecarDescribe) -> Result<()> {
     if describe.description.trim().is_empty() {
         anyhow::bail!("describe.description is required");
     }
-    if describe.abi_version != 0 && describe.abi_version != ABI_VERSION_V1 {
+    if describe.abi_version != 0 && describe.abi_version != ABI_VERSION_V2 {
         anyhow::bail!(
-            "describe.abi_version must be {ABI_VERSION_V1} when present, got {}",
+            "describe.abi_version must be {ABI_VERSION_V2} when present, got {}",
             describe.abi_version
         );
     }
@@ -130,7 +140,7 @@ fn validate_describe_contract(describe: &SidecarDescribe) -> Result<()> {
     Ok(())
 }
 
-fn instantiate_for_inspection(
+async fn instantiate_for_inspection(
     engine: &Engine,
     module: &Module,
 ) -> Result<(WasmStore, wasmtime::Instance)> {
@@ -140,7 +150,7 @@ fn instantiate_for_inspection(
     store.set_epoch_deadline(policy.init_deadline_ticks());
     store.epoch_deadline_trap();
     let mut linker = WasmLinker::new(engine);
-    wasmtime_wasi::preview1::add_to_linker_sync(&mut linker, |state| &mut state.wasi)?;
+    wasmtime_wasi::preview1::add_to_linker_async(&mut linker, |state| &mut state.wasi)?;
 
     let runtime_state = Arc::new(Mutex::new(SidecarRuntimeState::default()));
     let config = crate::config::Config::load().context("load brrmmmm config for inspection")?;
@@ -162,21 +172,26 @@ fn instantiate_for_inspection(
     )?;
 
     let instance = linker
-        .instantiate(&mut store, module)
+        .instantiate_async(&mut store, module)
+        .await
         .context("instantiate WASM module for inspection")?;
     Ok((store, instance))
 }
 
-fn call_exported_abi_version(instance: &wasmtime::Instance, store: &mut WasmStore) -> Result<u32> {
+async fn call_exported_abi_version(
+    instance: &wasmtime::Instance,
+    store: &mut WasmStore,
+) -> Result<u32> {
     let abi_fn = instance
         .get_typed_func::<(), u32>(&mut *store, "vzglyd_sidecar_abi_version")
         .context("sidecar must export callable vzglyd_sidecar_abi_version() -> u32")?;
     abi_fn
-        .call(store, ())
+        .call_async(store, ())
+        .await
         .context("call vzglyd_sidecar_abi_version")
 }
 
-pub(super) fn read_static_describe(
+pub(super) async fn read_static_describe(
     instance: &wasmtime::Instance,
     store: &mut WasmStore,
     policy: &RuntimePolicy,
@@ -192,10 +207,12 @@ pub(super) fn read_static_describe(
     };
 
     let ptr = ptr_fn
-        .call(&mut *store, ())
+        .call_async(&mut *store, ())
+        .await
         .context("call vzglyd_sidecar_describe_ptr")?;
     let len = len_fn
-        .call(&mut *store, ())
+        .call_async(&mut *store, ())
+        .await
         .context("call vzglyd_sidecar_describe_len")?;
     if ptr < 0 || len <= 0 {
         anyhow::bail!("invalid describe memory range: ptr={ptr}, len={len}");

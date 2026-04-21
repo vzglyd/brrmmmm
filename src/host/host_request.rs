@@ -1,22 +1,26 @@
 use serde::{Deserialize, Serialize};
 
-pub const WIRE_VERSION: u8 = 1;
+pub const WIRE_VERSION: u32 = 2;
 
-// ── Host-mediated request (sidecar → host) ─────────────────────────
+// ── Host-mediated network request ───────────────────────────────────
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-pub enum HostRequest {
-    HttpsGet {
-        host: String,
-        path: String,
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(tag = "action", rename_all = "snake_case")]
+pub enum NetworkAction {
+    Http {
+        method: String,
+        url: String,
         #[serde(default)]
         headers: Vec<Header>,
+        #[serde(default)]
+        body_base64: Option<String>,
+        #[serde(default = "default_http_timeout_ms")]
+        timeout_ms: u32,
     },
     TcpConnect {
         host: String,
         port: u16,
-        #[serde(default = "default_timeout")]
+        #[serde(default = "default_tcp_timeout_ms")]
         timeout_ms: u32,
     },
 }
@@ -27,27 +31,27 @@ pub struct Header {
     pub value: String,
 }
 
-fn default_timeout() -> u32 {
+fn default_http_timeout_ms() -> u32 {
+    30_000
+}
+
+fn default_tcp_timeout_ms() -> u32 {
     5_000
 }
 
-// ── Host response (host → sidecar) ─────────────────────────────────
+// ── Host response data ──────────────────────────────────────────────
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
-pub enum HostResponse {
+pub enum NetworkResponseData {
     Http {
         status_code: u16,
         #[serde(default)]
         headers: Vec<Header>,
-        body: Vec<u8>,
+        body_base64: String,
     },
     TcpConnect {
         elapsed_ms: u64,
-    },
-    Error {
-        error_kind: ErrorKind,
-        message: String,
     },
 }
 
@@ -63,40 +67,16 @@ pub enum ErrorKind {
     Unknown,
 }
 
-// ── Wire encoding/decoding ─────────────────────────────────────────
-
-#[derive(Debug, Serialize)]
-#[allow(dead_code)]
-struct VersionedRequest<'a> {
-    wire_version: u8,
-    #[serde(flatten)]
-    payload: &'a HostRequest,
-}
-
-#[derive(Debug, Deserialize)]
-#[allow(dead_code)]
-struct VersionedResponse {
-    wire_version: u8,
-    #[serde(flatten)]
-    payload: HostResponse,
-}
-
-pub fn encode_request(req: &HostRequest) -> Result<Vec<u8>, String> {
-    let wrapper = VersionedRequest {
-        wire_version: WIRE_VERSION,
-        payload: req,
-    };
-    serde_json::to_vec(&wrapper).map_err(|e| format!("encode request: {e}"))
-}
-
-pub fn decode_response(bytes: &[u8]) -> Result<HostResponse, String> {
-    let wrapper: VersionedResponse =
-        serde_json::from_slice(bytes).map_err(|e| format!("decode response: {e}"))?;
-    if wrapper.wire_version != WIRE_VERSION {
-        return Err(format!(
-            "wire version mismatch: expected {}, got {}",
-            WIRE_VERSION, wrapper.wire_version
-        ));
+impl ErrorKind {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Dns => "dns",
+            Self::Tls => "tls",
+            Self::Io => "io",
+            Self::Timeout => "timeout",
+            Self::ConnectionRefused => "connection_refused",
+            Self::PermissionDenied => "permission_denied",
+            Self::Unknown => "unknown",
+        }
     }
-    Ok(wrapper.payload)
 }

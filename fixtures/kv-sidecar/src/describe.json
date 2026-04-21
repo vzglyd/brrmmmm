@@ -3,7 +3,7 @@
   "logical_id": "brrmmmm.fixture.kv",
   "name": "KV Fixture Sidecar",
   "description": "Exercises the host key-value imports and leaves one persisted value behind.",
-  "abi_version": 1,
+  "abi_version": 2,
   "run_modes": ["managed_polling"],
   "state_persistence": "host_persisted",
   "required_env_vars": [],

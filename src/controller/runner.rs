@@ -4,6 +4,7 @@ use std::sync::{
 };
 
 use anyhow::{Context, Result};
+use futures::FutureExt as _;
 use wasmtime::{Engine, Module};
 
 use crate::abi::{PersistenceAuthority, SidecarRuntimeState};
@@ -42,7 +43,7 @@ pub(super) struct WasmRunContext {
     pub(super) force_refresh: Arc<AtomicBool>,
 }
 
-pub(super) fn run_wasm_instance(
+pub(super) async fn run_wasm_instance(
     engine: &Engine,
     module: &Module,
     config: WasmRunConfig,
@@ -80,7 +81,7 @@ pub(super) fn run_wasm_instance(
 
     let mut store = build_wasm_store(engine, wasi_p1, &policy);
     let mut linker = WasmLinker::new(engine);
-    wasmtime_wasi::preview1::add_to_linker_sync(&mut linker, |state| &mut state.wasi)?;
+    wasmtime_wasi::preview1::add_to_linker_async(&mut linker, |state| &mut state.wasi)?;
 
     // Build host state and register all vzglyd_host imports.
     let mut host_state = HostState::new(
@@ -121,11 +122,14 @@ pub(super) fn run_wasm_instance(
     store.set_epoch_deadline(policy.init_deadline_ticks());
     store.epoch_deadline_trap();
 
-    let instance = match run_guest_phase("instantiate WASM module", || {
+    let instance = match run_guest_phase("instantiate WASM module", async {
         linker
-            .instantiate(&mut store, module)
+            .instantiate_async(&mut store, module)
+            .await
             .context("instantiate WASM module")
-    }) {
+    })
+    .await
+    {
         Ok(instance) => instance,
         Err(error) => {
             finish_failed_run(
@@ -149,9 +153,11 @@ pub(super) fn run_wasm_instance(
     });
 
     let mut entry_timeout_secs = policy.default_acquisition_timeout_secs;
-    let describe_result = run_guest_phase("read sidecar describe", || {
-        call_describe(&instance, &mut store, &policy)
-    });
+    let describe_result = run_guest_phase(
+        "read sidecar describe",
+        call_describe(&instance, &mut store, &policy),
+    )
+    .await;
 
     match describe_result {
         Ok(Some(describe)) => {
@@ -213,11 +219,13 @@ pub(super) fn run_wasm_instance(
         &format!("[brrmmmm] calling entry '{entry_name}' (runs until stopped)"),
     );
 
-    let call_result = run_guest_phase("execute sidecar entry", || {
+    let call_result = run_guest_phase("execute sidecar entry", async {
         entry
-            .call(&mut store, &[], &mut [])
+            .call_async(&mut store, &[], &mut [])
+            .await
             .with_context(|| format!("execute entry function: {entry_name}"))
-    });
+    })
+    .await;
 
     let reason = match &call_result {
         Ok(_) => "completed",
@@ -288,8 +296,11 @@ impl std::fmt::Display for HostImportPanic {
 
 impl std::error::Error for HostImportPanic {}
 
-fn run_guest_phase<T>(phase: &'static str, f: impl FnOnce() -> Result<T>) -> Result<T> {
-    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)) {
+async fn run_guest_phase<T>(
+    phase: &'static str,
+    future: impl std::future::Future<Output = Result<T>>,
+) -> Result<T> {
+    match std::panic::AssertUnwindSafe(future).catch_unwind().await {
         Ok(result) => result,
         Err(panic_payload) => Err(anyhow::Error::new(HostImportPanic {
             phase,
@@ -449,12 +460,12 @@ fn find_entry(instance: &wasmtime::Instance, store: &mut WasmStore) -> Option<St
 
 // ── describe() call ──────────────────────────────────────────────────
 
-fn call_describe(
+async fn call_describe(
     instance: &wasmtime::Instance,
     store: &mut WasmStore,
     policy: &RuntimePolicy,
 ) -> Result<Option<crate::abi::SidecarDescribe>> {
-    read_static_describe(instance, store, policy)
+    read_static_describe(instance, store, policy).await
 }
 
 #[cfg(test)]
@@ -475,7 +486,7 @@ mod tests {
             .map(|value| value.to_string())
             .unwrap_or_else(|| "null".to_string());
         format!(
-            r#"{{"schema_version":1,"logical_id":"test.sidecar","name":"Test Sidecar","description":"test sidecar","abi_version":1,"run_modes":["managed_polling"],"state_persistence":"volatile","required_env_vars":[],"optional_env_vars":[],"params":{{"fields":[]}},"capabilities_needed":[],"poll_strategy":null,"cooldown_policy":null,"artifact_types":["published_output"],"acquisition_timeout_secs":{acquisition}}}"#
+            r#"{{"schema_version":1,"logical_id":"test.sidecar","name":"Test Sidecar","description":"test sidecar","abi_version":2,"run_modes":["managed_polling"],"state_persistence":"volatile","required_env_vars":[],"optional_env_vars":[],"params":{{"fields":[]}},"capabilities_needed":[],"poll_strategy":null,"cooldown_policy":null,"artifact_types":["published_output"],"acquisition_timeout_secs":{acquisition}}}"#
         )
     }
 
@@ -499,7 +510,7 @@ mod tests {
                 (data (i32.const 16) "{describe_data}")
                 (data (i32.const 1024) "published_output")
                 (func (export "vzglyd_sidecar_abi_version") (result i32)
-                    i32.const 1)
+                    i32.const 2)
                 (func (export "vzglyd_sidecar_describe_ptr") (result i32)
                     i32.const 16)
                 (func (export "vzglyd_sidecar_describe_len") (result i32)
@@ -521,6 +532,7 @@ mod tests {
     ) {
         let mut engine_config = Config::new();
         engine_config.epoch_interruption(true);
+        engine_config.async_support(true);
         let engine = Engine::new(&engine_config).expect("test engine");
         let module = Module::new(&engine, wat).expect("test module");
 
@@ -540,7 +552,11 @@ mod tests {
             }
         });
 
-        let result = run_wasm_instance(
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("test tokio runtime");
+        let result = runtime.block_on(run_wasm_instance(
             &engine,
             &module,
             WasmRunConfig {
@@ -548,7 +564,7 @@ mod tests {
                 env_vars: Vec::new(),
                 params_bytes,
                 log_channel: false,
-                abi_version: 1,
+                abi_version: 2,
                 wasm_size_bytes: wat.len(),
                 wasm_hash: "test-wasm".to_string(),
                 module_hash: ModuleHash([0u8; 32]),
@@ -564,7 +580,7 @@ mod tests {
                 force_refresh,
             },
             &crate::config::Config::load().expect("test config"),
-        );
+        ));
 
         stop_signal.store(true, Ordering::Relaxed);
         let _ = timer.join();
@@ -710,9 +726,15 @@ mod tests {
 
     #[test]
     fn panic_payloads_are_preserved_and_truncated() {
-        let result = run_guest_phase::<()>("test import", || {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("test tokio runtime");
+        let result = runtime.block_on(run_guest_phase::<()>("test import", async {
             std::panic::panic_any("x".repeat(600));
-        });
+            #[allow(unreachable_code)]
+            Ok(())
+        }));
 
         let error = result.expect_err("panic should be converted to error");
         let panic = error
