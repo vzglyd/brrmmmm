@@ -5,7 +5,10 @@ mod inspection;
 mod io;
 mod runner;
 
-pub use inspection::{MissionInspection, inspect_module_contract, validate_module_inspection};
+pub use inspection::{
+    MissionInspection, inspect_module_contract, inspect_module_contract_async,
+    validate_module_inspection,
+};
 
 use std::sync::{
     Arc, Mutex,

@@ -52,7 +52,8 @@ pub fn inspect_module_contract(wasm_path: &str) -> Result<MissionInspection> {
     runtime.block_on(inspect_module_contract_async(wasm_path))
 }
 
-async fn inspect_module_contract_async(wasm_path: &str) -> Result<MissionInspection> {
+/// Async version of [`inspect_module_contract`] for use inside an existing tokio runtime.
+pub async fn inspect_module_contract_async(wasm_path: &str) -> Result<MissionInspection> {
     let wasm_bytes =
         std::fs::read(wasm_path).with_context(|| format!("read WASM file: {wasm_path}"))?;
 

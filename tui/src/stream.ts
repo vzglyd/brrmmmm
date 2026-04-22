@@ -7,6 +7,7 @@ import { createInterface } from "node:readline";
 import {
   type BrrmmmmEvent,
   type DaemonMissionSummary,
+  type ModuleDescribe,
 } from "./types.js";
 
 export interface WatchHandle {
@@ -35,7 +36,8 @@ type DaemonCommand =
   | { type: "rescue"; mission: string; action: "retry" | "abort"; reason: string }
   | { type: "status" }
   | { type: "watch"; mission: string }
-  | { type: "watch_status" };
+  | { type: "watch_status" }
+  | { type: "inspect"; wasm: string };
 
 interface LaunchCommand {
   type: "launch";
@@ -51,7 +53,8 @@ type DaemonResponse =
   | { type: "error"; message: string }
   | { type: "full"; message: string }
   | { type: "status"; missions: DaemonMissionSummary[] }
-  | { type: "event"; mission: string; line: string };
+  | { type: "event"; mission: string; line: string }
+  | { type: "inspected"; describe: ModuleDescribe | null };
 
 export function daemonSocketPath(): string {
   return join(homedir(), ".brrmmmm", "daemon.sock");
@@ -100,6 +103,16 @@ export function parseLaunchArgs(extraArgs: string[]): LaunchArgs {
   }
 
   return { env, params, paramsSource, paramsPath };
+}
+
+export async function inspectMission(wasm: string): Promise<ModuleDescribe | null> {
+  const response = await sendDaemonCommand({
+    type: "inspect",
+    wasm: resolveLaunchWasmPath(wasm),
+  });
+  if (response.type === "inspected") return response.describe;
+  if (response.type === "error") throw new Error(response.message);
+  throw new Error("unexpected response from daemon inspect");
 }
 
 export async function launchMission(request: LaunchRequest): Promise<string> {

@@ -5,6 +5,7 @@ import { resolve, dirname } from "node:path";
 
 import {
   type DaemonMissionSummary,
+  type ModuleDescribe,
   type ModuleParamField,
   type TuiState,
 } from "./types.js";
@@ -14,6 +15,7 @@ import {
   abortMission,
   fetchMissionStatus,
   holdMission,
+  inspectMission,
   launchMission,
   parseLaunchArgs,
   rescueRetryMission,
@@ -39,12 +41,15 @@ interface AppProps {
 
 type View = "list" | "detail";
 type FocusPane = "pipeline" | "raw" | "output";
-type LauncherField = "wasm" | "name" | "env" | "paramsSource" | "paramsValue";
+type LauncherField = string; // "wasm" | "env" | `param:${string}` | "paramsSource" | "paramsValue"
 
 interface LauncherState {
   wasmPath: string;
   missionName: string;
   envText: string;
+  inspectedDescribe: ModuleDescribe | null;
+  inspecting: boolean;
+  launcherParamValues: Record<string, string>;
   paramsSource: "none" | "json" | "file";
   paramsValue: string;
   error: string | null;
@@ -58,14 +63,15 @@ interface FileBrowserState {
 }
 
 const FOCUS_ORDER: FocusPane[] = ["pipeline", "raw", "output"];
-const LAUNCHER_FIELDS: LauncherField[] = [
-  "wasm",
-  "name",
-  "env",
-  "paramsSource",
-  "paramsValue",
-];
 const AMBER = "#FFB300";
+
+function computeLauncherFields(describe: ModuleDescribe | null): string[] {
+  const paramFields = describe?.params?.fields ?? [];
+  if (paramFields.length > 0) {
+    return ["wasm", "env", ...paramFields.map((f) => `param:${f.key}`)];
+  }
+  return ["wasm", "env", "paramsSource", "paramsValue"];
+}
 
 export function App({ initialWasmPath, rustBin: _rustBin, extraArgs }: AppProps) {
   const { exit } = useApp();
@@ -87,6 +93,9 @@ export function App({ initialWasmPath, rustBin: _rustBin, extraArgs }: AppProps)
     wasmPath: initialWasmPath ?? "",
     missionName: "",
     envText: formatEnv(parsedArgs.env),
+    inspectedDescribe: null,
+    inspecting: false,
+    launcherParamValues: {},
     paramsSource: parsedArgs.paramsSource,
     paramsValue:
       parsedArgs.paramsSource === "file"
@@ -280,6 +289,9 @@ export function App({ initialWasmPath, rustBin: _rustBin, extraArgs }: AppProps)
       cycleFocus();
       return;
     }
+    // When the env/param panel is focused, suppress single-char shortcuts so
+    // they don't fire while the user is typing into a param text field.
+    if (focusPane === "pipeline") return;
     if (input === "f" && selectedSummary) {
       void forceSelectedMission(selectedSummary.name);
       return;
@@ -512,6 +524,9 @@ export function App({ initialWasmPath, rustBin: _rustBin, extraArgs }: AppProps)
     }
 
     if (key.tab || key.downArrow) {
+      if (launcherField === "wasm") {
+        void triggerInspect(launcher.wasmPath);
+      }
       setLauncherField(nextLauncherField(1));
       return;
     }
@@ -524,6 +539,59 @@ export function App({ initialWasmPath, rustBin: _rustBin, extraArgs }: AppProps)
     // f on wasm field opens file browser
     if (input === "f" && launcherField === "wasm") {
       openFileBrowser(launcher.wasmPath);
+      return;
+    }
+
+    if (launcherField.startsWith("param:")) {
+      const paramKey = launcherField.slice(6);
+      const paramField = launcher.inspectedDescribe?.params?.fields.find(
+        (f) => f.key === paramKey,
+      );
+      if (paramField) {
+        const selectableValues =
+          paramField.options.length > 0
+            ? paramField.options.map((o) => String(o.value))
+            : paramField.type === "boolean"
+              ? ["false", "true"]
+              : null;
+        if (selectableValues) {
+          if (key.leftArrow || key.rightArrow || input === " ") {
+            const cur =
+              launcher.launcherParamValues[paramKey] ?? selectableValues[0] ?? "";
+            const idx = selectableValues.indexOf(cur);
+            const next =
+              key.leftArrow
+                ? selectableValues[(idx - 1 + selectableValues.length) % selectableValues.length]
+                : selectableValues[(idx + 1) % selectableValues.length];
+            setLauncher((c) => ({
+              ...c,
+              launcherParamValues: { ...c.launcherParamValues, [paramKey]: next ?? "" },
+            }));
+            return;
+          }
+        } else {
+          if (key.backspace || key.delete) {
+            setLauncher((c) => ({
+              ...c,
+              launcherParamValues: {
+                ...c.launcherParamValues,
+                [paramKey]: (c.launcherParamValues[paramKey] ?? "").slice(0, -1),
+              },
+            }));
+            return;
+          }
+          if (input && !key.ctrl && !key.meta) {
+            setLauncher((c) => ({
+              ...c,
+              launcherParamValues: {
+                ...c.launcherParamValues,
+                [paramKey]: `${c.launcherParamValues[paramKey] ?? ""}${input}`,
+              },
+            }));
+            return;
+          }
+        }
+      }
       return;
     }
 
@@ -556,34 +624,56 @@ export function App({ initialWasmPath, rustBin: _rustBin, extraArgs }: AppProps)
     }
   }
 
-  function nextLauncherField(direction: -1 | 1): LauncherField {
-    const index = LAUNCHER_FIELDS.indexOf(launcherField);
-    const nextIndex =
-      (index + direction + LAUNCHER_FIELDS.length) % LAUNCHER_FIELDS.length;
-    return LAUNCHER_FIELDS[nextIndex]!;
+  function nextLauncherField(direction: -1 | 1): string {
+    const fields = computeLauncherFields(launcher.inspectedDescribe);
+    const index = fields.indexOf(launcherField);
+    const nextIndex = (index + direction + fields.length) % fields.length;
+    return fields[nextIndex]!;
   }
 
   function updateLauncherField(
     transform: (value: string) => string,
   ): void {
     setLauncher((current) => {
-      if (launcherField === "paramsSource") {
+      if (launcherField === "paramsSource" || launcherField.startsWith("param:")) {
         return current;
       }
       const key =
         launcherField === "wasm"
           ? "wasmPath"
-          : launcherField === "name"
-            ? "missionName"
-            : launcherField === "env"
-              ? "envText"
-              : "paramsValue";
+          : launcherField === "env"
+            ? "envText"
+            : "paramsValue";
       return {
         ...current,
-        [key]: transform(current[key]),
+        [key]: transform(current[key as keyof LauncherState] as string),
         error: null,
       };
     });
+  }
+
+  async function triggerInspect(wasmPath: string): Promise<void> {
+    const trimmed = wasmPath.trim();
+    if (!trimmed.endsWith(".wasm")) return;
+    setLauncher((cur) => ({ ...cur, inspecting: true, inspectedDescribe: null }));
+    try {
+      const describe = await inspectMission(trimmed);
+      const defaults: Record<string, string> = {};
+      for (const f of describe?.params?.fields ?? []) {
+        if (f.default !== undefined && f.default !== null) {
+          defaults[f.key] = paramDefaultText(f.default);
+        }
+      }
+      setLauncher((cur) => ({
+        ...cur,
+        inspectedDescribe: describe,
+        inspecting: false,
+        launcherParamValues: defaults,
+        error: null,
+      }));
+    } catch {
+      setLauncher((cur) => ({ ...cur, inspecting: false }));
+    }
   }
 
   async function submitLauncher(): Promise<void> {
@@ -828,10 +918,12 @@ function LauncherDialog({
   height,
 }: {
   state: LauncherState;
-  field: LauncherField;
+  field: string;
   fileBrowser: FileBrowserState | null;
   height: number;
 }) {
+  const schemaFields = state.inspectedDescribe?.params?.fields ?? [];
+  const hasSchemaParams = schemaFields.length > 0;
   return (
     <Box
       borderStyle="round"
@@ -854,28 +946,55 @@ function LauncherDialog({
       ) : (
         <>
           {field === "wasm" ? (
-            <Text dimColor>  Tab or f → open file browser</Text>
+            <Text dimColor>  Tab → open file browser</Text>
           ) : null}
-          <LauncherRow
-            label="Mission name"
-            value={state.missionName}
-            selected={field === "name"}
-          />
+          {state.inspecting ? (
+            <Text dimColor>  Inspecting WASM...</Text>
+          ) : null}
           <LauncherRow
             label="Env vars"
             value={state.envText}
             selected={field === "env"}
           />
-          <LauncherRow
-            label="Params mode"
-            value={state.paramsSource}
-            selected={field === "paramsSource"}
-          />
-          <LauncherRow
-            label={state.paramsSource === "file" ? "Params file" : "Params JSON"}
-            value={state.paramsValue}
-            selected={field === "paramsValue"}
-          />
+          {hasSchemaParams ? (
+            schemaFields.map((f) => {
+              const fieldKey = `param:${f.key}`;
+              const isSelected = field === fieldKey;
+              const currentValue = state.launcherParamValues[f.key] ?? "";
+              const selectableValues =
+                f.options.length > 0
+                  ? f.options.map((o) => String(o.value))
+                  : f.type === "boolean"
+                    ? ["false", "true"]
+                    : null;
+              const displayLabel = f.label ?? f.key;
+              const typeHint = f.required ? `${f.type}*` : f.type;
+              const displayValue = selectableValues
+                ? `< ${currentValue || (selectableValues[0] ?? "")} >`
+                : currentValue;
+              return (
+                <LauncherRow
+                  key={fieldKey}
+                  label={`${displayLabel} (${typeHint})`}
+                  value={displayValue}
+                  selected={isSelected}
+                />
+              );
+            })
+          ) : (
+            <>
+              <LauncherRow
+                label="Params mode"
+                value={state.paramsSource}
+                selected={field === "paramsSource"}
+              />
+              <LauncherRow
+                label={state.paramsSource === "file" ? "Params file" : "Params JSON"}
+                value={state.paramsValue}
+                selected={field === "paramsValue"}
+              />
+            </>
+          )}
         </>
       )}
       <Box marginTop={1} flexDirection="column">
@@ -883,7 +1002,11 @@ function LauncherDialog({
           <Text dimColor>↑/↓ browse · Enter select · Esc cancel browser</Text>
         ) : (
           <>
-            <Text dimColor>Enter launch · Tab/↑/↓ move · Left/Right params mode · Esc close</Text>
+            <Text dimColor>
+              Enter launch · Tab/↑/↓ move
+              {hasSchemaParams ? " · Left/Right toggle options" : " · Left/Right params mode"}
+              {" · Esc close"}
+            </Text>
             <Text dimColor>Env vars: KEY=VALUE, KEY2=VALUE2</Text>
           </>
         )}
@@ -957,7 +1080,7 @@ function DashboardStatusBar({
         {helpOpen
           ? "↑/↓/PgUp/PgDn scroll · h/?/Esc close · Ctrl+C quit"
           : launcherOpen
-            ? "Enter launch · Tab/↑/↓ move · Left/Right params mode · Esc close"
+            ? "Enter launch · Tab/↑/↓ move · Esc close"
             : view === "list"
               ? "↑/↓ select · Enter open · l launch · f retry · space hold/resume · x abort · ? help · q quit"
               : "b/Esc back · Tab cycle panels · l launch · f retry · space hold/resume · ? help · q quit"}
@@ -999,7 +1122,33 @@ function buildLaunchRequest(state: LauncherState) {
   }
 
   let params: string | undefined;
-  if (state.paramsSource === "json") {
+  const schemaFields = state.inspectedDescribe?.params?.fields ?? [];
+  if (schemaFields.length > 0) {
+    const obj: Record<string, unknown> = {};
+    for (const f of schemaFields) {
+      const raw = state.launcherParamValues[f.key];
+      if (raw === undefined || raw === "") {
+        if (f.required) throw new Error(`required param '${f.key}' is missing`);
+        continue;
+      }
+      if (f.type === "boolean") {
+        obj[f.key] = raw === "true";
+      } else if (f.type === "integer") {
+        obj[f.key] = parseInt(raw, 10);
+      } else if (f.type === "number") {
+        obj[f.key] = parseFloat(raw);
+      } else if (f.type === "json") {
+        try {
+          obj[f.key] = JSON.parse(raw);
+        } catch {
+          throw new Error(`param '${f.key}': invalid JSON`);
+        }
+      } else {
+        obj[f.key] = raw;
+      }
+    }
+    params = Object.keys(obj).length > 0 ? JSON.stringify(obj) : undefined;
+  } else if (state.paramsSource === "json") {
     params = state.paramsValue.trim() || undefined;
   } else if (state.paramsSource === "file") {
     const path = state.paramsValue.trim();
@@ -1014,7 +1163,6 @@ function buildLaunchRequest(state: LauncherState) {
 
   return {
     wasm: wasmPath,
-    name: state.missionName.trim() || undefined,
     env: parseEnvText(state.envText),
     params,
   };

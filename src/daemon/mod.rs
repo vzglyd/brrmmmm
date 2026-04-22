@@ -441,6 +441,24 @@ async fn handle_connection(
                 cmd_watch(home.as_ref(), &registry, &mission, &mut writer).await;
                 return;
             }
+            Command::Inspect { wasm } => {
+                let wasm_path = match resolve_launch_wasm_path(&wasm) {
+                    Ok(p) => p,
+                    Err(message) => {
+                        let _ = write_resp(&mut writer, &Response::Error { message }).await;
+                        return;
+                    }
+                };
+                let resp = match brrmmmm::controller::inspect_module_contract_async(&wasm_path)
+                    .await
+                {
+                    Ok(inspection) => Response::Inspected { describe: inspection.describe },
+                    Err(e) => Response::Error {
+                        message: format!("inspect: {e:#}"),
+                    },
+                };
+                let _ = write_resp(&mut writer, &resp).await;
+            }
         }
     }
 }

@@ -2,6 +2,8 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
+use brrmmmm::abi::MissionModuleDescribe;
+
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Command {
@@ -37,6 +39,9 @@ pub enum Command {
     Status,
     Ping,
     Shutdown,
+    Inspect {
+        wasm: String,
+    },
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
@@ -57,6 +62,22 @@ pub enum Response {
     Event { mission: String, line: String },
     Pong,
     Bye,
+    Inspected {
+        describe: Option<MissionModuleDescribe>,
+    },
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum MissionSchedulerState {
+    Launching,
+    Running,
+    Scheduled,
+    Held,
+    AwaitingChange,
+    AwaitingOperator,
+    TerminalFailure,
+    Idle,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
