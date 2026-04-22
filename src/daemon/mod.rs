@@ -13,16 +13,26 @@ use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::{Mutex, broadcast, mpsc, watch};
 use tokio::time::{Duration, Instant};
 
-use brrmmmm::abi::{MissionOutcomeStatus, MissionPhase, NextAttemptPolicy, PollStrategy};
+use brrmmmm::abi::{
+    HostDecisionState, MissionModuleDescribe, MissionOutcome, MissionOutcomeStatus, MissionPhase,
+    NextAttemptPolicy, OperatorEscalationState, PollStrategy,
+};
 use brrmmmm::config::Config;
 use brrmmmm::controller::{MissionCompletion, MissionController};
-use brrmmmm::events::{EnvVarStatus, Event, EventSink, now_ms, now_ts};
+use brrmmmm::events::{EnvVarStatus, Event, EventSink, ms_to_iso8601, now_ms, now_ts};
 
 use mission::{
     BROADCAST_CAPACITY, MAX_MISSIONS, MissionCleanup, MissionCtrl, MissionEvent, MissionHandle,
     MissionHistory, MissionState,
 };
 use protocol::{Command, MissionSchedulerState, MissionSummary, Response};
+use crate::mission_result::{
+    ExplanationRecord, MissionAttemptRecord, MissionChallengeRecord, MissionInterventionRecord,
+    MissionJobFilesRecord, MissionJobMode, MissionJobRecord, MissionModuleRecord,
+    MissionRecordContext, MissionRecorder as ResultFileRecorder, MissionStatsRecord,
+    MissionStatusRecord, MissionTimelineEntry, escalation_record, host_decision_record,
+    mission_contract_record, write_status_record,
+};
 
 pub use client::DaemonClient;
 pub use protocol::{
@@ -56,6 +66,14 @@ fn mission_events_file(home: &Path, mission: &str) -> PathBuf {
     mission_dir(home, mission).join("events.ndjson")
 }
 
+fn mission_status_file(home: &Path, mission: &str) -> PathBuf {
+    mission_dir(home, mission).join(format!("{mission}.status.json"))
+}
+
+fn mission_result_file(home: &Path, mission: &str) -> PathBuf {
+    mission_dir(home, mission).join(format!("{mission}.out.json"))
+}
+
 fn prepare_mission_storage(home: &Path, mission: &str) -> Result<()> {
     let dir = mission_dir(home, mission);
     std::fs::create_dir_all(&dir)?;
@@ -63,6 +81,21 @@ fn prepare_mission_storage(home: &Path, mission: &str) -> Result<()> {
     let events_file = mission_events_file(home, mission);
     if events_file.exists() {
         std::fs::remove_file(&events_file)?;
+    }
+
+    let legacy_result_file = mission_dir(home, mission).join(format!("{mission}.out"));
+    if legacy_result_file.exists() {
+        std::fs::remove_file(&legacy_result_file)?;
+    }
+
+    let status_file = mission_status_file(home, mission);
+    if status_file.exists() {
+        std::fs::remove_file(&status_file)?;
+    }
+
+    let result_file = mission_result_file(home, mission);
+    if result_file.exists() {
+        std::fs::remove_file(&result_file)?;
     }
 
     Ok(())
@@ -123,16 +156,38 @@ enum MissionTransition {
     Abort,
 }
 
+const MAX_TIMELINE_ENTRIES: usize = 128;
+const MAX_CHALLENGE_ENTRIES: usize = 32;
+const MAX_INTERVENTION_ENTRIES: usize = 32;
+
 struct MissionRecorder {
     file: Option<tokio::fs::File>,
+    status_path: PathBuf,
+    result_path: PathBuf,
+    mission_name: String,
+    wasm_path: String,
     state: Arc<Mutex<MissionState>>,
     history: Arc<Mutex<MissionHistory>>,
     event_tx: broadcast::Sender<MissionEvent>,
     registry: Arc<Mutex<Registry>>,
     status_tx: watch::Sender<Vec<MissionSummary>>,
+    current_scheduler_state: Option<MissionSchedulerState>,
+    attempt_sequence: u64,
+    current_attempt_started_at_ms: Option<u64>,
+    current_attempt_started_at: Option<String>,
+    last_update_at_ms: u64,
+    describe: Option<MissionModuleDescribe>,
+    outcome: Option<MissionOutcome>,
+    host_decision: Option<HostDecisionState>,
+    escalation: Option<OperatorEscalationState>,
+    stats: MissionStatsRecord,
+    timeline: Vec<MissionTimelineEntry>,
+    challenges: Vec<MissionChallengeRecord>,
+    interventions: Vec<MissionInterventionRecord>,
 }
 
 struct AttemptContext<'a> {
+    home: &'a Path,
     mission_name: &'a str,
     state: &'a Arc<Mutex<MissionState>>,
     registry: &'a Arc<Mutex<Registry>>,
@@ -145,6 +200,10 @@ struct AttemptContext<'a> {
 impl MissionRecorder {
     async fn open(
         events_file: &Path,
+        status_path: PathBuf,
+        result_path: PathBuf,
+        mission_name: String,
+        wasm_path: String,
         state: Arc<Mutex<MissionState>>,
         history: Arc<Mutex<MissionHistory>>,
         event_tx: broadcast::Sender<MissionEvent>,
@@ -158,14 +217,33 @@ impl MissionRecorder {
             .await
             .ok();
 
-        Self {
+        let mut recorder = Self {
             file,
+            status_path,
+            result_path,
+            mission_name,
+            wasm_path,
             state,
             history,
             event_tx,
             registry,
             status_tx,
-        }
+            current_scheduler_state: None,
+            attempt_sequence: 0,
+            current_attempt_started_at_ms: None,
+            current_attempt_started_at: None,
+            last_update_at_ms: now_ms(),
+            describe: None,
+            outcome: None,
+            host_decision: None,
+            escalation: None,
+            stats: MissionStatsRecord::default(),
+            timeline: Vec::new(),
+            challenges: Vec::new(),
+            interventions: Vec::new(),
+        };
+        recorder.write_status_snapshot().await;
+        recorder
     }
 
     async fn record(&mut self, event: Event) {
@@ -187,8 +265,14 @@ impl MissionRecorder {
         })
         .await;
 
+        self.capture_event(&event);
+
         let history_event = self.history.lock().await.append(line);
         let _ = self.event_tx.send(history_event);
+
+        if status_worthy_event(&event) {
+            self.write_status_snapshot().await;
+        }
     }
 
     async fn log(&mut self, message: impl Into<String>) {
@@ -197,6 +281,409 @@ impl MissionRecorder {
             message: message.into(),
         })
         .await;
+    }
+
+    async fn record_scheduler_state(&mut self, state: MissionSchedulerState) {
+        if self.current_scheduler_state == Some(state) {
+            return;
+        }
+        let ts_ms = now_ms();
+        let ts = ms_to_iso8601(ts_ms);
+        if state == MissionSchedulerState::Launching {
+            self.begin_attempt(ts_ms, ts.clone());
+        }
+        self.current_scheduler_state = Some(state);
+        self.record(Event::SchedulerState {
+            ts,
+            state: scheduler_state_name(state).to_string(),
+        })
+        .await;
+    }
+
+    async fn record_intervention(&mut self, actor: String, action: String, reason: Option<String>) {
+        self.record(Event::Intervention {
+            ts: now_ts(),
+            actor,
+            action,
+            reason,
+        })
+        .await;
+    }
+
+    fn set_completion_stats(&mut self, completion: &MissionCompletion) {
+        self.describe = completion.snapshot.describe.clone();
+        self.outcome = Some(completion.outcome.clone());
+        self.host_decision = completion.snapshot.last_host_decision.clone();
+        self.escalation = completion.snapshot.pending_operator_action.clone();
+        self.stats = MissionStatsRecord {
+            consecutive_failures: completion.snapshot.consecutive_failures,
+            last_success_at_ms: completion.snapshot.last_success_at_ms,
+            last_failure_at_ms: completion.snapshot.last_failure_at_ms,
+            cooldown_until_ms: completion.snapshot.cooldown_until_ms,
+        };
+    }
+
+    fn build_result_context(&self, scheduler_state: MissionSchedulerState) -> MissionRecordContext {
+        let (held, cycles) = self
+            .state
+            .try_lock()
+            .map(|state| (state.held, state.cycles))
+            .unwrap_or((false, 0));
+        MissionRecordContext {
+            job: Some(self.job_record(scheduler_state, held, cycles)),
+            mission: Some(mission_contract_record(
+                Some(&self.wasm_path),
+                self.describe.as_ref(),
+            )),
+            attempt: self.attempt_record(Some(scheduler_state), true),
+            timeline: self.timeline.clone(),
+            challenges: self.challenges.clone(),
+            interventions: self.interventions.clone(),
+        }
+    }
+
+    fn begin_attempt(&mut self, started_at_ms: u64, started_at: String) {
+        self.attempt_sequence = self.attempt_sequence.saturating_add(1);
+        self.current_attempt_started_at_ms = Some(started_at_ms);
+        self.current_attempt_started_at = Some(started_at);
+        self.last_update_at_ms = started_at_ms;
+        self.describe = None;
+        self.outcome = None;
+        self.host_decision = None;
+        self.escalation = None;
+        self.timeline.clear();
+        self.challenges.clear();
+        self.interventions.clear();
+    }
+
+    fn capture_event(&mut self, event: &Event) {
+        self.last_update_at_ms = now_ms();
+        match event {
+            Event::Describe { describe, .. } => {
+                self.describe = Some(describe.clone());
+            }
+            Event::Started { ts, .. } => {
+                self.push_timeline(MissionTimelineEntry {
+                    ts: ts.clone(),
+                    ts_ms: self.last_update_at_ms,
+                    kind: "runtime_started".to_string(),
+                    summary: "Mission runtime started.".to_string(),
+                    detail: None,
+                    scheduler_state: self
+                        .current_scheduler_state
+                        .map(|state| scheduler_state_name(state).to_string()),
+                    phase: None,
+                    outcome_status: None,
+                });
+            }
+            Event::Phase { ts, phase } => {
+                self.push_timeline(MissionTimelineEntry {
+                    ts: ts.clone(),
+                    ts_ms: self.last_update_at_ms,
+                    kind: "phase".to_string(),
+                    summary: format!("Phase changed to {}.", phase_name(phase)),
+                    detail: None,
+                    scheduler_state: self
+                        .current_scheduler_state
+                        .map(|state| scheduler_state_name(state).to_string()),
+                    phase: Some(phase_name(phase).to_string()),
+                    outcome_status: None,
+                });
+            }
+            Event::SchedulerState { ts, state } => {
+                self.push_timeline(MissionTimelineEntry {
+                    ts: ts.clone(),
+                    ts_ms: self.last_update_at_ms,
+                    kind: "scheduler_state".to_string(),
+                    summary: format!("Scheduler entered {state}."),
+                    detail: None,
+                    scheduler_state: Some(state.clone()),
+                    phase: None,
+                    outcome_status: None,
+                });
+            }
+            Event::ArtifactReceived {
+                ts,
+                kind,
+                size_bytes,
+                ..
+            } if kind == "published_output" => {
+                self.push_timeline(MissionTimelineEntry {
+                    ts: ts.clone(),
+                    ts_ms: self.last_update_at_ms,
+                    kind: "artifact".to_string(),
+                    summary: format!("Published output received ({size_bytes} bytes)."),
+                    detail: None,
+                    scheduler_state: self
+                        .current_scheduler_state
+                        .map(|state| scheduler_state_name(state).to_string()),
+                    phase: Some("publishing".to_string()),
+                    outcome_status: None,
+                });
+            }
+            Event::RequestError {
+                ts,
+                error_kind,
+                message,
+                ..
+            } => {
+                self.push_challenge(MissionChallengeRecord {
+                    ts: ts.clone(),
+                    ts_ms: self.last_update_at_ms,
+                    kind: error_kind.clone(),
+                    summary: "Network request failed.".to_string(),
+                    detail: Some(message.clone()),
+                });
+            }
+            Event::BrowserActionDone {
+                ts,
+                action,
+                error: Some(error),
+                ok: false,
+                ..
+            } => {
+                self.push_challenge(MissionChallengeRecord {
+                    ts: ts.clone(),
+                    ts_ms: self.last_update_at_ms,
+                    kind: "browser_action_failure".to_string(),
+                    summary: format!("Browser action {action} failed."),
+                    detail: Some(error.clone()),
+                });
+            }
+            Event::AiRequestDone {
+                ts,
+                action,
+                error: Some(error),
+                ok: false,
+                ..
+            } => {
+                self.push_challenge(MissionChallengeRecord {
+                    ts: ts.clone(),
+                    ts_ms: self.last_update_at_ms,
+                    kind: "ai_request_failure".to_string(),
+                    summary: format!("AI request {action} failed."),
+                    detail: Some(error.clone()),
+                });
+            }
+            Event::MissionOutcome {
+                ts,
+                outcome,
+                host_decision,
+                escalation,
+                ..
+            } => {
+                self.outcome = Some(outcome.clone());
+                self.host_decision = Some(host_decision.clone());
+                self.escalation = escalation.clone();
+                self.push_timeline(MissionTimelineEntry {
+                    ts: ts.clone(),
+                    ts_ms: self.last_update_at_ms,
+                    kind: "outcome".to_string(),
+                    summary: format!(
+                        "Mission closed as {}.",
+                        outcome_status_name(outcome.status)
+                    ),
+                    detail: Some(outcome.message.clone()),
+                    scheduler_state: self
+                        .current_scheduler_state
+                        .map(|state| scheduler_state_name(state).to_string()),
+                    phase: None,
+                    outcome_status: Some(outcome_status_name(outcome.status).to_string()),
+                });
+                if outcome.status != MissionOutcomeStatus::Published {
+                    self.push_challenge(MissionChallengeRecord {
+                        ts: ts.clone(),
+                        ts_ms: self.last_update_at_ms,
+                        kind: outcome.reason_code.clone(),
+                        summary: format!(
+                            "Mission reported {}.",
+                            outcome_status_name(outcome.status)
+                        ),
+                        detail: Some(outcome.message.clone()),
+                    });
+                }
+            }
+            Event::Intervention {
+                ts,
+                actor,
+                action,
+                reason,
+            } => {
+                self.push_intervention(MissionInterventionRecord {
+                    ts: ts.clone(),
+                    ts_ms: self.last_update_at_ms,
+                    actor: actor.clone(),
+                    action: action.clone(),
+                    reason: reason.clone(),
+                });
+            }
+            _ => {}
+        }
+    }
+
+    fn push_timeline(&mut self, entry: MissionTimelineEntry) {
+        push_capped(&mut self.timeline, entry, MAX_TIMELINE_ENTRIES);
+    }
+
+    fn push_challenge(&mut self, challenge: MissionChallengeRecord) {
+        self.push_timeline(MissionTimelineEntry {
+            ts: challenge.ts.clone(),
+            ts_ms: challenge.ts_ms,
+            kind: "challenge".to_string(),
+            summary: challenge.summary.clone(),
+            detail: challenge.detail.clone(),
+            scheduler_state: self
+                .current_scheduler_state
+                .map(|state| scheduler_state_name(state).to_string()),
+            phase: None,
+            outcome_status: None,
+        });
+        push_capped(&mut self.challenges, challenge, MAX_CHALLENGE_ENTRIES);
+    }
+
+    fn push_intervention(&mut self, intervention: MissionInterventionRecord) {
+        self.push_timeline(MissionTimelineEntry {
+            ts: intervention.ts.clone(),
+            ts_ms: intervention.ts_ms,
+            kind: "intervention".to_string(),
+            summary: format!("{} performed {}.", intervention.actor, intervention.action),
+            detail: intervention.reason.clone(),
+            scheduler_state: self
+                .current_scheduler_state
+                .map(|state| scheduler_state_name(state).to_string()),
+            phase: None,
+            outcome_status: None,
+        });
+        push_capped(
+            &mut self.interventions,
+            intervention,
+            MAX_INTERVENTION_ENTRIES,
+        );
+    }
+
+    fn attempt_record(
+        &self,
+        scheduler_state: Option<MissionSchedulerState>,
+        terminal: bool,
+    ) -> Option<MissionAttemptRecord> {
+        let started_at = self.current_attempt_started_at.clone()?;
+        let updated_at = ms_to_iso8601(self.last_update_at_ms);
+        Some(MissionAttemptRecord {
+            sequence: self.attempt_sequence,
+            scheduler_state: scheduler_state
+                .or(self.current_scheduler_state)
+                .map(|state| scheduler_state_name(state).to_string()),
+            phase: self
+                .state
+                .try_lock()
+                .ok()
+                .map(|state| state.phase.clone()),
+            started_at,
+            updated_at: updated_at.clone(),
+            finished_at: terminal.then_some(updated_at),
+            terminal,
+        })
+    }
+
+    fn job_record(
+        &self,
+        scheduler_state: MissionSchedulerState,
+        held: bool,
+        cycles: u64,
+    ) -> MissionJobRecord {
+        MissionJobRecord {
+            mode: MissionJobMode::Daemon,
+            name: Some(self.mission_name.clone()),
+            scheduler_state: Some(scheduler_state_name(scheduler_state).to_string()),
+            held,
+            cycles,
+            files: MissionJobFilesRecord {
+                result_path: self.result_path.display().to_string(),
+                status_path: Some(self.status_path.display().to_string()),
+                events_path: Some(self.mission_events_path()),
+            },
+        }
+    }
+
+    fn mission_events_path(&self) -> String {
+        self.status_path
+            .parent()
+            .map(|parent| parent.join("events.ndjson"))
+            .unwrap_or_else(|| PathBuf::from("events.ndjson"))
+            .display()
+            .to_string()
+    }
+
+    async fn write_status_snapshot(&mut self) {
+        let state = self.state.lock().await;
+        let scheduler_state = state.state;
+        let held = state.held;
+        let cycles = state.cycles;
+        let last_error = state.last_error.clone();
+        drop(state);
+
+        let host_decision = self
+            .outcome
+            .as_ref()
+            .zip(self.host_decision.clone())
+            .map(|(outcome, decision)| host_decision_record(decision, outcome, false));
+        let escalation = self.escalation.as_ref().map(escalation_record);
+        let explanation = self.outcome.as_ref().zip(host_decision.as_ref()).map(
+            |(outcome, _host_decision)| ExplanationRecord {
+                summary: format!(
+                    "Live daemon snapshot for {}.",
+                    self.mission_name
+                ),
+                message: outcome.message.clone(),
+                next_action: match &escalation {
+                    Some(escalation) => format!(
+                        "{} Rescue window closes at {}.",
+                        escalation.action, escalation.deadline_at
+                    ),
+                    None => outcome.message.clone(),
+                },
+            },
+        );
+        let record = MissionStatusRecord {
+            schema_version: 1,
+            record_kind: crate::mission_result::MissionRecordKind::Status,
+            job: self.job_record(scheduler_state, held, cycles),
+            mission: mission_contract_record(Some(&self.wasm_path), self.describe.as_ref()),
+            module: MissionModuleRecord {
+                wasm_path: Some(self.wasm_path.clone()),
+                logical_id: self.describe.as_ref().map(|describe| describe.logical_id.clone()),
+                name: self.describe.as_ref().map(|describe| describe.name.clone()),
+                abi_version: self
+                    .describe
+                    .as_ref()
+                    .map(|describe| describe.abi_version)
+                    .filter(|abi_version| *abi_version != 0),
+            },
+            attempt: self.attempt_record(Some(scheduler_state), self.outcome.is_some()),
+            timeline: self.timeline.clone(),
+            challenges: self.challenges.clone(),
+            interventions: self.interventions.clone(),
+            outcome: self.outcome.clone(),
+            host_decision,
+            explanation,
+            escalation,
+            last_error,
+            stats: self.stats.clone(),
+            updated_at: if self.outcome.is_some() {
+                ms_to_iso8601(self.last_update_at_ms)
+            } else if let Some(started_at_ms) = self.current_attempt_started_at_ms {
+                ms_to_iso8601(self.last_update_at_ms.max(started_at_ms))
+            } else {
+                ms_to_iso8601(now_ms())
+            },
+        };
+
+        if let Err(error) = write_status_record(&self.status_path, &record) {
+            eprintln!(
+                "[brrmmmm daemon] failed to write status file {}: {error:#}",
+                self.status_path.display()
+            );
+        }
     }
 }
 
@@ -332,7 +819,15 @@ async fn shutdown_missions(registry: &Arc<Mutex<Registry>>) {
     };
 
     for (name, ctrl_tx) in controls {
-        if ctrl_tx.send(MissionCtrl::Abort).await.is_err() {
+        if ctrl_tx
+            .send(MissionCtrl::Abort {
+                actor: "daemon".to_string(),
+                action: "abort".to_string(),
+                reason: "daemon shutdown".to_string(),
+            })
+            .await
+            .is_err()
+        {
             eprintln!("[brrmmmm daemon] failed to stop mission '{name}' during shutdown");
         }
     }
@@ -417,24 +912,38 @@ async fn handle_connection(
                 .await;
                 let _ = write_resp(&mut writer, &resp).await;
             }
-            Command::Hold { mission, reason: _ } => {
-                let resp = send_ctrl(&registry, &mission, MissionCtrl::Hold).await;
+            Command::Hold { mission, reason } => {
+                let resp = send_ctrl(&registry, &mission, MissionCtrl::Hold { reason }).await;
                 let _ = write_resp(&mut writer, &resp).await;
             }
             Command::Resume { mission } => {
                 let resp = send_ctrl(&registry, &mission, MissionCtrl::Resume).await;
                 let _ = write_resp(&mut writer, &resp).await;
             }
-            Command::Abort { mission, reason: _ } => {
-                let resp = send_ctrl(&registry, &mission, MissionCtrl::Abort).await;
+            Command::Abort { mission, reason } => {
+                let resp = send_ctrl(
+                    &registry,
+                    &mission,
+                    MissionCtrl::Abort {
+                        actor: "operator".to_string(),
+                        action: "abort".to_string(),
+                        reason,
+                    },
+                )
+                .await;
                 let _ = write_resp(&mut writer, &resp).await;
             }
             Command::Rescue {
                 mission,
                 action,
-                reason: _,
+                reason,
             } => {
-                let resp = send_ctrl(&registry, &mission, rescue_control(action)).await;
+                let resp = send_ctrl(
+                    &registry,
+                    &mission,
+                    rescue_control(action, reason),
+                )
+                .await;
                 let _ = write_resp(&mut writer, &resp).await;
             }
             Command::Watch { mission } => {
@@ -584,10 +1093,18 @@ fn resolve_launch_wasm_path(wasm: &str) -> std::result::Result<String, String> {
         .map(|path| path.to_string_lossy().into_owned())
 }
 
-const fn rescue_control(action: RescueAction) -> MissionCtrl {
+fn rescue_control(action: RescueAction, reason: String) -> MissionCtrl {
     match action {
-        RescueAction::Retry => MissionCtrl::Retry,
-        RescueAction::Abort => MissionCtrl::Abort,
+        RescueAction::Retry => MissionCtrl::Retry {
+            actor: "operator".to_string(),
+            action: "rescue_retry".to_string(),
+            reason,
+        },
+        RescueAction::Abort => MissionCtrl::Abort {
+            actor: "operator".to_string(),
+            action: "rescue_abort".to_string(),
+            reason,
+        },
     }
 }
 
@@ -800,8 +1317,14 @@ async fn mission_loop(args: MissionLoopArgs) {
     } = args;
     let _cleanup = MissionCleanup::new(name.clone(), cleanup_tx);
     let events_file = mission_events_file(&home, &name);
+    let status_file = mission_status_file(&home, &name);
+    let result_file = mission_result_file(&home, &name);
     let mut recorder = MissionRecorder::open(
         &events_file,
+        status_file,
+        result_file,
+        name.clone(),
+        launch.wasm.clone(),
         Arc::clone(&state),
         history,
         event_tx,
@@ -822,6 +1345,7 @@ async fn mission_loop(args: MissionLoopArgs) {
                 &status_tx,
                 &mut ctrl_rx,
                 held_resume_mode.take().unwrap_or(MissionLoopMode::Idle),
+                &mut recorder,
             )
             .await
             {
@@ -838,11 +1362,12 @@ async fn mission_loop(args: MissionLoopArgs) {
             MissionLoopMode::Launch {
                 override_retry_gate,
             } => {
-                set_loop_mode(&state, &registry, &status_tx, &mode).await;
+                set_loop_mode(&state, &registry, &status_tx, &mode, &mut recorder).await;
                 match run_mission_attempt(
                     &launch,
                     override_retry_gate,
                     AttemptContext {
+                        home: &home,
                         mission_name: &name,
                         state: &state,
                         registry: &registry,
@@ -871,6 +1396,7 @@ async fn mission_loop(args: MissionLoopArgs) {
                 &mut ctrl_rx,
                 wake_at_ms,
                 override_retry_gate,
+                &mut recorder,
             )
             .await
             {
@@ -884,7 +1410,14 @@ async fn mission_loop(args: MissionLoopArgs) {
             | MissionLoopMode::AwaitingChange
             | MissionLoopMode::AwaitingOperator
             | MissionLoopMode::TerminalFailure => {
-                match wait_for_manual(&state, &registry, &status_tx, &mut ctrl_rx, mode.clone())
+                match wait_for_manual(
+                    &state,
+                    &registry,
+                    &status_tx,
+                    &mut ctrl_rx,
+                    mode.clone(),
+                    &mut recorder,
+                )
                     .await
                 {
                     MissionTransition::Continue(next_mode) => mode = next_mode,
@@ -904,6 +1437,7 @@ async fn wait_while_held(
     status_tx: &watch::Sender<Vec<MissionSummary>>,
     ctrl_rx: &mut mpsc::Receiver<MissionCtrl>,
     resume_mode: MissionLoopMode,
+    recorder: &mut MissionRecorder,
 ) -> MissionTransition {
     loop {
         match ctrl_rx.recv().await {
@@ -912,19 +1446,36 @@ async fn wait_while_held(
                     state.held = false;
                 })
                 .await;
+                recorder
+                    .record_intervention("operator".to_string(), "resume".to_string(), None)
+                    .await;
                 return MissionTransition::Continue(resume_mode);
             }
-            Some(MissionCtrl::Abort) => return MissionTransition::Abort,
-            Some(MissionCtrl::Retry) => {
+            Some(MissionCtrl::Abort {
+                actor,
+                action,
+                reason,
+            }) => {
+                recorder.record_intervention(actor, action, Some(reason)).await;
+                return MissionTransition::Abort;
+            }
+            Some(MissionCtrl::Retry {
+                actor,
+                action,
+                reason,
+            }) => {
                 update_mission_state(state, registry, status_tx, |state| {
                     state.held = false;
                 })
                 .await;
+                recorder
+                    .record_intervention(actor, action, Some(reason))
+                    .await;
                 return MissionTransition::Continue(MissionLoopMode::Launch {
                     override_retry_gate: true,
                 });
             }
-            Some(MissionCtrl::Hold) => {}
+            Some(MissionCtrl::Hold { .. }) => {}
             None => return MissionTransition::Abort,
         }
     }
@@ -937,12 +1488,13 @@ async fn wait_for_schedule(
     ctrl_rx: &mut mpsc::Receiver<MissionCtrl>,
     wake_at_ms: u64,
     override_retry_gate: bool,
+    recorder: &mut MissionRecorder,
 ) -> MissionTransition {
     let scheduled_mode = MissionLoopMode::Scheduled {
         wake_at_ms,
         override_retry_gate,
     };
-    set_loop_mode(state, registry, status_tx, &scheduled_mode).await;
+    set_loop_mode(state, registry, status_tx, &scheduled_mode, recorder).await;
 
     loop {
         let now = now_ms();
@@ -957,18 +1509,25 @@ async fn wait_for_schedule(
             _ = tokio::time::sleep(Duration::from_millis(remaining_ms)) => {}
             ctrl = ctrl_rx.recv() => {
                 match ctrl {
-                    Some(MissionCtrl::Hold) => {
-                        set_held_state(state, registry, status_tx).await;
+                    Some(MissionCtrl::Hold { reason }) => {
+                        recorder
+                            .record_intervention("operator".to_string(), "hold".to_string(), Some(reason))
+                            .await;
+                        set_held_state(state, registry, status_tx, recorder).await;
                         return MissionTransition::Hold(MissionLoopMode::Launch {
                             override_retry_gate,
                         });
                     }
-                    Some(MissionCtrl::Retry) => {
+                    Some(MissionCtrl::Retry { actor, action, reason }) => {
+                        recorder.record_intervention(actor, action, Some(reason)).await;
                         return MissionTransition::Continue(MissionLoopMode::Launch {
                             override_retry_gate: true,
                         });
                     }
-                    Some(MissionCtrl::Abort) => return MissionTransition::Abort,
+                    Some(MissionCtrl::Abort { actor, action, reason }) => {
+                        recorder.record_intervention(actor, action, Some(reason)).await;
+                        return MissionTransition::Abort;
+                    }
                     Some(MissionCtrl::Resume) => {}
                     None => return MissionTransition::Abort,
                 }
@@ -983,21 +1542,29 @@ async fn wait_for_manual(
     status_tx: &watch::Sender<Vec<MissionSummary>>,
     ctrl_rx: &mut mpsc::Receiver<MissionCtrl>,
     mode: MissionLoopMode,
+    recorder: &mut MissionRecorder,
 ) -> MissionTransition {
-    set_loop_mode(state, registry, status_tx, &mode).await;
+    set_loop_mode(state, registry, status_tx, &mode, recorder).await;
 
     loop {
         match ctrl_rx.recv().await {
-            Some(MissionCtrl::Hold) => {
-                set_held_state(state, registry, status_tx).await;
+            Some(MissionCtrl::Hold { reason }) => {
+                recorder
+                    .record_intervention("operator".to_string(), "hold".to_string(), Some(reason))
+                    .await;
+                set_held_state(state, registry, status_tx, recorder).await;
                 return MissionTransition::Hold(mode.clone());
             }
-            Some(MissionCtrl::Retry) => {
+            Some(MissionCtrl::Retry { actor, action, reason }) => {
+                recorder.record_intervention(actor, action, Some(reason)).await;
                 return MissionTransition::Continue(MissionLoopMode::Launch {
                     override_retry_gate: true,
                 });
             }
-            Some(MissionCtrl::Abort) => return MissionTransition::Abort,
+            Some(MissionCtrl::Abort { actor, action, reason }) => {
+                recorder.record_intervention(actor, action, Some(reason)).await;
+                return MissionTransition::Abort;
+            }
             Some(MissionCtrl::Resume) => {}
             None => return MissionTransition::Abort,
         }
@@ -1010,6 +1577,7 @@ async fn run_mission_attempt(
     context: AttemptContext<'_>,
 ) -> MissionTransition {
     let AttemptContext {
+        home,
         mission_name,
         state,
         registry,
@@ -1025,6 +1593,10 @@ async fn run_mission_attempt(
             vars: EnvVarStatus::from_raw_env(&launch_env_pairs(&launch.env)),
         })
         .await;
+
+    let result_path = mission_result_file(home, mission_name);
+    let result_recorder =
+        ResultFileRecorder::for_daemon(result_path.clone(), Some(Path::new(&launch.wasm)));
 
     let (runtime_tx, mut runtime_rx) = mpsc::unbounded_channel::<Event>();
     let event_sink = EventSink::for_callback(move |event| {
@@ -1044,6 +1616,17 @@ async fn run_mission_attempt(
         Ok(controller) => Some(controller),
         Err(error) => {
             let message = format!("failed to start mission '{mission_name}': {error:#}");
+            let persisted = result_recorder.write_runtime_error_with_context(
+                &error,
+                recorder.build_result_context(MissionSchedulerState::TerminalFailure),
+            );
+            let message = match persisted {
+                Ok(()) => message,
+                Err(write_error) => format!(
+                    "{message}; failed to write result file {}: {write_error:#}",
+                    result_path.display()
+                ),
+            };
             update_mission_state(state, registry, status_tx, |state| {
                 state.last_error = Some(message.clone());
             })
@@ -1063,38 +1646,60 @@ async fn run_mission_attempt(
                 active.stop();
             }
             flush_runtime_events(&mut runtime_rx, recorder, Duration::from_millis(250)).await;
+            recorder.set_completion_stats(&completion);
             let next_mode = next_mode_after_completion(&completion, config);
-            set_loop_mode(state, registry, status_tx, &next_mode).await;
+            let next_scheduler_state = loop_mode_state(&next_mode);
+            if let Err(error) = result_recorder.write_completion_with_context(
+                &completion,
+                recorder.build_result_context(next_scheduler_state),
+            ) {
+                let message = format!(
+                    "mission outcome recorded but result file {} could not be written: {error:#}",
+                    result_path.display()
+                );
+                update_mission_state(state, registry, status_tx, |state| {
+                    state.last_error = Some(message.clone());
+                })
+                .await;
+                recorder.log(message).await;
+                return MissionTransition::Continue(MissionLoopMode::TerminalFailure);
+            }
+            set_loop_mode(state, registry, status_tx, &next_mode, recorder).await;
             return MissionTransition::Continue(next_mode);
         }
 
         tokio::select! {
             ctrl = ctrl_rx.recv() => {
                 match ctrl {
-                    Some(MissionCtrl::Hold) => {
+                    Some(MissionCtrl::Hold { reason }) => {
                         if let Some(active) = controller.take() {
                             active.stop();
                         }
                         flush_runtime_events(&mut runtime_rx, recorder, Duration::from_millis(250)).await;
-                        set_held_state(state, registry, status_tx).await;
+                        recorder
+                            .record_intervention("operator".to_string(), "hold".to_string(), Some(reason))
+                            .await;
+                        set_held_state(state, registry, status_tx, recorder).await;
                         return MissionTransition::Hold(MissionLoopMode::Launch {
                             override_retry_gate: false,
                         });
                     }
-                    Some(MissionCtrl::Retry) => {
+                    Some(MissionCtrl::Retry { actor, action, reason }) => {
                         if let Some(active) = controller.take() {
                             active.stop();
                         }
                         flush_runtime_events(&mut runtime_rx, recorder, Duration::from_millis(250)).await;
+                        recorder.record_intervention(actor, action, Some(reason)).await;
                         return MissionTransition::Continue(MissionLoopMode::Launch {
                             override_retry_gate: true,
                         });
                     }
-                    Some(MissionCtrl::Abort) => {
+                    Some(MissionCtrl::Abort { actor, action, reason }) => {
                         if let Some(active) = controller.take() {
                             active.stop();
                         }
                         flush_runtime_events(&mut runtime_rx, recorder, Duration::from_millis(250)).await;
+                        recorder.record_intervention(actor, action, Some(reason)).await;
                         return MissionTransition::Abort;
                     }
                     Some(MissionCtrl::Resume) => {}
@@ -1152,6 +1757,7 @@ async fn set_loop_mode(
     registry: &Arc<Mutex<Registry>>,
     status_tx: &watch::Sender<Vec<MissionSummary>>,
     mode: &MissionLoopMode,
+    recorder: &mut MissionRecorder,
 ) {
     update_mission_state(state, registry, status_tx, |state| match mode {
         MissionLoopMode::Launch { .. } => {
@@ -1192,12 +1798,14 @@ async fn set_loop_mode(
         }
     })
     .await;
+    recorder.record_scheduler_state(loop_mode_state(mode)).await;
 }
 
 async fn set_held_state(
     state: &Arc<Mutex<MissionState>>,
     registry: &Arc<Mutex<Registry>>,
     status_tx: &watch::Sender<Vec<MissionSummary>>,
+    recorder: &mut MissionRecorder,
 ) {
     update_mission_state(state, registry, status_tx, |state| {
         state.state = MissionSchedulerState::Held;
@@ -1206,6 +1814,7 @@ async fn set_held_state(
         state.next_wake_at_ms = None;
     })
     .await;
+    recorder.record_scheduler_state(MissionSchedulerState::Held).await;
 }
 
 fn apply_runtime_event(state: &mut MissionState, event: &Event) {
@@ -1351,12 +1960,56 @@ fn phase_name(phase: &MissionPhase) -> &'static str {
     }
 }
 
+const fn scheduler_state_name(state: MissionSchedulerState) -> &'static str {
+    match state {
+        MissionSchedulerState::Launching => "launching",
+        MissionSchedulerState::Running => "running",
+        MissionSchedulerState::Scheduled => "scheduled",
+        MissionSchedulerState::Held => "held",
+        MissionSchedulerState::AwaitingChange => "awaiting_change",
+        MissionSchedulerState::AwaitingOperator => "awaiting_operator",
+        MissionSchedulerState::TerminalFailure => "terminal_failure",
+        MissionSchedulerState::Idle => "idle",
+    }
+}
+
+const fn loop_mode_state(mode: &MissionLoopMode) -> MissionSchedulerState {
+    match mode {
+        MissionLoopMode::Launch { .. } => MissionSchedulerState::Launching,
+        MissionLoopMode::Scheduled { .. } => MissionSchedulerState::Scheduled,
+        MissionLoopMode::Idle => MissionSchedulerState::Idle,
+        MissionLoopMode::AwaitingChange => MissionSchedulerState::AwaitingChange,
+        MissionLoopMode::AwaitingOperator => MissionSchedulerState::AwaitingOperator,
+        MissionLoopMode::TerminalFailure => MissionSchedulerState::TerminalFailure,
+    }
+}
+
 const fn outcome_status_name(status: MissionOutcomeStatus) -> &'static str {
     match status {
         MissionOutcomeStatus::Published => "published",
         MissionOutcomeStatus::RetryableFailure => "retryable_failure",
         MissionOutcomeStatus::TerminalFailure => "terminal_failure",
         MissionOutcomeStatus::OperatorActionRequired => "operator_action_required",
+    }
+}
+
+fn status_worthy_event(event: &Event) -> bool {
+    !matches!(
+        event,
+        Event::Log { .. }
+            | Event::GuestEventFwd { .. }
+            | Event::KvGet { .. }
+            | Event::KvSet { .. }
+            | Event::KvDelete { .. }
+            | Event::RequestDone { .. }
+    )
+}
+
+fn push_capped<T>(items: &mut Vec<T>, item: T, max_len: usize) {
+    items.push(item);
+    if items.len() > max_len {
+        let overflow = items.len().saturating_sub(max_len);
+        items.drain(..overflow);
     }
 }
 

@@ -1,9 +1,10 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { Box, Text, useApp, useInput } from "ink";
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 
 import {
+  type BrrmmmmEvent,
   type DaemonMissionSummary,
   type ModuleDescribe,
   type ModuleParamField,
@@ -41,7 +42,7 @@ interface AppProps {
 
 type View = "list" | "detail";
 type FocusPane = "pipeline" | "raw" | "output";
-type LauncherField = string; // "wasm" | "env" | `param:${string}` | "paramsSource" | "paramsValue"
+type LauncherField = string; // "wasm" | "env" | `param:${string}` | "paramsSource" | "paramsValue" | action buttons
 
 interface LauncherState {
   wasmPath: string;
@@ -64,13 +65,44 @@ interface FileBrowserState {
 
 const FOCUS_ORDER: FocusPane[] = ["pipeline", "raw", "output"];
 const AMBER = "#FFB300";
+const EMPTY_PARAM_FIELDS: ModuleParamField[] = [];
+const ARM_BUTTON_FIELD = "action:arm";
+const CANCEL_BUTTON_FIELD = "action:cancel";
 
-function computeLauncherFields(describe: ModuleDescribe | null): string[] {
+function computeLauncherFields(describe: ModuleDescribe | null): LauncherField[] {
   const paramFields = describe?.params?.fields ?? [];
-  if (paramFields.length > 0) {
-    return ["wasm", "env", ...paramFields.map((f) => `param:${f.key}`)];
-  }
-  return ["wasm", "env", "paramsSource", "paramsValue"];
+  const fields =
+    paramFields.length > 0
+      ? ["wasm", "env", ...paramFields.map((f) => `param:${f.key}`)]
+      : ["wasm", "env", "paramsSource", "paramsValue"];
+
+  return [...fields, ARM_BUTTON_FIELD, CANCEL_BUTTON_FIELD];
+}
+
+function isLauncherActionField(field: LauncherField): boolean {
+  return field === ARM_BUTTON_FIELD || field === CANCEL_BUTTON_FIELD;
+}
+
+function toggleLauncherActionField(field: LauncherField): LauncherField {
+  return field === CANCEL_BUTTON_FIELD ? ARM_BUTTON_FIELD : CANCEL_BUTTON_FIELD;
+}
+
+function buttonLabelForField(field: LauncherField): string {
+  return field === ARM_BUTTON_FIELD ? "ARM" : "CANCEL";
+}
+
+function actionToneForField(field: LauncherField): string {
+  return field === ARM_BUTTON_FIELD ? AMBER : "red";
+}
+
+function buttonHintForField(field: LauncherField): string {
+  return field === ARM_BUTTON_FIELD
+    ? "Arm the configured mission."
+    : "Close the arming panel without starting the mission.";
+}
+
+function isLauncherFieldEditable(field: LauncherField): boolean {
+  return !isLauncherActionField(field) && field !== "paramsSource" && !field.startsWith("param:");
 }
 
 export function App({ initialWasmPath, rustBin: _rustBin, extraArgs }: AppProps) {
@@ -111,16 +143,39 @@ export function App({ initialWasmPath, rustBin: _rustBin, extraArgs }: AppProps)
   const selectedSummary =
     missions.find((mission) => mission.name === selectedMission) ?? null;
   const paramFields: ModuleParamField[] =
-    detailState.describe?.params?.fields ?? [];
+    detailState.describe?.params?.fields ?? EMPTY_PARAM_FIELDS;
   const paramFieldKey = paramFields
     .map((field) => `${field.key}:${field.type}`)
     .join("|");
 
+  // Refs for batching mission stream events into a single render per flush window.
+  const pendingEventsRef = useRef<BrrmmmmEvent[]>([]);
+  const eventFlushTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Refs for debouncing daemon status pushes.
+  const pendingStatusRef = useRef<DaemonMissionSummary[] | null>(null);
+  const statusFlushTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const launcherInspectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const launcherInspectSeqRef = useRef(0);
+
   useEffect(() => {
+    const scheduleStatusFlush = () => {
+      if (statusFlushTimerRef.current !== null) return;
+      statusFlushTimerRef.current = setTimeout(() => {
+        statusFlushTimerRef.current = null;
+        const next = pendingStatusRef.current;
+        if (next !== null) {
+          pendingStatusRef.current = null;
+          setDaemonError(null);
+          setMissions(next);
+        }
+      }, 80);
+    };
+
     const handle = watchDaemonStatus(
       (nextMissions) => {
-        setDaemonError(null);
-        setMissions(nextMissions);
+        pendingStatusRef.current = nextMissions;
+        scheduleStatusFlush();
       },
       (message) => {
         setDaemonError(message);
@@ -130,6 +185,11 @@ export function App({ initialWasmPath, rustBin: _rustBin, extraArgs }: AppProps)
 
     return () => {
       handle.stop();
+      if (statusFlushTimerRef.current !== null) {
+        clearTimeout(statusFlushTimerRef.current);
+        statusFlushTimerRef.current = null;
+      }
+      pendingStatusRef.current = null;
     };
   }, []);
 
@@ -168,11 +228,24 @@ export function App({ initialWasmPath, rustBin: _rustBin, extraArgs }: AppProps)
 
     setDetailState(initialState(selectedSummary.wasm));
     setParamValues({});
+    pendingEventsRef.current = [];
+
+    const scheduleEventFlush = () => {
+      if (eventFlushTimerRef.current !== null) return;
+      eventFlushTimerRef.current = setTimeout(() => {
+        eventFlushTimerRef.current = null;
+        const events = pendingEventsRef.current.splice(0);
+        if (events.length > 0) {
+          setDetailState((state) => events.reduce(reducer, state));
+        }
+      }, 80);
+    };
 
     const handle = watchMission(
       selectedSummary.name,
       (event) => {
-        setDetailState((state) => reducer(state, event));
+        pendingEventsRef.current.push(event);
+        scheduleEventFlush();
       },
       (message) => {
         setDetailState((state) =>
@@ -187,12 +260,19 @@ export function App({ initialWasmPath, rustBin: _rustBin, extraArgs }: AppProps)
 
     return () => {
       handle.stop();
+      if (eventFlushTimerRef.current !== null) {
+        clearTimeout(eventFlushTimerRef.current);
+        eventFlushTimerRef.current = null;
+      }
+      pendingEventsRef.current = [];
     };
   }, [initialWasmPath, selectedSummary?.name, selectedSummary?.wasm]);
 
   useEffect(() => {
     if (paramFields.length === 0) {
-      setParamValues({});
+      setParamValues((current) =>
+        Object.keys(current).length === 0 ? current : {}
+      );
       return;
     }
     setParamValues((current) => {
@@ -207,6 +287,61 @@ export function App({ initialWasmPath, rustBin: _rustBin, extraArgs }: AppProps)
       return changed ? next : current;
     });
   }, [paramFieldKey, paramFields]);
+
+  useEffect(() => {
+    if (!showLauncher || fileBrowser) {
+      return;
+    }
+
+    const trimmed = launcher.wasmPath.trim();
+    if (!trimmed.endsWith(".wasm")) {
+      launcherInspectSeqRef.current += 1;
+      setLauncher((current) => {
+        if (
+          current.inspectedDescribe === null &&
+          current.inspecting === false &&
+          Object.keys(current.launcherParamValues).length === 0
+        ) {
+          return current;
+        }
+        return {
+          ...current,
+          inspectedDescribe: null,
+          inspecting: false,
+          launcherParamValues: {},
+        };
+      });
+      return;
+    }
+
+    const resolvedPath = resolve(trimmed);
+    if (!existsSync(resolvedPath)) {
+      launcherInspectSeqRef.current += 1;
+      setLauncher((current) => ({
+        ...current,
+        inspectedDescribe: null,
+        inspecting: false,
+        launcherParamValues: {},
+      }));
+      return;
+    }
+
+    if (launcherInspectTimerRef.current !== null) {
+      clearTimeout(launcherInspectTimerRef.current);
+    }
+
+    launcherInspectTimerRef.current = setTimeout(() => {
+      launcherInspectTimerRef.current = null;
+      void triggerInspect(resolvedPath);
+    }, 120);
+
+    return () => {
+      if (launcherInspectTimerRef.current !== null) {
+        clearTimeout(launcherInspectTimerRef.current);
+        launcherInspectTimerRef.current = null;
+      }
+    };
+  }, [showLauncher, fileBrowser, launcher.wasmPath]);
 
   useInput((input, key) => {
     if (key.ctrl && input === "c") {
@@ -508,13 +643,23 @@ export function App({ initialWasmPath, rustBin: _rustBin, extraArgs }: AppProps)
     },
   ): void {
     if (key.escape || input === "l") {
-      setShowLauncher(false);
+      closeLauncher();
       return;
     }
 
-    if (key.return) {
-      void submitLauncher();
-      return;
+    if (isLauncherActionField(launcherField)) {
+      if (key.leftArrow || key.rightArrow) {
+        setLauncherField(toggleLauncherActionField(launcherField));
+        return;
+      }
+      if (key.return || input === " ") {
+        if (launcherField === ARM_BUTTON_FIELD) {
+          void submitLauncher();
+        } else {
+          closeLauncher();
+        }
+        return;
+      }
     }
 
     // Tab on wasm field opens file browser
@@ -533,6 +678,11 @@ export function App({ initialWasmPath, rustBin: _rustBin, extraArgs }: AppProps)
 
     if (key.upArrow) {
       setLauncherField(nextLauncherField(-1));
+      return;
+    }
+
+    if (key.return) {
+      void submitLauncher();
       return;
     }
 
@@ -635,7 +785,7 @@ export function App({ initialWasmPath, rustBin: _rustBin, extraArgs }: AppProps)
     transform: (value: string) => string,
   ): void {
     setLauncher((current) => {
-      if (launcherField === "paramsSource" || launcherField.startsWith("param:")) {
+      if (!isLauncherFieldEditable(launcherField)) {
         return current;
       }
       const key =
@@ -652,10 +802,24 @@ export function App({ initialWasmPath, rustBin: _rustBin, extraArgs }: AppProps)
     });
   }
 
+  function closeLauncher(): void {
+    setShowLauncher(false);
+    setFileBrowser(null);
+    setLauncherField("wasm");
+  }
+
   async function triggerInspect(wasmPath: string): Promise<void> {
     const trimmed = wasmPath.trim();
     if (!trimmed.endsWith(".wasm")) return;
-    setLauncher((cur) => ({ ...cur, inspecting: true, inspectedDescribe: null }));
+    const requestSeq = launcherInspectSeqRef.current + 1;
+    launcherInspectSeqRef.current = requestSeq;
+    setLauncher((cur) => ({
+      ...cur,
+      inspecting: true,
+      inspectedDescribe: null,
+      launcherParamValues: {},
+      error: null,
+    }));
     try {
       const describe = await inspectMission(trimmed);
       const defaults: Record<string, string> = {};
@@ -664,6 +828,9 @@ export function App({ initialWasmPath, rustBin: _rustBin, extraArgs }: AppProps)
           defaults[f.key] = paramDefaultText(f.default);
         }
       }
+      if (launcherInspectSeqRef.current !== requestSeq) {
+        return;
+      }
       setLauncher((cur) => ({
         ...cur,
         inspectedDescribe: describe,
@@ -671,17 +838,49 @@ export function App({ initialWasmPath, rustBin: _rustBin, extraArgs }: AppProps)
         launcherParamValues: defaults,
         error: null,
       }));
-    } catch {
-      setLauncher((cur) => ({ ...cur, inspecting: false }));
+    } catch (error) {
+      if (launcherInspectSeqRef.current !== requestSeq) {
+        return;
+      }
+      setLauncher((cur) => ({
+        ...cur,
+        inspecting: false,
+        inspectedDescribe: null,
+        launcherParamValues: {},
+        error: `WASM inspect failed: ${asErrorMessage(error)}`,
+      }));
     }
   }
 
   async function submitLauncher(): Promise<void> {
     setLauncher((current) => ({ ...current, submitting: true, error: null }));
     try {
-      const mission = await launchMission(buildLaunchRequest(launcher));
+      const request = buildLaunchRequest(launcher);
+      const mission = await launchMission(request);
       setLauncher((current) => ({ ...current, submitting: false, error: null }));
-      setShowLauncher(false);
+      setMissions((current) => {
+        if (current.some((existing) => existing.name === mission)) {
+          return current;
+        }
+        return [
+          {
+            name: mission,
+            state: "launching",
+            phase: "idle",
+            cycles: 0,
+            wasm: resolve(request.wasm),
+            held: false,
+            terminal: false,
+            last_started_at_ms: Date.now(),
+            last_run_at_ms: null,
+            last_outcome_status: null,
+            next_wake_at_ms: null,
+            last_error: null,
+          },
+          ...current,
+        ];
+      });
+      closeLauncher();
       setSelectedMission(mission);
       setView("detail");
       setFocusPane("pipeline");
@@ -756,7 +955,7 @@ function MissionListView({
       ) : missions.length === 0 ? (
         <Box flexGrow={1} flexDirection="column">
           <Text dimColor>No missions running</Text>
-          <Text dimColor>Press l to launch a mission</Text>
+          <Text dimColor>Open the arming panel to add a mission.</Text>
         </Box>
       ) : (
         missions.map((mission) => {
@@ -787,8 +986,11 @@ function MissionListView({
           );
         })
       )}
+      <Box marginTop={1} flexDirection="row" gap={1}>
+        <DashboardActionButton label="ADD MISSION" hotkey="L" tone={AMBER} />
+      </Box>
       <Box marginTop={1}>
-        <Text dimColor>Enter open · l launch · f retry · space hold/resume · x abort · ? help · q quit</Text>
+        <Text dimColor>Enter open · l add mission · f retry · space hold/resume · x abort · ? help · q quit</Text>
       </Box>
     </Box>
   );
@@ -904,9 +1106,12 @@ function EmptyDashboard({ daemonError }: { daemonError: string | null }) {
       </Text>
       <Text dimColor>
         {daemonError
-          ? "Daemon unavailable. Install and start it before launching a mission."
-          : "No mission selected. Press l to launch a mission."}
+          ? "Daemon unavailable. Install and start it before adding a mission."
+          : "No mission selected yet."}
       </Text>
+      <Box marginTop={1} flexDirection="row" gap={1}>
+        <DashboardActionButton label="ADD MISSION" hotkey="L" tone={AMBER} />
+      </Box>
     </Box>
   );
 }
@@ -934,7 +1139,7 @@ function LauncherDialog({
       overflow="hidden"
     >
       <Text bold color={AMBER}>
-        Launch Mission
+        Arm Mission
       </Text>
       <LauncherRow
         label="WASM path"
@@ -1003,15 +1208,32 @@ function LauncherDialog({
         ) : (
           <>
             <Text dimColor>
-              Enter launch · Tab/↑/↓ move
-              {hasSchemaParams ? " · Left/Right toggle options" : " · Left/Right params mode"}
-              {" · Esc close"}
+              Tab/↑/↓ move
+              {hasSchemaParams ? " · Left/Right toggle options or action buttons" : " · Left/Right params mode or action buttons"}
+              {" · Enter activates selection · Space clicks action · Esc close"}
             </Text>
             <Text dimColor>Env vars: KEY=VALUE, KEY2=VALUE2</Text>
+            {isLauncherActionField(field) ? (
+              <Text dimColor>{buttonHintForField(field)}</Text>
+            ) : null}
           </>
         )}
         {state.error ? <Text color="red">{state.error}</Text> : null}
-        {state.submitting ? <Text color={AMBER}>Launching...</Text> : null}
+        {state.submitting ? <Text color={AMBER}>Arming mission...</Text> : null}
+        {!fileBrowser ? (
+          <Box marginTop={1} flexDirection="row" gap={1}>
+            <LauncherActionButton
+              label={state.submitting ? "ARMING..." : buttonLabelForField(ARM_BUTTON_FIELD)}
+              selected={field === ARM_BUTTON_FIELD}
+              tone={actionToneForField(ARM_BUTTON_FIELD)}
+            />
+            <LauncherActionButton
+              label={buttonLabelForField(CANCEL_BUTTON_FIELD)}
+              selected={field === CANCEL_BUTTON_FIELD}
+              tone={actionToneForField(CANCEL_BUTTON_FIELD)}
+            />
+          </Box>
+        ) : null}
       </Box>
     </Box>
   );
@@ -1063,6 +1285,43 @@ function LauncherRow({
   );
 }
 
+function LauncherActionButton({
+  label,
+  selected,
+  tone,
+}: {
+  label: string;
+  selected: boolean;
+  tone: string;
+}) {
+  return (
+    <Box borderStyle="single" borderColor={selected ? tone : "gray"} paddingX={1}>
+      <Text color={selected ? tone : undefined} bold={selected}>
+        {label}
+      </Text>
+    </Box>
+  );
+}
+
+function DashboardActionButton({
+  label,
+  hotkey,
+  tone,
+}: {
+  label: string;
+  hotkey: string;
+  tone: string;
+}) {
+  return (
+    <Box borderStyle="single" borderColor={tone} paddingX={1}>
+      <Text color={tone} bold>
+        {label}
+      </Text>
+      <Text dimColor>{` [${hotkey}]`}</Text>
+    </Box>
+  );
+}
+
 function DashboardStatusBar({
   view,
   launcherOpen,
@@ -1080,10 +1339,10 @@ function DashboardStatusBar({
         {helpOpen
           ? "↑/↓/PgUp/PgDn scroll · h/?/Esc close · Ctrl+C quit"
           : launcherOpen
-            ? "Enter launch · Tab/↑/↓ move · Esc close"
+            ? "Tab/↑/↓ move · Left/Right action buttons · Enter/Space activate · Esc close"
             : view === "list"
-              ? "↑/↓ select · Enter open · l launch · f retry · space hold/resume · x abort · ? help · q quit"
-              : "b/Esc back · Tab cycle panels · l launch · f retry · space hold/resume · ? help · q quit"}
+              ? "↑/↓ select · Enter open · l add mission · f retry · space hold/resume · x abort · ? help · q quit"
+              : "b/Esc back · Tab cycle panels · l add mission · f retry · space hold/resume · ? help · q quit"}
       </Text>
       {error ? <Text color="red">{error}</Text> : null}
     </Box>
@@ -1118,7 +1377,7 @@ function parseEnvText(text: string): Record<string, string> {
 function buildLaunchRequest(state: LauncherState) {
   const wasmPath = state.wasmPath.trim();
   if (!wasmPath.endsWith(".wasm")) {
-    throw new Error("launch path must point to a .wasm mission module");
+    throw new Error("WASM path must point to a .wasm mission module");
   }
 
   let params: string | undefined;

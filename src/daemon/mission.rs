@@ -11,10 +11,18 @@ const MAX_HISTORY_EVENTS: usize = 4_096;
 const MAX_HISTORY_BYTES: usize = 2 * 1024 * 1024;
 
 pub(super) enum MissionCtrl {
-    Hold,
+    Hold { reason: String },
     Resume,
-    Abort,
-    Retry,
+    Abort {
+        actor: String,
+        action: String,
+        reason: String,
+    },
+    Retry {
+        actor: String,
+        action: String,
+        reason: String,
+    },
 }
 
 pub(super) struct MissionState {

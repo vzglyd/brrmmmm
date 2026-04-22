@@ -1,7 +1,12 @@
 # brrmmmm frontend protocol
 
-The Rust CLI is the canonical runtime. Frontends talk to it over stdio rather
-than scraping terminal output.
+The Rust CLI / daemon is the canonical runner. Treat `brrmmmm` as a sidecar
+process that writes mission records to disk, not as a library to embed.
+
+If another program depends on mission data, it should watch or poll the mission
+JSON files on disk. Read live progress from `.status.json`, and consume the
+final payload from `.out.json`. Stdout/NDJSON exists for operator UIs and
+debugging.
 
 ## Starting the backend
 
@@ -42,15 +47,18 @@ Frontends should handle at least these event types:
 
 ## Output contract
 
-Application code should treat `published_output` as the primary payload.
+Application code should treat the saved mission JSON as the primary contract.
+For finalized results, `payload` is the primary consumer-facing envelope.
 
 - `brrmmmm run mission-module.wasm --once` prints only `published_output` bytes to stdout when no result file is configured.
 - `brrmmmm run mission-module.wasm --once --result-path mission.json` writes a durable mission record and keeps stdout empty.
 - `brrmmmm run mission-module.wasm --once --events` prints only NDJSON events to stdout.
 - `brrmmmm run mission-module.wasm --once --events --result-path mission.json` keeps stdout as NDJSON and still writes the mission record file.
+- daemon missions write `~/.brrmmmm/missions/<mission_name>/<mission_name>.status.json` while running.
+- daemon missions write `~/.brrmmmm/missions/<mission_name>/<mission_name>.out.json` before the latest attempt is considered complete.
 
-`raw_source_payload` and `normalized_payload` are diagnostic artifacts, not the
-primary consumer contract.
+`raw_source_payload`, `normalized_payload`, and `artifacts.published_output` are
+diagnostic or compatibility artifacts, not the primary consumer contract.
 
 ## Runtime modes
 

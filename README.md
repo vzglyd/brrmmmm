@@ -104,8 +104,19 @@ enforcement, persistence, and Wasm execution all stay inside one small runtime
 world.
 
 When `--result-path` or `mission.result_path` is configured, `brrmmmm` writes a
-single atomic JSON mission record. Anything that needs the result can watch or
-poll that file. The caller does not need to parent the `brrmmmm` process.
+single atomic JSON mission result. Anything that needs the result should watch
+or poll that file; it should not parse the TUI or embed the runtime as a
+library.
+
+Daemon-launched missions persist live and finalized JSON files at:
+
+```text
+~/.brrmmmm/missions/<mission_name>/<mission_name>.status.json
+~/.brrmmmm/missions/<mission_name>/<mission_name>.out.json
+```
+
+Downstream consumers should watch `.status.json` for progress and read the
+latest finalized payload from `.out.json`.
 
 ## Quick start
 
@@ -128,6 +139,8 @@ Run once and print the published payload to stdout:
 ```bash
 brrmmmm run path/to/mission-module.wasm --once --output json
 ```
+
+Stdout mode is mainly for debugging and ad hoc inspection.
 
 Run once and write a durable mission record instead:
 
@@ -162,16 +175,27 @@ brrmmmm
 
 Mission records are fixed-schema JSON. They are not just payload dumps.
 
-Each record includes:
+Each finalized `.out.json` record includes:
 
 - `module`: resolved module identity such as `logical_id`, `name`, `abi_version`, and `wasm_path`
+- `job`: runner mode, daemon mission name when one exists, scheduler state, cycle count, and canonical file paths
+- `mission`: declared mission contract summary, including params, artifacts, env vars, and capabilities
+- `attempt`: the latest finalized attempt sequence and timestamps
+- `timeline`: a curated ledger of scheduler states, phases, interventions, and outcome milestones
+- `challenges`: normalized obstacles observed during the latest attempt
+- `interventions`: operator or daemon control actions such as hold, abort, or rescue retry
+- `payload`: typed final payload envelope for downstream consumers
 - `outcome`: typed terminal outcome such as `published`, `retryable_failure`, `terminal_failure`, or `operator_action_required`
 - `host_decision`: exit-code category, risk posture, next-attempt policy, basis tags, and whether the final outcome was host-synthesized
 - `explanation`: summary, message, and next action
 - `escalation`: bounded operator rescue details such as `action`, `deadline_at`, and `timeout_outcome`
-- `artifacts`: captured `raw_source`, `normalized`, and `published_output` payloads when present
+- `artifacts`: captured `raw_source`, `normalized`, and `published_output` payloads when present for diagnostics and secondary consumers
 - `timing`: start, finish, and elapsed time
 - `stats`: consecutive failures and persisted cooldown/failure timestamps
+
+The live `.status.json` file uses the same job/mission/attempt/timeline
+concepts, but reflects in-progress state instead of a finalized terminal
+record.
 
 `brrmmmm explain mission.json` renders that contract back into operator-facing
 text without replaying the run. If a mission ended in `operator_action_required`,
@@ -249,6 +273,7 @@ Useful host prerequisites:
 - Chrome or Chromium for modules that declare the `browser` capability
 - `ANTHROPIC_API_KEY` for modules that declare the `ai` capability
 
-The binary crate is the primary integration surface. The Rust library exists so
-the CLI, tests, and TUI share one runtime implementation, but the supported API
-surface is intentionally narrow.
+The `brrmmmm` binary is the supported integration surface. The Rust crate
+primarily exists so the CLI, tests, and TUI share one runtime implementation;
+downstream programs should run the binary and watch mission record files rather
+than embedding the runtime.

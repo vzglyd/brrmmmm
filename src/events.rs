@@ -97,6 +97,13 @@ pub enum Event {
         /// Newly observed lifecycle phase.
         phase: MissionPhase,
     },
+    /// Emitted when the daemon scheduler changes mission state.
+    SchedulerState {
+        /// Event timestamp in ISO-8601 UTC format.
+        ts: String,
+        /// Daemon scheduler state such as `launching` or `scheduled`.
+        state: String,
+    },
     /// Forwarded from a mission module's `take_events()` ring buffer.
     #[allow(dead_code)]
     GuestEventFwd {
@@ -174,6 +181,17 @@ pub enum Event {
         ts: String,
         /// Mission-module or runtime log message.
         message: String,
+    },
+    /// Emitted when an operator or the daemon intervenes in mission control flow.
+    Intervention {
+        /// Event timestamp in ISO-8601 UTC format.
+        ts: String,
+        /// Actor responsible for the intervention such as `operator` or `daemon`.
+        actor: String,
+        /// Intervention action such as `hold`, `resume`, `abort`, or `rescue_retry`.
+        action: String,
+        /// Optional human-readable reason attached to the action.
+        reason: Option<String>,
     },
     /// Emitted when the mission module reports its final outcome.
     MissionOutcome {

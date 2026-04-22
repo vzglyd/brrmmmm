@@ -634,3 +634,7 @@ fn log(msg: &str) {
         log_info(msg.as_ptr() as i32, msg.len() as i32);
     }
 }
+
+fn json_string(value: &str) -> String {
+    serde_json::Value::String(value.to_string()).to_string()
+}

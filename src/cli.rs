@@ -25,7 +25,7 @@ pub enum RescueActionArg {
 #[derive(Parser)]
 #[command(
     name = "brrmmmm",
-    about = "Acquisition runtime for portable WASM mission modules",
+    about = "Sidecar mission runner for portable WASM mission modules",
     after_help = "\
 EXAMPLES:
   brrmmmm mission-module.wasm       # launches TUI
@@ -45,7 +45,12 @@ EXAMPLES:
   brrmmmm hold     solar-wind --reason \"maintenance window\"
   brrmmmm resume   solar-wind
   brrmmmm abort    solar-wind --reason \"shutting down\"
-  brrmmmm rescue   solar-wind --action retry --reason \"fixed API key\"",
+  brrmmmm rescue   solar-wind --action retry --reason \"fixed API key\"
+
+NOTES:
+  Watch the mission JSON files for downstream integrations.
+  Daemon missions persist ~/.brrmmmm/missions/<mission_name>/<mission_name>.status.json while running.
+  Daemon missions persist ~/.brrmmmm/missions/<mission_name>/<mission_name>.out.json for the latest finalized attempt.",
     version
 )]
 pub struct Cli {
@@ -94,7 +99,7 @@ pub enum Commands {
         #[arg(short = 'f', long, value_name = "PATH", value_hint = ValueHint::FilePath)]
         params_file: Option<PathBuf>,
 
-        /// Path to a durable mission-result JSON file
+        /// Path to a durable final mission-result JSON file watched by downstream consumers
         #[arg(long, value_name = "PATH", value_hint = ValueHint::FilePath)]
         result_path: Option<PathBuf>,
 

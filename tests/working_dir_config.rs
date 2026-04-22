@@ -247,7 +247,12 @@ params_file = "missing.json"
 
     let output = run_brr_in(
         &dir,
-        &["run", "--once", "--params-json", r#"{"source":"cli"}"#],
+        &[
+            "run",
+            "--once",
+            "--params-json",
+            r#"{"label":"cli","payload":{"source":"cli"}}"#,
+        ],
     );
 
     assert!(
@@ -257,7 +262,8 @@ params_file = "missing.json"
         String::from_utf8_lossy(&output.stderr)
     );
     let payload: Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(payload["params"]["source"], "cli");
+    assert_eq!(payload["label"], "cli");
+    assert_eq!(payload["payload"]["source"], "cli");
 }
 
 #[test]

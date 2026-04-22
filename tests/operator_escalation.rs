@@ -120,7 +120,7 @@ fn explain_tracks_operator_rescue_window_before_and_after_expiry() {
     assert_eq!(run.status.code(), Some(65));
     let record: Value =
         serde_json::from_slice(&std::fs::read(dir.join("mission.json")).unwrap()).unwrap();
-    assert_eq!(record["schema_version"], 4);
+    assert_eq!(record["schema_version"], 1);
     assert_eq!(record["outcome"]["status"], "operator_action_required");
     assert_eq!(record["escalation"]["timeout_outcome"], "retryable_failure");
     assert_eq!(record["host_decision"]["risk_posture"], "awaiting_operator");

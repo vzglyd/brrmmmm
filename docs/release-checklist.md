@@ -68,7 +68,7 @@ Accept the release only if:
 
 - `inspect.json` contains the real contract, including host imports and artifacts
 - `payload.json` is the intended consumer payload
-- `mission.json` is a valid schema-v4 mission record with `host_decision.risk_posture`, `host_decision.next_attempt_policy`, and `host_decision.basis`
+- `mission.json` is a valid schema-v1 mission record with `job`, `attempt`, `timeline`, `payload`, `host_decision.risk_posture`, `host_decision.next_attempt_policy`, and `host_decision.basis`
 - `events.ndjson` is valid NDJSON with no raw payload line mixed into the stream
 - `brrmmmm explain mission.json` gives the next operator action or expired rescue classification without replaying the mission
 - `brrmmmm rehearse path/to/mission-module.wasm` renders the expected host-side closure drills

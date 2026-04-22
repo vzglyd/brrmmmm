@@ -15,10 +15,11 @@
 //! - [`error`] defines structured runtime and configuration failures.
 //! - [`events`] defines the structured event stream emitted by the runtime.
 //!
-//! The `brrmmmm` binary is the primary integration surface for operators,
-//! orchestrators, and other non-Rust callers. This library exists so the CLI,
-//! the TUI, and the test suite share one runtime implementation, while still
-//! allowing narrow Rust integrations when needed.
+//! The `brrmmmm` binary is the canonical integration surface for operators,
+//! orchestrators, and other non-Rust callers. This crate primarily exists so
+//! the CLI, the TUI, and the test suite share one runtime implementation.
+//! Downstream systems should normally invoke the binary and watch mission
+//! result files rather than embedding the runtime directly.
 //!
 //! Lower-level runtime machinery such as host import registration, persistence
 //! internals, attestation helpers, and browser/network session wiring is

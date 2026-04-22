@@ -235,7 +235,15 @@ fn rehearsal_scenario(
     let host_decision =
         host_decision_record(fallback_host_decision(&outcome, true), &outcome, false);
     let record = MissionRecord {
-        schema_version: 4,
+        schema_version: 1,
+        record_kind: crate::mission_result::MissionRecordKind::Result,
+        job: None,
+        mission: None,
+        attempt: None,
+        timeline: Vec::new(),
+        challenges: Vec::new(),
+        interventions: Vec::new(),
+        payload: None,
         module,
         outcome: outcome.clone(),
         host_decision,

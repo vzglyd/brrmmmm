@@ -9,7 +9,65 @@
   "required_env_vars": [],
   "optional_env_vars": [],
   "params": {
-    "fields": []
+    "fields": [
+      {
+        "key": "label",
+        "type": "string",
+        "required": true,
+        "label": "Label",
+        "help": "Human-readable tag echoed in the published payload.",
+        "default": "demo",
+        "options": []
+      },
+      {
+        "key": "repeat",
+        "type": "integer",
+        "required": false,
+        "label": "Repeat count",
+        "help": "Example integer field for the generated param form.",
+        "default": 3,
+        "options": []
+      },
+      {
+        "key": "urgent",
+        "type": "boolean",
+        "required": false,
+        "label": "Urgent",
+        "help": "Example boolean toggle rendered as a selectable field.",
+        "default": false,
+        "options": []
+      },
+      {
+        "key": "mode",
+        "type": "string",
+        "required": false,
+        "label": "Mode",
+        "help": "Example enum-like option list rendered by the arming panel.",
+        "default": "summary",
+        "options": [
+          {
+            "value": "summary",
+            "label": "Summary"
+          },
+          {
+            "value": "verbose",
+            "label": "Verbose"
+          }
+        ]
+      },
+      {
+        "key": "payload",
+        "type": "json",
+        "required": false,
+        "label": "Payload",
+        "help": "Example JSON param showing nested host-owned params.",
+        "default": {
+          "source": "params-sidecar",
+          "tags": ["demo", "fixture"]
+        },
+        "options": []
+      }
+    ]
   },
   "capabilities_needed": [],
   "poll_strategy": {

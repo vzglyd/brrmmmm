@@ -4,13 +4,32 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use brrmmmm::abi::{
-    DecisionBasisTag, HostDecisionState, MissionOutcome, MissionOutcomeStatus, MissionRiskPosture,
-    NextAttemptPolicy, OperatorEscalationState, OperatorTimeoutOutcome,
+    DecisionBasisTag, EnvVarSpec, HostDecisionState, MissionModuleDescribe, MissionOutcome,
+    MissionOutcomeStatus, MissionParamsSchema, MissionRiskPosture, NextAttemptPolicy,
+    OperatorEscalationState, OperatorTimeoutOutcome, PersistenceAuthority,
 };
 use brrmmmm::controller::MissionCompletion;
 use brrmmmm::error::BrrmmmmError;
 use brrmmmm::events::{ms_to_iso8601, now_ms};
 use serde::{Deserialize, Serialize};
+
+const RESULT_SCHEMA_VERSION: u8 = 1;
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum MissionRecordKind {
+    #[default]
+    Result,
+    Status,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum MissionJobMode {
+    #[default]
+    Once,
+    Daemon,
+}
 
 #[derive(Clone, Debug)]
 pub struct MissionRecorder {
@@ -18,20 +37,38 @@ pub struct MissionRecorder {
     started_at: String,
     started_at_ms: u64,
     wasm_path: Option<String>,
+    mode: MissionJobMode,
 }
 
 impl MissionRecorder {
     pub(crate) fn new(path: PathBuf, wasm_path: Option<&Path>) -> Self {
+        Self::new_for_mode(path, wasm_path, MissionJobMode::Once)
+    }
+
+    pub(crate) fn for_daemon(path: PathBuf, wasm_path: Option<&Path>) -> Self {
+        Self::new_for_mode(path, wasm_path, MissionJobMode::Daemon)
+    }
+
+    fn new_for_mode(path: PathBuf, wasm_path: Option<&Path>, mode: MissionJobMode) -> Self {
         let started_at_ms = now_ms();
         Self {
             path,
             started_at: ms_to_iso8601(started_at_ms),
             started_at_ms,
             wasm_path: wasm_path.map(|path| path.display().to_string()),
+            mode,
         }
     }
 
     pub(crate) fn write_completion(&self, completion: &MissionCompletion) -> Result<()> {
+        self.write_completion_with_context(completion, MissionRecordContext::default())
+    }
+
+    pub(crate) fn write_completion_with_context(
+        &self,
+        completion: &MissionCompletion,
+        context: MissionRecordContext,
+    ) -> Result<()> {
         let finished_at_ms = now_ms();
         let describe = completion.snapshot.describe.as_ref();
         let synthesized = completion.snapshot.last_outcome_reported_by.as_deref() == Some("host");
@@ -40,8 +77,44 @@ impl MissionRecorder {
             .pending_operator_action
             .as_ref()
             .map(escalation_record);
+        let host_decision = host_decision_record(
+            completion
+                .snapshot
+                .last_host_decision
+                .clone()
+                .unwrap_or_else(|| fallback_host_decision(&completion.outcome, synthesized)),
+            &completion.outcome,
+            true,
+        );
+        let artifacts = MissionArtifactsRecord {
+            raw_source: completion.raw_source.as_deref().map(artifact_record),
+            normalized: completion.normalized.as_deref().map(artifact_record),
+            published_output: completion.published_output.as_deref().map(artifact_record),
+        };
         let record = MissionRecord {
-            schema_version: 4,
+            schema_version: RESULT_SCHEMA_VERSION,
+            record_kind: MissionRecordKind::Result,
+            job: context.job.or_else(|| Some(self.default_job_record())),
+            mission: context
+                .mission
+                .or_else(|| Some(mission_contract_record(self.wasm_path.as_deref(), describe))),
+            attempt: context.attempt.or_else(|| {
+                Some(default_attempt_record(
+                    1,
+                    None,
+                    Some(phase_name_from_completion(completion)),
+                    self.started_at.clone(),
+                    finished_at_ms,
+                    true,
+                ))
+            }),
+            timeline: context.timeline,
+            challenges: context.challenges,
+            interventions: context.interventions,
+            payload: completion
+                .published_output
+                .as_deref()
+                .map(|data| payload_record(&completion.outcome, data)),
             module: MissionModuleRecord {
                 wasm_path: self.wasm_path.clone(),
                 logical_id: describe.map(|describe| describe.logical_id.clone()),
@@ -51,37 +124,15 @@ impl MissionRecorder {
                     .filter(|abi_version| *abi_version != 0),
             },
             outcome: completion.outcome.clone(),
-            host_decision: host_decision_record(
-                completion
-                    .snapshot
-                    .last_host_decision
-                    .clone()
-                    .unwrap_or_else(|| fallback_host_decision(&completion.outcome, synthesized)),
-                &completion.outcome,
-                true,
-            ),
+            host_decision: host_decision.clone(),
             explanation: explanation_for_outcome(
                 &completion.outcome,
-                &host_decision_record(
-                    completion
-                        .snapshot
-                        .last_host_decision
-                        .clone()
-                        .unwrap_or_else(|| {
-                            fallback_host_decision(&completion.outcome, synthesized)
-                        }),
-                    &completion.outcome,
-                    true,
-                ),
+                &host_decision,
                 escalation.as_ref(),
                 finished_at_ms,
             ),
             escalation,
-            artifacts: MissionArtifactsRecord {
-                raw_source: completion.raw_source.as_deref().map(artifact_record),
-                normalized: completion.normalized.as_deref().map(artifact_record),
-                published_output: completion.published_output.as_deref().map(artifact_record),
-            },
+            artifacts,
             timing: TimingRecord {
                 started_at: self.started_at.clone(),
                 finished_at: ms_to_iso8601(finished_at_ms),
@@ -98,6 +149,14 @@ impl MissionRecorder {
     }
 
     pub(crate) fn write_runtime_error(&self, error: &anyhow::Error) -> Result<()> {
+        self.write_runtime_error_with_context(error, MissionRecordContext::default())
+    }
+
+    pub(crate) fn write_runtime_error_with_context(
+        &self,
+        error: &anyhow::Error,
+        context: MissionRecordContext,
+    ) -> Result<()> {
         let finished_at_ms = now_ms();
         let outcome = if error_category(error) == "timeout" {
             MissionOutcome {
@@ -122,8 +181,28 @@ impl MissionRecorder {
                 primary_artifact_kind: None,
             }
         };
+        let host_decision = host_decision_record(fallback_error_decision(error), &outcome, true);
         let record = MissionRecord {
-            schema_version: 4,
+            schema_version: RESULT_SCHEMA_VERSION,
+            record_kind: MissionRecordKind::Result,
+            job: context.job.or_else(|| Some(self.default_job_record())),
+            mission: context
+                .mission
+                .or_else(|| Some(mission_contract_record(self.wasm_path.as_deref(), None))),
+            attempt: context.attempt.or_else(|| {
+                Some(default_attempt_record(
+                    1,
+                    None,
+                    None,
+                    self.started_at.clone(),
+                    finished_at_ms,
+                    true,
+                ))
+            }),
+            timeline: context.timeline,
+            challenges: context.challenges,
+            interventions: context.interventions,
+            payload: None,
             module: MissionModuleRecord {
                 wasm_path: self.wasm_path.clone(),
                 logical_id: None,
@@ -131,10 +210,10 @@ impl MissionRecorder {
                 abi_version: None,
             },
             outcome: outcome.clone(),
-            host_decision: host_decision_record(fallback_error_decision(error), &outcome, true),
+            host_decision: host_decision.clone(),
             explanation: explanation_for_outcome(
                 &outcome,
-                &host_decision_record(fallback_error_decision(error), &outcome, true),
+                &host_decision,
                 None,
                 finished_at_ms,
             ),
@@ -149,11 +228,52 @@ impl MissionRecorder {
         };
         write_record(&self.path, &record)
     }
+
+    fn default_job_record(&self) -> MissionJobRecord {
+        MissionJobRecord {
+            mode: self.mode,
+            name: None,
+            scheduler_state: None,
+            held: false,
+            cycles: 0,
+            files: MissionJobFilesRecord {
+                result_path: self.path.display().to_string(),
+                status_path: None,
+                events_path: None,
+            },
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct MissionRecordContext {
+    pub(crate) job: Option<MissionJobRecord>,
+    pub(crate) mission: Option<MissionContractRecord>,
+    pub(crate) attempt: Option<MissionAttemptRecord>,
+    pub(crate) timeline: Vec<MissionTimelineEntry>,
+    pub(crate) challenges: Vec<MissionChallengeRecord>,
+    pub(crate) interventions: Vec<MissionInterventionRecord>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MissionRecord {
     pub(crate) schema_version: u8,
+    #[serde(default)]
+    pub(crate) record_kind: MissionRecordKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) job: Option<MissionJobRecord>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) mission: Option<MissionContractRecord>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) attempt: Option<MissionAttemptRecord>,
+    #[serde(default)]
+    pub(crate) timeline: Vec<MissionTimelineEntry>,
+    #[serde(default)]
+    pub(crate) challenges: Vec<MissionChallengeRecord>,
+    #[serde(default)]
+    pub(crate) interventions: Vec<MissionInterventionRecord>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) payload: Option<MissionPayloadRecord>,
     pub(crate) module: MissionModuleRecord,
     pub(crate) outcome: MissionOutcome,
     pub(crate) host_decision: HostDecisionRecord,
@@ -164,6 +284,151 @@ pub struct MissionRecord {
     pub(crate) artifacts: MissionArtifactsRecord,
     pub(crate) timing: TimingRecord,
     pub(crate) stats: MissionStatsRecord,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MissionStatusRecord {
+    pub(crate) schema_version: u8,
+    #[serde(default)]
+    pub(crate) record_kind: MissionRecordKind,
+    pub(crate) job: MissionJobRecord,
+    pub(crate) mission: MissionContractRecord,
+    pub(crate) module: MissionModuleRecord,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) attempt: Option<MissionAttemptRecord>,
+    #[serde(default)]
+    pub(crate) timeline: Vec<MissionTimelineEntry>,
+    #[serde(default)]
+    pub(crate) challenges: Vec<MissionChallengeRecord>,
+    #[serde(default)]
+    pub(crate) interventions: Vec<MissionInterventionRecord>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) outcome: Option<MissionOutcome>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) host_decision: Option<HostDecisionRecord>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) explanation: Option<ExplanationRecord>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) escalation: Option<MissionEscalationRecord>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) last_error: Option<String>,
+    #[serde(default)]
+    pub(crate) stats: MissionStatsRecord,
+    pub(crate) updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MissionJobRecord {
+    pub(crate) mode: MissionJobMode,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) scheduler_state: Option<String>,
+    #[serde(default)]
+    pub(crate) held: bool,
+    #[serde(default)]
+    pub(crate) cycles: u64,
+    pub(crate) files: MissionJobFilesRecord,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MissionJobFilesRecord {
+    pub(crate) result_path: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) status_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) events_path: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct MissionContractRecord {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) wasm_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) logical_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) abi_version: Option<u32>,
+    #[serde(default)]
+    pub(crate) run_modes: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) state_persistence: Option<PersistenceAuthority>,
+    #[serde(default)]
+    pub(crate) required_env_vars: Vec<EnvVarSpec>,
+    #[serde(default)]
+    pub(crate) optional_env_vars: Vec<EnvVarSpec>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) params: Option<MissionParamsSchema>,
+    #[serde(default)]
+    pub(crate) capabilities_needed: Vec<String>,
+    #[serde(default)]
+    pub(crate) artifact_types: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MissionAttemptRecord {
+    pub(crate) sequence: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) scheduler_state: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) phase: Option<String>,
+    pub(crate) started_at: String,
+    pub(crate) updated_at: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) finished_at: Option<String>,
+    #[serde(default)]
+    pub(crate) terminal: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MissionTimelineEntry {
+    pub(crate) ts: String,
+    pub(crate) ts_ms: u64,
+    pub(crate) kind: String,
+    pub(crate) summary: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) detail: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) scheduler_state: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) phase: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) outcome_status: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MissionChallengeRecord {
+    pub(crate) ts: String,
+    pub(crate) ts_ms: u64,
+    pub(crate) kind: String,
+    pub(crate) summary: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) detail: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MissionInterventionRecord {
+    pub(crate) ts: String,
+    pub(crate) ts_ms: u64,
+    pub(crate) actor: String,
+    pub(crate) action: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) reason: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MissionPayloadRecord {
+    pub(crate) kind: String,
+    pub(crate) size_bytes: usize,
+    pub(crate) encoding: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) media_type: Option<String>,
+    pub(crate) base64: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) json: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) text: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -254,6 +519,12 @@ pub fn load_record(path: &Path) -> Result<MissionRecord> {
         .with_context(|| format!("decode mission record {}", path.display()))
 }
 
+pub fn write_status_record(path: &Path, record: &MissionStatusRecord) -> Result<()> {
+    let bytes =
+        serde_json::to_vec_pretty(record).context("serialize mission status record as JSON")?;
+    atomic_write(path, &bytes)
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct MissionExplainView {
     pub(crate) summary: String,
@@ -325,6 +596,84 @@ pub fn explain_record(record: &MissionRecord, now_ms: u64) -> MissionExplainView
     }
 }
 
+pub fn mission_contract_record(
+    wasm_path: Option<&str>,
+    describe: Option<&MissionModuleDescribe>,
+) -> MissionContractRecord {
+    MissionContractRecord {
+        wasm_path: wasm_path.map(ToOwned::to_owned),
+        logical_id: describe.map(|describe| describe.logical_id.clone()),
+        name: describe.map(|describe| describe.name.clone()),
+        abi_version: describe
+            .map(|describe| describe.abi_version)
+            .filter(|abi_version| *abi_version != 0),
+        run_modes: describe
+            .map(|describe| describe.run_modes.clone())
+            .unwrap_or_default(),
+        state_persistence: describe.map(|describe| describe.state_persistence.clone()),
+        required_env_vars: describe
+            .map(|describe| describe.required_env_vars.clone())
+            .unwrap_or_default(),
+        optional_env_vars: describe
+            .map(|describe| describe.optional_env_vars.clone())
+            .unwrap_or_default(),
+        params: describe.and_then(|describe| describe.params.clone()),
+        capabilities_needed: describe
+            .map(|describe| describe.capabilities_needed.clone())
+            .unwrap_or_default(),
+        artifact_types: describe
+            .map(|describe| describe.artifact_types.clone())
+            .unwrap_or_default(),
+    }
+}
+
+fn default_attempt_record(
+    sequence: u64,
+    scheduler_state: Option<String>,
+    phase: Option<String>,
+    started_at: String,
+    finished_at_ms: u64,
+    terminal: bool,
+) -> MissionAttemptRecord {
+    let finished_at = ms_to_iso8601(finished_at_ms);
+    MissionAttemptRecord {
+        sequence,
+        scheduler_state,
+        phase,
+        started_at,
+        updated_at: finished_at.clone(),
+        finished_at: terminal.then_some(finished_at),
+        terminal,
+    }
+}
+
+fn phase_name_from_completion(completion: &MissionCompletion) -> String {
+    enum_name(&completion.snapshot.phase)
+}
+
+fn payload_record(outcome: &MissionOutcome, data: &[u8]) -> MissionPayloadRecord {
+    let json = serde_json::from_slice::<serde_json::Value>(data).ok();
+    let text = std::str::from_utf8(data).ok().map(ToOwned::to_owned);
+    MissionPayloadRecord {
+        kind: outcome
+            .primary_artifact_kind
+            .clone()
+            .unwrap_or_else(|| "published_output".to_string()),
+        size_bytes: data.len(),
+        encoding: "base64".to_string(),
+        media_type: if json.is_some() {
+            Some("application/json".to_string())
+        } else if text.is_some() {
+            Some("text/plain; charset=utf-8".to_string())
+        } else {
+            None
+        },
+        base64: STANDARD.encode(data),
+        json,
+        text,
+    }
+}
+
 fn artifact_record(data: &[u8]) -> MissionArtifactRecord {
     MissionArtifactRecord {
         size_bytes: data.len(),
@@ -334,7 +683,7 @@ fn artifact_record(data: &[u8]) -> MissionArtifactRecord {
     }
 }
 
-fn escalation_record(escalation: &OperatorEscalationState) -> MissionEscalationRecord {
+pub(crate) fn escalation_record(escalation: &OperatorEscalationState) -> MissionEscalationRecord {
     MissionEscalationRecord {
         action: escalation.action.clone(),
         deadline_at: ms_to_iso8601(escalation.deadline_at_ms),
@@ -430,7 +779,8 @@ fn published_analysis(
                 .as_deref()
                 .unwrap_or("its final artifact")
         ),
-        next_action: "Consume the published_output artifact.".to_string(),
+        next_action: "Watch the mission result file and consume payload.base64 or payload.json."
+            .to_string(),
         rescue_window_open: None,
     }
 }

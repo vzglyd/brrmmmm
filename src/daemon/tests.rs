@@ -84,6 +84,19 @@ async fn published_mission_is_scheduled_from_declared_poll_strategy() {
     assert!(events.contains("\"type\":\"mission_outcome\""));
     assert!(events.contains("\"status\":\"published\""));
 
+    let result = std::fs::read_to_string(mission_result_file(&home, mission))
+        .expect("read mission result file");
+    assert!(result.contains("\"status\": \"published\""));
+    assert!(result.contains("\"published_output\""));
+    assert!(result.contains("\"record_kind\": \"result\""));
+    assert!(result.contains("\"payload\""));
+
+    let status = std::fs::read_to_string(mission_status_file(&home, mission))
+        .expect("read mission status file");
+    assert!(status.contains("\"record_kind\": \"status\""));
+    assert!(status.contains("\"scheduler_state\": \"scheduled\""));
+    assert!(status.contains("\"timeline\""));
+
     let abort = send_command(
         &sock,
         &Command::Abort {
@@ -166,7 +179,9 @@ async fn operator_action_mission_waits_for_rescue_and_retry_relaunches_it() {
     assert!(matches!(
         watched,
         Response::Event { mission: ref name, ref line }
-            if name == mission && line.contains("\"type\":\"env_snapshot\"")
+            if name == mission
+                && (line.contains("\"type\":\"env_snapshot\"")
+                    || line.contains("\"type\":\"scheduler_state\""))
     ));
 
     shutdown_daemon(&sock, daemon).await;

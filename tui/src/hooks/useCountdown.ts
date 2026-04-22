@@ -25,7 +25,7 @@ export function useCountdown(sleepUntilMs: number | null): string {
     };
 
     tick();
-    const id = setInterval(tick, 500);
+    const id = setInterval(tick, 1000);
     return () => clearInterval(id);
   }, [sleepUntilMs]);
 
