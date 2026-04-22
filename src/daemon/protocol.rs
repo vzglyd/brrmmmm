@@ -80,19 +80,6 @@ pub enum MissionSchedulerState {
     Idle,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum MissionSchedulerState {
-    Launching,
-    Running,
-    Scheduled,
-    Held,
-    AwaitingChange,
-    AwaitingOperator,
-    TerminalFailure,
-    Idle,
-}
-
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct MissionSummary {
     pub name: String,
