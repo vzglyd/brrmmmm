@@ -8,6 +8,7 @@ mod tui;
 
 use anyhow::Result;
 use clap::Parser;
+use std::io::IsTerminal;
 use tracing_subscriber::EnvFilter;
 
 use cli::{Cli, Commands, DaemonAction, LogFormat, OutputFormat, RescueActionArg};
@@ -53,7 +54,8 @@ fn run_without_command(
     discovered_config: Option<&app_config::LoadedWorkingDirConfig>,
     config: &brrmmmm::config::Config,
 ) -> Result<()> {
-    if has_wasm_path {
+    let interactive = std::io::stdin().is_terminal() && std::io::stdout().is_terminal();
+    if interactive || has_wasm_path {
         let raw: Vec<String> = std::env::args().skip(1).collect();
         tui::launch_tui(&raw, config);
     }

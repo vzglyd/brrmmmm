@@ -79,12 +79,12 @@ impl RuntimePolicy {
 }
 
 pub(super) struct WasmStoreState {
-    pub(super) wasi: wasmtime_wasi::preview1::WasiP1Ctx,
+    pub(super) wasi: wasmtime_wasi::p1::WasiP1Ctx,
     limits: StoreLimits,
 }
 
 impl WasmStoreState {
-    fn new(wasi: wasmtime_wasi::preview1::WasiP1Ctx, policy: &RuntimePolicy) -> Self {
+    fn new(wasi: wasmtime_wasi::p1::WasiP1Ctx, policy: &RuntimePolicy) -> Self {
         Self {
             wasi,
             limits: policy.store_limits(),
@@ -98,7 +98,7 @@ pub(super) type WasmStore = Store<WasmStoreState>;
 
 pub(super) fn build_wasm_store(
     engine: &Engine,
-    wasi: wasmtime_wasi::preview1::WasiP1Ctx,
+    wasi: wasmtime_wasi::p1::WasiP1Ctx,
     policy: &RuntimePolicy,
 ) -> WasmStore {
     let mut store = Store::new(engine, WasmStoreState::new(wasi, policy));

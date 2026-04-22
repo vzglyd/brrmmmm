@@ -160,8 +160,6 @@ pub enum IdentityError {
     Corrupted(String),
     #[error("unsupported version: {0}")]
     UnsupportedVersion(u8),
-    #[error("mismatched public key")]
-    PublicKeyMismatch,
     #[error(transparent)]
     Other(#[from] anyhow::Error),
 }
@@ -178,33 +176,43 @@ pub fn load_or_create_at(dir: &Path) -> Result<InstallationIdentity> {
     }
 }
 
-#[cfg(test)]
-pub fn repair_at(dir: &Path) -> Result<InstallationIdentity> {
-    let identity = load_existing_at_ignoring_mismatch(dir)
-        .map_err(|e| anyhow::anyhow!("repair failed: {e}"))?;
-    let public_key_path = dir.join("public_key.bin");
-    write_private(&public_key_path, identity.public_key().as_bytes())
-        .with_context(|| format!("repair {}", public_key_path.display()))?;
+fn load_existing_at(dir: &Path) -> Result<InstallationIdentity, IdentityError> {
+    let identity = load_existing_at_ignoring_mismatch(dir)?;
+    ensure_public_key_file(dir, identity.public_key())?;
     Ok(identity)
 }
 
-fn load_existing_at(dir: &Path) -> Result<InstallationIdentity, IdentityError> {
-    let identity = load_existing_at_ignoring_mismatch(dir)?;
-
+fn ensure_public_key_file(dir: &Path, expected_public_key: PublicKey) -> Result<()> {
     let public_key_path = dir.join("public_key.bin");
-    let stored_public_key_bytes: [u8; 32] = std::fs::read(&public_key_path)
-        .with_context(|| format!("read {}", public_key_path.display()))?
+    match read_stored_public_key(&public_key_path) {
+        Ok(stored_public_key) if stored_public_key == expected_public_key => Ok(()),
+        Ok(_) => repair_public_key_file(&public_key_path, expected_public_key, "stale"),
+        Err(error) => repair_public_key_file(
+            &public_key_path,
+            expected_public_key,
+            &format!("invalid ({error:#})"),
+        ),
+    }
+}
+
+fn read_stored_public_key(path: &Path) -> Result<PublicKey> {
+    let stored_public_key_bytes: [u8; 32] = std::fs::read(path)
+        .with_context(|| format!("read {}", path.display()))?
         .try_into()
         .map_err(|bytes: Vec<u8>| {
             anyhow::anyhow!("expected 32-byte public key, got {}", bytes.len())
         })?;
-    let stored_public_key = PublicKey(stored_public_key_bytes);
+    Ok(PublicKey(stored_public_key_bytes))
+}
 
-    if stored_public_key != identity.public_key() {
-        return Err(IdentityError::PublicKeyMismatch);
-    }
-
-    Ok(identity)
+fn repair_public_key_file(path: &Path, expected_public_key: PublicKey, reason: &str) -> Result<()> {
+    tracing::warn!(
+        path = %path.display(),
+        reason,
+        "repairing derived identity public key file"
+    );
+    write_private(path, expected_public_key.as_bytes())
+        .with_context(|| format!("repair {}", path.display()))
 }
 
 fn load_existing_at_ignoring_mismatch(dir: &Path) -> Result<InstallationIdentity, IdentityError> {
@@ -398,18 +406,37 @@ mod tests {
     }
 
     #[test]
-    fn public_key_mismatch_requires_explicit_repair() {
+    fn stale_public_key_file_is_repaired_automatically() {
         let dir = std::env::temp_dir().join(format!("brrmmmm-test-repair-{}", now_ms()));
         let identity = load_or_create_at(&dir).unwrap();
         let public_key_path = dir.join("public_key.bin");
 
         std::fs::write(&public_key_path, [0u8; 32]).unwrap();
 
-        let implicit = load_or_create_at(&dir);
-        assert!(implicit.is_err());
-
-        let repaired = repair_at(&dir).unwrap();
+        let repaired = load_or_create_at(&dir).unwrap();
         assert_eq!(repaired.public_key(), identity.public_key());
+        assert_eq!(
+            std::fs::read(&public_key_path).unwrap(),
+            identity.public_key().as_bytes()
+        );
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn malformed_public_key_file_is_repaired_automatically() {
+        let dir = std::env::temp_dir().join(format!("brrmmmm-test-malformed-key-{}", now_ms()));
+        let identity = load_or_create_at(&dir).unwrap();
+        let public_key_path = dir.join("public_key.bin");
+
+        std::fs::write(&public_key_path, [7u8; 3]).unwrap();
+
+        let repaired = load_or_create_at(&dir).unwrap();
+        assert_eq!(repaired.public_key(), identity.public_key());
+        assert_eq!(
+            std::fs::read(&public_key_path).unwrap(),
+            identity.public_key().as_bytes()
+        );
 
         let _ = std::fs::remove_dir_all(dir);
     }

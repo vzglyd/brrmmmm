@@ -4,4 +4,4 @@ projects:
   core: '.'
   tui: 'tui'
   fixture-sidecar: 'fixtures/deterministic-sidecar'
-  demo-weather-sidecar: 'sidecars/demo-weather'
+  demo-weather-mission: 'missions/demo-weather'

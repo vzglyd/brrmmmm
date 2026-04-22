@@ -3,10 +3,11 @@
  * brrmmmm TUI entry point.
  *
  * Usage:
- *   brrmmmm sidecar.wasm [--env KEY=VALUE ...]   → Ink TUI (default)
- *   brrmmmm run sidecar.wasm --once              → pass-through to Rust binary
- *   brrmmmm inspect sidecar.wasm                 → print describe() JSON and exit
- *   brrmmmm validate sidecar.wasm                → pass-through to Rust binary
+ *   brrmmmm                                      → Ink daemon dashboard
+ *   brrmmmm mission.wasm [--env KEY=VALUE ...]   → Ink dashboard with launcher prefilled
+ *   brrmmmm run mission.wasm --once              → pass-through to Rust binary
+ *   brrmmmm inspect mission.wasm                 → print describe() JSON and exit
+ *   brrmmmm validate mission.wasm                → pass-through to Rust binary
  */
 
 import { render } from "ink";
@@ -88,31 +89,21 @@ if (isPassThrough) {
   passThrough(rustBin, args);
 } else {
   // TUI mode.
-  // Accept: brrmmmm <wasm> [...flags]
-  //         brrmmmm run <wasm> [...flags]
-  let wasmPath: string;
+  // Accept: brrmmmm [...dashboard]
+  //         brrmmmm <wasm> [...prefill flags]
+  //         brrmmmm run <wasm> [...prefill flags]
+  let wasmPath: string | undefined;
   let extraArgs: string[];
 
   if (firstArg === "run") {
-    wasmPath = args[1] ?? "";
+    wasmPath = args[1] || undefined;
     extraArgs = args.slice(2);
   } else {
-    wasmPath = firstArg;
+    wasmPath = firstArg.endsWith(".wasm") ? firstArg : undefined;
     extraArgs = args.slice(1);
   }
 
-  if (!wasmPath || !wasmPath.endsWith(".wasm")) {
-    console.error(
-      "Usage: brrmmmm <sidecar.wasm> [--env KEY=VALUE ...]\n" +
-        "       brrmmmm run <sidecar.wasm> --once\n" +
-        "       brrmmmm inspect <sidecar.wasm>"
-    );
-    process.exit(1);
-  }
-
-  const { waitUntilExit } = render(
-    <App wasmPath={wasmPath} rustBin={rustBin} extraArgs={extraArgs} />
-  );
+  const { waitUntilExit } = render(<App initialWasmPath={wasmPath} rustBin={rustBin} extraArgs={extraArgs} />);
 
   await waitUntilExit();
 }

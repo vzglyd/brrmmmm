@@ -58,14 +58,16 @@ async fn inspect_module_contract_async(wasm_path: &str) -> Result<MissionInspect
 
     let mut engine_config = Config::new();
     engine_config.epoch_interruption(true);
-    engine_config.async_support(true);
-    let engine = Engine::new(&engine_config).context("create wasmtime engine")?;
+    let engine = Engine::new(&engine_config)
+        .map_err(|e| anyhow::anyhow!(e))
+        .context("create wasmtime engine")?;
     let module = Module::from_binary(&engine, &wasm_bytes)
+        .map_err(|e| anyhow::anyhow!(e))
         .with_context(|| format!("compile WASM module: {wasm_path}"))?;
 
     let has_abi_export = module
         .exports()
-        .any(|e| e.name() == "brrmmmm_module_abi_version");
+        .any(|e: wasmtime::ExportType| e.name() == "brrmmmm_module_abi_version");
     if !has_abi_export {
         anyhow::bail!(
             "WASM module does not export brrmmmm_module_abi_version; supported ABI version is {ABI_VERSION_V4}"
@@ -202,7 +204,8 @@ async fn instantiate_for_inspection(
     store.set_epoch_deadline(policy.init_deadline_ticks());
     store.epoch_deadline_trap();
     let mut linker = WasmLinker::new(engine);
-    wasmtime_wasi::preview1::add_to_linker_async(&mut linker, |state| &mut state.wasi)?;
+    wasmtime_wasi::p1::add_to_linker_async(&mut linker, |state| &mut state.wasi)
+        .map_err(|e| anyhow::anyhow!(e))?;
 
     let runtime_state = Arc::new(Mutex::new(MissionRuntimeState::default()));
     let config = crate::config::Config::load().context("load brrmmmm config for inspection")?;
@@ -226,6 +229,7 @@ async fn instantiate_for_inspection(
     let instance = linker
         .instantiate_async(&mut store, module)
         .await
+        .map_err(|e| anyhow::anyhow!(e))
         .context("instantiate WASM module for inspection")?;
     Ok((store, instance))
 }
@@ -236,10 +240,12 @@ async fn call_exported_abi_version(
 ) -> Result<u32> {
     let abi_fn = instance
         .get_typed_func::<(), u32>(&mut *store, "brrmmmm_module_abi_version")
+        .map_err(|e| anyhow::anyhow!(e))
         .context("mission module must export callable brrmmmm_module_abi_version() -> u32")?;
     abi_fn
         .call_async(store, ())
         .await
+        .map_err(|e| anyhow::anyhow!(e))
         .context("call brrmmmm_module_abi_version")
 }
 
@@ -261,10 +267,12 @@ pub(super) async fn read_static_describe(
     let ptr = ptr_fn
         .call_async(&mut *store, ())
         .await
+        .map_err(|e| anyhow::anyhow!(e))
         .context("call brrmmmm_module_describe_ptr")?;
     let len = len_fn
         .call_async(&mut *store, ())
         .await
+        .map_err(|e| anyhow::anyhow!(e))
         .context("call brrmmmm_module_describe_len")?;
     if ptr < 0 || len <= 0 {
         anyhow::bail!("invalid describe memory range: ptr={ptr}, len={len}");

@@ -48,8 +48,8 @@ export function Header({ wasmPath, abiVersion, hasStarted, describe, error, star
   const name = hasStarted ? (describe?.name ?? wasmPath.split("/").pop() ?? wasmPath) : "daemon";
   const desc = hasStarted
     ? (describe?.description ?? "waiting for module contract")
-    : (error ? "mission launch failed before startup" : "waiting for mission launch");
-  const modes = hasStarted ? (describe?.run_modes?.join(", ") ?? "starting") : (error ? "disconnected" : "connecting");
+    : (error ? "mission launch failed before startup" : "waiting for mission start");
+  const modes = hasStarted ? (describe?.run_modes?.join(", ") ?? "starting") : (error ? "disconnected" : "launching");
   const abiLabel = abiVersion === null ? "--" : String(abiVersion);
 
   return (

@@ -1,0 +1,36 @@
+{
+  "schema_version": 4,
+  "module": {},
+  "outcome": {
+    "status": "terminal_failure",
+    "reason_code": "config_invalid",
+    "message": "invalid configuration: WASM path is required; pass one explicitly or set mission.wasm in brrmmmm.toml"
+  },
+  "host_decision": {
+    "exit_code": 70,
+    "category": "terminal_failure",
+    "synthesized": true,
+    "risk_posture": "closed_safe",
+    "next_attempt_policy": "manual_only",
+    "basis": [
+      "host_synthesized",
+      "objective_not_met",
+      "safe_state_entered",
+      "durable_record_written"
+    ]
+  },
+  "explanation": {
+    "summary": "Mission failed terminally: config_invalid.",
+    "message": "invalid configuration: WASM path is required; pass one explicitly or set mission.wasm in brrmmmm.toml",
+    "next_action": "Do not retry automatically; inspect the mission explanation."
+  },
+  "artifacts": {},
+  "timing": {
+    "started_at": "2026-04-21T13:46:13.526Z",
+    "finished_at": "2026-04-21T13:46:13.526Z",
+    "elapsed_ms": 0
+  },
+  "stats": {
+    "consecutive_failures": 0
+  }
+}

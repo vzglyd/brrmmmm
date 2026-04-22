@@ -76,7 +76,7 @@ describe("terminal rendering", () => {
     expect(output).toContain("11B");
   });
 
-  it("shows daemon launch placeholder before mission start", async () => {
+  it("shows mission start placeholder before first mission event", async () => {
     const output = await renderToText(
       <RequestPanel
         request={null}
@@ -89,7 +89,7 @@ describe("terminal rendering", () => {
       />,
     );
 
-    expect(output).toContain("Waiting for daemon launch...");
+    expect(output).toContain("Waiting for mission start...");
   });
 });
 

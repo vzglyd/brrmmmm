@@ -73,7 +73,7 @@ export function EnvPanel({
     >
       <Text bold color={AMBER}>PRE-FLIGHT</Text>
       {!hasStarted ? (
-        <Text dimColor>Waiting for daemon launch...</Text>
+        <Text dimColor>Waiting for mission start...</Text>
       ) : (
         <>
           <Text bold color={goColor}>{goStatus}</Text>

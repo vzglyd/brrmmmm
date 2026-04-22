@@ -1,5 +1,13 @@
 use anyhow::Result;
 
+#[derive(thiserror::Error, Debug)]
+#[error("brrmmmm daemon service is not installed")]
+struct ServiceNotInstalled;
+
+pub fn is_service_not_installed(error: &anyhow::Error) -> bool {
+    error.downcast_ref::<ServiceNotInstalled>().is_some()
+}
+
 pub fn daemon_install() -> Result<()> {
     platform::install()
 }
@@ -46,14 +54,33 @@ fn probe_socket() {
 
 #[cfg(target_os = "linux")]
 mod platform {
+    use super::ServiceNotInstalled;
     use anyhow::Result;
+
+    const UNIT_NAME: &str = "brrmmmm.service";
+
+    fn unit_path() -> Result<std::path::PathBuf> {
+        Ok(dirs::home_dir()
+            .ok_or_else(|| anyhow::anyhow!("no home directory"))?
+            .join(".config/systemd/user")
+            .join(UNIT_NAME))
+    }
+
+    fn ensure_unit_installed() -> Result<std::path::PathBuf> {
+        let path = unit_path()?;
+        if !path.exists() {
+            return Err(anyhow::Error::new(ServiceNotInstalled));
+        }
+        Ok(path)
+    }
 
     pub(super) fn install() -> Result<()> {
         let exe = std::env::current_exe()?;
-        let unit_dir = dirs::home_dir()
-            .ok_or_else(|| anyhow::anyhow!("no home directory"))?
-            .join(".config/systemd/user");
-        std::fs::create_dir_all(&unit_dir)?;
+        let unit_path = unit_path()?;
+        let unit_dir = unit_path
+            .parent()
+            .ok_or_else(|| anyhow::anyhow!("invalid unit path"))?;
+        std::fs::create_dir_all(unit_dir)?;
 
         let unit = format!(
             "[Unit]\n\
@@ -78,7 +105,6 @@ mod platform {
             exe = exe.display()
         );
 
-        let unit_path = unit_dir.join("brrmmmm.service");
         std::fs::write(&unit_path, unit)?;
         systemctl(&["daemon-reload"])?;
         systemctl(&["enable", "brrmmmm"])?;
@@ -88,24 +114,34 @@ mod platform {
     }
 
     pub(super) fn start() -> Result<()> {
+        let _ = ensure_unit_installed()?;
         systemctl(&["start", "brrmmmm"])?;
         println!("brrmmmm daemon started");
         Ok(())
     }
 
     pub(super) fn stop() -> Result<()> {
+        let _ = ensure_unit_installed()?;
         systemctl(&["stop", "brrmmmm"])?;
         println!("brrmmmm daemon stopped");
         Ok(())
     }
 
     pub(super) fn restart() -> Result<()> {
+        let _ = ensure_unit_installed()?;
         systemctl(&["restart", "brrmmmm"])?;
         println!("brrmmmm daemon restarted");
         Ok(())
     }
 
     pub(super) fn status() {
+        let Ok(path) = unit_path() else {
+            return;
+        };
+        if !path.exists() {
+            println!("service: not installed (run `brrmmmm daemon install`)");
+            return;
+        }
         let _ = std::process::Command::new("systemctl")
             .args(["--user", "status", "brrmmmm"])
             .status();
@@ -114,9 +150,8 @@ mod platform {
     pub(super) fn uninstall() -> Result<()> {
         systemctl(&["stop", "brrmmmm"]).ok();
         systemctl(&["disable", "brrmmmm"]).ok();
-        if let Some(path) = dirs::home_dir().map(|h| h.join(".config/systemd/user/brrmmmm.service"))
-            && path.exists()
-        {
+        let path = unit_path()?;
+        if path.exists() {
             std::fs::remove_file(&path)?;
             println!("removed {}", path.display());
         }
@@ -126,12 +161,19 @@ mod platform {
     }
 
     fn systemctl(args: &[&str]) -> Result<()> {
-        let status = std::process::Command::new("systemctl")
+        let output = std::process::Command::new("systemctl")
             .arg("--user")
             .args(args)
-            .status()?;
-        if !status.success() {
-            anyhow::bail!("systemctl --user {} failed", args.join(" "));
+            .output()?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+            if stderr.contains("Unit brrmmmm.service not found") {
+                return Err(anyhow::Error::new(ServiceNotInstalled));
+            }
+            if stderr.is_empty() {
+                anyhow::bail!("systemctl --user {} failed", args.join(" "));
+            }
+            anyhow::bail!("{stderr}");
         }
         Ok(())
     }
@@ -139,6 +181,7 @@ mod platform {
 
 #[cfg(target_os = "macos")]
 mod platform {
+    use super::ServiceNotInstalled;
     use anyhow::Result;
 
     const LABEL: &str = "io.brrmmmm.daemon";
@@ -149,6 +192,14 @@ mod platform {
             .ok_or_else(|| anyhow::anyhow!("no home directory"))?
             .join("Library/LaunchAgents")
             .join(PLIST_NAME))
+    }
+
+    fn ensure_plist_installed() -> Result<std::path::PathBuf> {
+        let path = plist_path()?;
+        if !path.exists() {
+            return Err(anyhow::Error::new(ServiceNotInstalled));
+        }
+        Ok(path)
     }
 
     fn uid() -> Result<String> {
@@ -213,6 +264,7 @@ mod platform {
     }
 
     pub(super) fn start() -> Result<()> {
+        let _ = ensure_plist_installed()?;
         let uid = uid()?;
         launchctl(&["kickstart", "-k", &format!("gui/{uid}/{LABEL}")])?;
         println!("brrmmmm daemon started");
@@ -220,6 +272,7 @@ mod platform {
     }
 
     pub(super) fn stop() -> Result<()> {
+        let _ = ensure_plist_installed()?;
         let uid = uid()?;
         launchctl(&["kill", "TERM", &format!("gui/{uid}/{LABEL}")])?;
         println!("brrmmmm daemon stopped");
@@ -227,11 +280,19 @@ mod platform {
     }
 
     pub(super) fn restart() -> Result<()> {
+        let _ = ensure_plist_installed()?;
         stop().ok();
         start()
     }
 
     pub(super) fn status() {
+        let Ok(plist) = plist_path() else {
+            return;
+        };
+        if !plist.exists() {
+            println!("service: not installed (run `brrmmmm daemon install`)");
+            return;
+        }
         let Ok(uid) = uid() else {
             return;
         };

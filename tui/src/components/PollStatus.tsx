@@ -83,7 +83,7 @@ export function PollStatus({
     return (
       <Box borderStyle="single" flexDirection="column" paddingX={1} flexGrow={1}>
         <Text bold>MISSION STATUS</Text>
-        <Text dimColor>Waiting for daemon launch...</Text>
+        <Text dimColor>Waiting for mission start...</Text>
       </Box>
     );
   }

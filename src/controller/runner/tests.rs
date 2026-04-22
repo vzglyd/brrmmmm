@@ -8,6 +8,15 @@ use wasmtime::{Config, Engine, Module};
 
 use super::*;
 use crate::abi::MissionRuntimeState;
+use crate::events::now_ms;
+
+fn temp_dir(label: &str) -> std::path::PathBuf {
+    std::env::temp_dir().join(format!(
+        "brrmmmm-runner-test-{label}-{}-{}",
+        std::process::id(),
+        now_ms()
+    ))
+}
 
 fn describe_json(acquisition_timeout_secs: Option<u32>, operator_fallback: Option<&str>) -> String {
     let acquisition =
@@ -84,6 +93,10 @@ fn run_test_wat(
         .enable_all()
         .build()
         .expect("test tokio runtime");
+    let temp_root = temp_dir("runtime");
+    let mut config = crate::config::Config::load().expect("test config");
+    config.identity_dir = temp_root.join("identity");
+    config.state_dir = temp_root.join("state");
     let result = runtime.block_on(run_wasm_instance(
         &engine,
         &module,
@@ -108,11 +121,12 @@ fn run_test_wat(
             stop_signal: stop_signal.clone(),
             force_refresh,
         },
-        &crate::config::Config::load().expect("test config"),
+        &config,
     ));
 
     stop_signal.store(true, Ordering::Relaxed);
     let _ = timer.join();
+    let _ = std::fs::remove_dir_all(temp_root);
     (result, runtime_state, artifact_store)
 }
 

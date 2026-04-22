@@ -304,7 +304,14 @@ pub struct EventSink {
 }
 
 struct EventSinkInner {
-    enabled: bool,
+    target: EventSinkTarget,
+}
+
+#[derive(Clone)]
+enum EventSinkTarget {
+    Disabled,
+    Stdout,
+    Callback(Arc<dyn Fn(Event) + Send + Sync>),
 }
 
 impl EventSink {
@@ -312,7 +319,9 @@ impl EventSink {
     #[must_use]
     pub fn noop() -> Self {
         Self {
-            inner: Arc::new(Mutex::new(EventSinkInner { enabled: false })),
+            inner: Arc::new(Mutex::new(EventSinkInner {
+                target: EventSinkTarget::Disabled,
+            })),
         }
     }
 
@@ -320,27 +329,46 @@ impl EventSink {
     #[must_use]
     pub fn for_stdout() -> Self {
         Self {
-            inner: Arc::new(Mutex::new(EventSinkInner { enabled: true })),
+            inner: Arc::new(Mutex::new(EventSinkInner {
+                target: EventSinkTarget::Stdout,
+            })),
+        }
+    }
+
+    /// A sink that forwards events to the provided callback.
+    #[must_use]
+    pub fn for_callback<F>(handler: F) -> Self
+    where
+        F: Fn(Event) + Send + Sync + 'static,
+    {
+        Self {
+            inner: Arc::new(Mutex::new(EventSinkInner {
+                target: EventSinkTarget::Callback(Arc::new(handler)),
+            })),
         }
     }
 
     /// Return `true` when the sink actively emits structured events.
     #[must_use]
     pub fn is_enabled(&self) -> bool {
-        lock_sink(&self.inner).enabled
+        !matches!(lock_sink(&self.inner).target, EventSinkTarget::Disabled)
     }
 
     /// Emit one structured event if the sink is enabled.
     pub fn emit(&self, event: &Event) {
-        if !lock_sink(&self.inner).enabled {
-            return;
-        }
-        if let Ok(json) = serde_json::to_string(event) {
-            let stdout = std::io::stdout();
-            let mut handle = stdout.lock();
-            let _ = handle.write_all(json.as_bytes());
-            let _ = handle.write_all(b"\n");
-            let _ = handle.flush();
+        let target = lock_sink(&self.inner).target.clone();
+        match target {
+            EventSinkTarget::Disabled => {}
+            EventSinkTarget::Stdout => {
+                if let Ok(json) = serde_json::to_string(event) {
+                    let stdout = std::io::stdout();
+                    let mut handle = stdout.lock();
+                    let _ = handle.write_all(json.as_bytes());
+                    let _ = handle.write_all(b"\n");
+                    let _ = handle.flush();
+                }
+            }
+            EventSinkTarget::Callback(handler) => handler(event.clone()),
         }
     }
 }

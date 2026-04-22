@@ -1,6 +1,7 @@
 use std::collections::HashMap;
+use std::path::Path;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 
 use crate::daemon::{DaemonClient, DaemonCommand, DaemonResponse, socket_path};
 
@@ -10,6 +11,7 @@ pub fn cmd_launch(
     env: &[String],
     params: Option<String>,
 ) -> Result<()> {
+    let wasm = canonicalize_wasm_path(&wasm)?;
     let sock = socket_path();
     let rt = tokio::runtime::Runtime::new()?;
     rt.block_on(async {
@@ -40,4 +42,10 @@ pub fn cmd_launch(
             _ => anyhow::bail!("unexpected response from daemon"),
         }
     })
+}
+
+fn canonicalize_wasm_path(wasm: &str) -> Result<String> {
+    let path = std::fs::canonicalize(Path::new(wasm))
+        .with_context(|| format!("resolve mission module path: {wasm}"))?;
+    Ok(path.to_string_lossy().into_owned())
 }

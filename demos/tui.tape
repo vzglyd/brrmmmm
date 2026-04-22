@@ -3,7 +3,7 @@
 # Prerequisites (from repo root):
 #   cargo build --release
 #   npm --prefix tui run build
-#   cargo build --manifest-path sidecars/demo-weather/Cargo.toml \
+#   cargo build --manifest-path missions/demo-weather/Cargo.toml \
 #     --target wasm32-wasip1 --release
 #
 # Record:
@@ -24,7 +24,7 @@ Type `export PATH="$(pwd)/target/release:$PATH"`
 Enter
 Sleep 300ms
 
-Type `WASM=sidecars/demo-weather/target/wasm32-wasip1/release/demo_weather_sidecar.wasm`
+Type `WASM=missions/demo-weather/target/wasm32-wasip1/release/demo_weather_mission.wasm`
 Enter
 Sleep 300ms
 

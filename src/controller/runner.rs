@@ -210,7 +210,8 @@ impl<'a> MissionRunner<'a> {
 
         let store = build_wasm_store(engine, wasi_builder.build_p1(), &self.policy);
         let mut linker = WasmLinker::new(engine);
-        wasmtime_wasi::preview1::add_to_linker_async(&mut linker, |state| &mut state.wasi)?;
+        wasmtime_wasi::p1::add_to_linker_async(&mut linker, |state| &mut state.wasi)
+            .map_err(|e| anyhow::anyhow!(e))?;
 
         let mut host_state = HostState::new(
             self.log_channel,
@@ -256,6 +257,7 @@ impl<'a> MissionRunner<'a> {
                 .linker
                 .instantiate_async(&mut environment.store, module)
                 .await
+                .map_err(|e| anyhow::anyhow!(e))
                 .context("instantiate WASM module")
         })
         .await
@@ -438,6 +440,7 @@ impl<'a> MissionRunner<'a> {
             entry
                 .call_async(store, &[], &mut [])
                 .await
+                .map_err(|e| anyhow::anyhow!(e))
                 .with_context(|| format!("execute entry function: {entry_name}"))
         })
         .await

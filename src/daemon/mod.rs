@@ -10,19 +10,28 @@ use std::sync::Arc;
 use anyhow::Result;
 use tokio::io::{AsyncBufReadExt, AsyncWrite, AsyncWriteExt, BufReader};
 use tokio::net::{UnixListener, UnixStream};
-use tokio::sync::{Mutex, broadcast, mpsc};
-use tokio::time::Duration;
+use tokio::sync::{Mutex, broadcast, mpsc, watch};
+use tokio::time::{Duration, Instant};
+
+use brrmmmm::abi::{MissionOutcomeStatus, MissionPhase, NextAttemptPolicy, PollStrategy};
+use brrmmmm::config::Config;
+use brrmmmm::controller::{MissionCompletion, MissionController};
+use brrmmmm::events::{EnvVarStatus, Event, EventSink, now_ms, now_ts};
 
 use mission::{
     BROADCAST_CAPACITY, MAX_MISSIONS, MissionCleanup, MissionCtrl, MissionEvent, MissionHandle,
     MissionHistory, MissionState,
 };
-use protocol::{Command, Response};
+use protocol::{Command, MissionSchedulerState, MissionSummary, Response};
 
 pub use client::DaemonClient;
-pub use protocol::{Command as DaemonCommand, RescueAction, Response as DaemonResponse};
+pub use protocol::{
+    Command as DaemonCommand, MissionSchedulerState as DaemonMissionSchedulerState, RescueAction,
+    Response as DaemonResponse,
+};
 pub use service::{
     daemon_install, daemon_restart, daemon_start, daemon_status, daemon_stop, daemon_uninstall,
+    is_service_not_installed,
 };
 
 pub fn brrmmmm_home() -> PathBuf {
@@ -64,11 +73,139 @@ struct Registry {
     taken_names: HashSet<String>,
 }
 
+#[derive(Clone)]
+struct MissionLaunchConfig {
+    wasm: String,
+    env: HashMap<String, String>,
+    params: Option<String>,
+}
+
+struct MissionLoopArgs {
+    home: PathBuf,
+    name: String,
+    launch: MissionLaunchConfig,
+    state: Arc<Mutex<MissionState>>,
+    history: Arc<Mutex<MissionHistory>>,
+    event_tx: broadcast::Sender<MissionEvent>,
+    ctrl_rx: mpsc::Receiver<MissionCtrl>,
+    cleanup_tx: mpsc::UnboundedSender<String>,
+    registry: Arc<Mutex<Registry>>,
+    status_tx: watch::Sender<Vec<MissionSummary>>,
+    config: Arc<Config>,
+}
+
+struct LaunchContext<'a> {
+    home: &'a Path,
+    registry: &'a Arc<Mutex<Registry>>,
+    status_tx: &'a watch::Sender<Vec<MissionSummary>>,
+    config: &'a Config,
+    cleanup_tx: mpsc::UnboundedSender<String>,
+}
+
+#[derive(Clone)]
+enum MissionLoopMode {
+    Launch {
+        override_retry_gate: bool,
+    },
+    Scheduled {
+        wake_at_ms: u64,
+        override_retry_gate: bool,
+    },
+    Idle,
+    AwaitingChange,
+    AwaitingOperator,
+    TerminalFailure,
+}
+
+enum MissionTransition {
+    Continue(MissionLoopMode),
+    Hold(MissionLoopMode),
+    Abort,
+}
+
+struct MissionRecorder {
+    file: Option<tokio::fs::File>,
+    state: Arc<Mutex<MissionState>>,
+    history: Arc<Mutex<MissionHistory>>,
+    event_tx: broadcast::Sender<MissionEvent>,
+    registry: Arc<Mutex<Registry>>,
+    status_tx: watch::Sender<Vec<MissionSummary>>,
+}
+
+struct AttemptContext<'a> {
+    mission_name: &'a str,
+    state: &'a Arc<Mutex<MissionState>>,
+    registry: &'a Arc<Mutex<Registry>>,
+    status_tx: &'a watch::Sender<Vec<MissionSummary>>,
+    ctrl_rx: &'a mut mpsc::Receiver<MissionCtrl>,
+    recorder: &'a mut MissionRecorder,
+    config: &'a Config,
+}
+
+impl MissionRecorder {
+    async fn open(
+        events_file: &Path,
+        state: Arc<Mutex<MissionState>>,
+        history: Arc<Mutex<MissionHistory>>,
+        event_tx: broadcast::Sender<MissionEvent>,
+        registry: Arc<Mutex<Registry>>,
+        status_tx: watch::Sender<Vec<MissionSummary>>,
+    ) -> Self {
+        let file = tokio::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(events_file)
+            .await
+            .ok();
+
+        Self {
+            file,
+            state,
+            history,
+            event_tx,
+            registry,
+            status_tx,
+        }
+    }
+
+    async fn record(&mut self, event: Event) {
+        let Ok(line) = serde_json::to_string(&event) else {
+            return;
+        };
+
+        if let Some(file) = self.file.as_mut()
+            && file
+                .write_all(format!("{line}\n").as_bytes())
+                .await
+                .is_err()
+        {
+            self.file = None;
+        }
+
+        update_mission_state(&self.state, &self.registry, &self.status_tx, |state| {
+            apply_runtime_event(state, &event);
+        })
+        .await;
+
+        let history_event = self.history.lock().await.append(line);
+        let _ = self.event_tx.send(history_event);
+    }
+
+    async fn log(&mut self, message: impl Into<String>) {
+        self.record(Event::Log {
+            ts: now_ts(),
+            message: message.into(),
+        })
+        .await;
+    }
+}
+
 pub async fn run() -> Result<()> {
     run_in(brrmmmm_home()).await
 }
 
 async fn run_in(home: PathBuf) -> Result<()> {
+    let config = Arc::new(Config::load()?);
     let home = Arc::new(home);
     tokio::fs::create_dir_all(home.as_ref()).await?;
     tokio::fs::create_dir_all(home.join("missions")).await?;
@@ -82,11 +219,13 @@ async fn run_in(home: PathBuf) -> Result<()> {
         missions: HashMap::new(),
         taken_names: HashSet::new(),
     }));
+    let (status_tx, _) = watch::channel::<Vec<MissionSummary>>(Vec::new());
     let (cleanup_tx, mut cleanup_rx) = mpsc::unbounded_channel::<String>();
     let cleanup_registry = Arc::clone(&registry);
+    let cleanup_status_tx = status_tx.clone();
     tokio::spawn(async move {
         while let Some(name) = cleanup_rx.recv().await {
-            remove_mission(&cleanup_registry, &name).await;
+            remove_mission(&cleanup_registry, &cleanup_status_tx, &name).await;
         }
     });
 
@@ -105,11 +244,21 @@ async fn run_in(home: PathBuf) -> Result<()> {
                     Ok((stream, _)) => {
                         let registry = Arc::clone(&registry);
                         let home = Arc::clone(&home);
+                        let config = Arc::clone(&config);
+                        let status_tx = status_tx.clone();
                         let cell = Arc::clone(&shutdown_cell);
                         let cleanup_tx = cleanup_tx.clone();
-                        tokio::spawn(handle_connection(stream, home, registry, cell, cleanup_tx));
+                        tokio::spawn(handle_connection(
+                            stream,
+                            home,
+                            registry,
+                            config,
+                            status_tx,
+                            cell,
+                            cleanup_tx,
+                        ));
                     }
-                    Err(e) => eprintln!("[brrmmmm daemon] accept error: {e}"),
+                    Err(error) => eprintln!("[brrmmmm daemon] accept error: {error}"),
                 }
             }
             _ = &mut shutdown_rx => {
@@ -202,6 +351,8 @@ async fn handle_connection(
     stream: UnixStream,
     home: Arc<PathBuf>,
     registry: Arc<Mutex<Registry>>,
+    config: Arc<Config>,
+    status_tx: watch::Sender<Vec<MissionSummary>>,
     shutdown_cell: Arc<Mutex<Option<tokio::sync::oneshot::Sender<()>>>>,
     cleanup_tx: mpsc::UnboundedSender<String>,
 ) {
@@ -210,12 +361,12 @@ async fn handle_connection(
 
     while let Ok(Some(line)) = lines.next_line().await {
         let cmd: Command = match serde_json::from_str(&line) {
-            Ok(c) => c,
-            Err(e) => {
+            Ok(command) => command,
+            Err(error) => {
                 let _ = write_resp(
                     &mut writer,
                     &Response::Error {
-                        message: format!("parse error: {e}"),
+                        message: format!("parse error: {error}"),
                     },
                 )
                 .await;
@@ -239,24 +390,12 @@ async fn handle_connection(
                 return;
             }
             Command::Status => {
-                let states = {
-                    let reg = registry.lock().await;
-                    reg.missions
-                        .values()
-                        .map(|handle| Arc::clone(&handle.state))
-                        .collect::<Vec<_>>()
-                };
-                let mut summaries = Vec::with_capacity(states.len());
-                for state in states {
-                    summaries.push(state.lock().await.summary());
-                }
-                let _ = write_resp(
-                    &mut writer,
-                    &Response::Status {
-                        missions: summaries,
-                    },
-                )
-                .await;
+                let missions = status_tx.borrow().clone();
+                let _ = write_resp(&mut writer, &Response::Status { missions }).await;
+            }
+            Command::WatchStatus => {
+                cmd_watch_status(status_tx.subscribe(), &mut writer).await;
+                return;
             }
             Command::Launch {
                 wasm,
@@ -265,13 +404,15 @@ async fn handle_connection(
                 params,
             } => {
                 let resp = cmd_launch(
-                    &home,
-                    &registry,
-                    cleanup_tx.clone(),
-                    wasm,
+                    LaunchContext {
+                        home: home.as_ref(),
+                        registry: &registry,
+                        status_tx: &status_tx,
+                        config: config.as_ref(),
+                        cleanup_tx: cleanup_tx.clone(),
+                    },
+                    MissionLaunchConfig { wasm, env, params },
                     name,
-                    env,
-                    params,
                 )
                 .await;
                 let _ = write_resp(&mut writer, &resp).await;
@@ -305,14 +446,25 @@ async fn handle_connection(
 }
 
 async fn cmd_launch(
-    home: &Path,
-    registry: &Arc<Mutex<Registry>>,
-    cleanup_tx: mpsc::UnboundedSender<String>,
-    wasm: String,
+    context: LaunchContext<'_>,
+    launch: MissionLaunchConfig,
     name: Option<String>,
-    env: HashMap<String, String>,
-    params: Option<String>,
 ) -> Response {
+    let LaunchContext {
+        home,
+        registry,
+        status_tx,
+        config,
+        cleanup_tx,
+    } = context;
+
+    let wasm = match resolve_launch_wasm_path(&launch.wasm) {
+        Ok(path) => path,
+        Err(message) => {
+            return Response::Error { message };
+        }
+    };
+
     let mut reg = registry.lock().await;
 
     if reg.missions.len() >= MAX_MISSIONS {
@@ -321,16 +473,16 @@ async fn cmd_launch(
         };
     }
 
-    let mission_name = if let Some(n) = name {
-        if reg.taken_names.contains(&n) {
+    let mission_name = if let Some(name) = name {
+        if reg.taken_names.contains(&name) {
             return Response::Error {
-                message: format!("mission name '{n}' already taken"),
+                message: format!("mission name '{name}' already taken"),
             };
         }
-        n
+        name
     } else {
         match crate::names::generate_mission_name(&reg.taken_names) {
-            Some(n) => n,
+            Some(name) => name,
             None => {
                 return Response::Error {
                     message: "could not generate a unique mission name".into(),
@@ -339,24 +491,29 @@ async fn cmd_launch(
         }
     };
 
-    if let Err(e) = prepare_mission_storage(home, &mission_name) {
+    if let Err(error) = prepare_mission_storage(home, &mission_name) {
         return Response::Error {
-            message: format!("prepare mission storage: {e}"),
+            message: format!("prepare mission storage: {error}"),
         };
     }
 
     let (event_tx, _) = broadcast::channel::<MissionEvent>(BROADCAST_CAPACITY);
     let (ctrl_tx, ctrl_rx) = mpsc::channel::<MissionCtrl>(32);
     let history = Arc::new(Mutex::new(MissionHistory::default()));
-
     let state = Arc::new(Mutex::new(MissionState {
         name: mission_name.clone(),
         wasm: wasm.clone(),
+        state: MissionSchedulerState::Launching,
         held: false,
         terminal: false,
         phase: "idle".into(),
         cycles: 0,
         pid: None,
+        last_started_at_ms: None,
+        last_run_at_ms: None,
+        last_outcome_status: None,
+        next_wake_at_ms: None,
+        last_error: None,
     }));
 
     reg.missions.insert(
@@ -371,22 +528,42 @@ async fn cmd_launch(
     reg.taken_names.insert(mission_name.clone());
     drop(reg);
 
+    publish_status_snapshot(registry, status_tx).await;
+
     tokio::spawn(mission_loop(MissionLoopArgs {
         home: home.to_path_buf(),
         name: mission_name.clone(),
-        wasm,
-        env,
-        params,
+        launch: MissionLaunchConfig {
+            wasm,
+            env: launch.env,
+            params: launch.params,
+        },
         state,
         history,
         event_tx,
         ctrl_rx,
         cleanup_tx,
+        registry: Arc::clone(registry),
+        status_tx: status_tx.clone(),
+        config: Arc::new(config.clone()),
     }));
 
     Response::Launched {
         mission: mission_name,
     }
+}
+
+fn resolve_launch_wasm_path(wasm: &str) -> std::result::Result<String, String> {
+    let path = Path::new(wasm);
+    if !path.is_absolute() {
+        return Err(format!(
+            "daemon launch requires an absolute WASM path, got relative path '{wasm}'"
+        ));
+    }
+
+    std::fs::canonicalize(path)
+        .map_err(|error| format!("resolve mission module path '{wasm}': {error}"))
+        .map(|path| path.to_string_lossy().into_owned())
 }
 
 const fn rescue_control(action: RescueAction) -> MissionCtrl {
@@ -403,6 +580,7 @@ async fn send_ctrl(registry: &Arc<Mutex<Registry>>, mission: &str, ctrl: Mission
             .get(mission)
             .map(|handle| handle.ctrl_tx.clone())
     };
+
     match ctrl_tx {
         None => Response::Error {
             message: format!("no mission named '{mission}'"),
@@ -483,8 +661,8 @@ async fn cmd_watch(
                         return;
                     }
                 }
-                Err(broadcast::error::RecvError::Lagged(n)) => {
-                    eprintln!("[brrmmmm daemon] watch '{name}' lagged by {n} events");
+                Err(broadcast::error::RecvError::Lagged(count)) => {
+                    eprintln!("[brrmmmm daemon] watch '{name}' lagged by {count} events");
                 }
                 Err(broadcast::error::RecvError::Closed) => break,
             }
@@ -513,289 +691,655 @@ async fn cmd_watch(
     }
 }
 
+async fn cmd_watch_status(
+    mut status_rx: watch::Receiver<Vec<MissionSummary>>,
+    writer: &mut (impl AsyncWrite + Unpin),
+) {
+    let initial = status_rx.borrow().clone();
+    if write_resp(writer, &Response::Status { missions: initial })
+        .await
+        .is_err()
+    {
+        return;
+    }
+
+    while status_rx.changed().await.is_ok() {
+        let missions = status_rx.borrow().clone();
+        if write_resp(writer, &Response::Status { missions })
+            .await
+            .is_err()
+        {
+            return;
+        }
+    }
+}
+
 async fn write_resp(writer: &mut (impl AsyncWrite + Unpin), resp: &Response) -> Result<()> {
     let json = serde_json::to_string(resp)?;
     writer.write_all(format!("{json}\n").as_bytes()).await?;
     Ok(())
 }
 
-async fn remove_mission(registry: &Arc<Mutex<Registry>>, name: &str) {
+async fn remove_mission(
+    registry: &Arc<Mutex<Registry>>,
+    status_tx: &watch::Sender<Vec<MissionSummary>>,
+    name: &str,
+) {
     let mut reg = registry.lock().await;
     reg.missions.remove(name);
     reg.taken_names.remove(name);
+    drop(reg);
+    publish_status_snapshot(registry, status_tx).await;
 }
 
-// ── Per-mission child process management ─────────────────────────────────────
+async fn publish_status_snapshot(
+    registry: &Arc<Mutex<Registry>>,
+    status_tx: &watch::Sender<Vec<MissionSummary>>,
+) {
+    let states = {
+        let reg = registry.lock().await;
+        reg.missions
+            .values()
+            .map(|handle| Arc::clone(&handle.state))
+            .collect::<Vec<_>>()
+    };
 
-struct MissionLoopArgs {
-    home: PathBuf,
-    name: String,
-    wasm: String,
-    env: HashMap<String, String>,
-    params: Option<String>,
-    state: Arc<Mutex<MissionState>>,
-    history: Arc<Mutex<MissionHistory>>,
-    event_tx: broadcast::Sender<MissionEvent>,
-    ctrl_rx: mpsc::Receiver<MissionCtrl>,
-    cleanup_tx: mpsc::UnboundedSender<String>,
+    let mut summaries = Vec::with_capacity(states.len());
+    for state in states {
+        summaries.push(state.lock().await.summary());
+    }
+    summaries.sort_by(|left, right| left.name.cmp(&right.name));
+    status_tx.send_replace(summaries);
 }
 
-enum MissionChildDirective {
-    Continue,
-    Abort,
+async fn update_mission_state<F>(
+    state: &Arc<Mutex<MissionState>>,
+    registry: &Arc<Mutex<Registry>>,
+    status_tx: &watch::Sender<Vec<MissionSummary>>,
+    apply: F,
+) where
+    F: FnOnce(&mut MissionState),
+{
+    let mut locked = state.lock().await;
+    apply(&mut locked);
+    drop(locked);
+    publish_status_snapshot(registry, status_tx).await;
 }
 
 async fn mission_loop(args: MissionLoopArgs) {
     let MissionLoopArgs {
         home,
         name,
-        wasm,
-        env,
-        params,
+        launch,
         state,
         history,
         event_tx,
         mut ctrl_rx,
         cleanup_tx,
+        registry,
+        status_tx,
+        config,
     } = args;
     let _cleanup = MissionCleanup::new(name.clone(), cleanup_tx);
     let events_file = mission_events_file(&home, &name);
-    let mut override_retry_gate = false;
+    let mut recorder = MissionRecorder::open(
+        &events_file,
+        Arc::clone(&state),
+        history,
+        event_tx,
+        Arc::clone(&registry),
+        status_tx.clone(),
+    )
+    .await;
+    let mut mode = MissionLoopMode::Launch {
+        override_retry_gate: false,
+    };
+    let mut held_resume_mode: Option<MissionLoopMode> = None;
 
     loop {
-        if state.lock().await.terminal {
-            return;
-        }
-
-        if wait_while_held(&state, &mut ctrl_rx, &mut override_retry_gate).await {
-            return;
-        }
-
-        let mut child = match spawn_child(&wasm, &env, params.as_deref(), override_retry_gate) {
-            Ok(c) => c,
-            Err(e) => {
-                eprintln!("[brrmmmm daemon] spawn '{name}' failed: {e}");
-                tokio::time::sleep(Duration::from_secs(5)).await;
-                continue;
-            }
-        };
-        override_retry_gate = false;
-
-        let pid = child.id().unwrap_or(0);
-        state.lock().await.pid = Some(pid);
-
-        if let Some(stdout) = child.stdout.take() {
-            tokio::spawn(pipe_events(
-                stdout,
-                events_file.clone(),
-                Arc::clone(&history),
-                event_tx.clone(),
-                Arc::clone(&state),
-            ));
-        }
-
-        // Wait for child exit or operator control command.
-        loop {
-            tokio::select! {
-                _ = child.wait() => {
-                    state.lock().await.pid = None;
-                    break;
+        if state.lock().await.held {
+            match wait_while_held(
+                &state,
+                &registry,
+                &status_tx,
+                &mut ctrl_rx,
+                held_resume_mode.take().unwrap_or(MissionLoopMode::Idle),
+            )
+            .await
+            {
+                MissionTransition::Continue(next_mode) => {
+                    mode = next_mode;
+                    continue;
                 }
-                ctrl = ctrl_rx.recv() => {
-                    match handle_child_control(
-                        ctrl,
-                        pid,
-                        &state,
-                        &mut child,
-                        &mut override_retry_gate,
-                    )
-                    .await {
-                        MissionChildDirective::Continue => {}
-                        MissionChildDirective::Abort => return,
+                MissionTransition::Abort => return,
+                MissionTransition::Hold(_) => continue,
+            }
+        }
+
+        match mode.clone() {
+            MissionLoopMode::Launch {
+                override_retry_gate,
+            } => {
+                set_loop_mode(&state, &registry, &status_tx, &mode).await;
+                match run_mission_attempt(
+                    &launch,
+                    override_retry_gate,
+                    AttemptContext {
+                        mission_name: &name,
+                        state: &state,
+                        registry: &registry,
+                        status_tx: &status_tx,
+                        ctrl_rx: &mut ctrl_rx,
+                        recorder: &mut recorder,
+                        config: config.as_ref(),
+                    },
+                )
+                .await
+                {
+                    MissionTransition::Continue(next_mode) => mode = next_mode,
+                    MissionTransition::Hold(resume_mode) => {
+                        held_resume_mode = Some(resume_mode);
                     }
+                    MissionTransition::Abort => return,
+                }
+            }
+            MissionLoopMode::Scheduled {
+                wake_at_ms,
+                override_retry_gate,
+            } => match wait_for_schedule(
+                &state,
+                &registry,
+                &status_tx,
+                &mut ctrl_rx,
+                wake_at_ms,
+                override_retry_gate,
+            )
+            .await
+            {
+                MissionTransition::Continue(next_mode) => mode = next_mode,
+                MissionTransition::Hold(resume_mode) => {
+                    held_resume_mode = Some(resume_mode);
+                }
+                MissionTransition::Abort => return,
+            },
+            MissionLoopMode::Idle
+            | MissionLoopMode::AwaitingChange
+            | MissionLoopMode::AwaitingOperator
+            | MissionLoopMode::TerminalFailure => {
+                match wait_for_manual(&state, &registry, &status_tx, &mut ctrl_rx, mode.clone())
+                    .await
+                {
+                    MissionTransition::Continue(next_mode) => mode = next_mode,
+                    MissionTransition::Hold(resume_mode) => {
+                        held_resume_mode = Some(resume_mode);
+                    }
+                    MissionTransition::Abort => return,
                 }
             }
         }
-
-        if state.lock().await.terminal {
-            return;
-        }
-
-        tokio::time::sleep(Duration::from_secs(3)).await;
     }
 }
 
 async fn wait_while_held(
     state: &Arc<Mutex<MissionState>>,
+    registry: &Arc<Mutex<Registry>>,
+    status_tx: &watch::Sender<Vec<MissionSummary>>,
     ctrl_rx: &mut mpsc::Receiver<MissionCtrl>,
-    override_retry_gate: &mut bool,
-) -> bool {
-    if !state.lock().await.held {
-        return false;
-    }
-
+    resume_mode: MissionLoopMode,
+) -> MissionTransition {
     loop {
         match ctrl_rx.recv().await {
             Some(MissionCtrl::Resume) => {
-                state.lock().await.held = false;
-                return false;
+                update_mission_state(state, registry, status_tx, |state| {
+                    state.held = false;
+                })
+                .await;
+                return MissionTransition::Continue(resume_mode);
             }
-            Some(MissionCtrl::Abort) => {
-                let mut state = state.lock().await;
-                state.terminal = true;
-                state.held = false;
-                drop(state);
-                return true;
-            }
+            Some(MissionCtrl::Abort) => return MissionTransition::Abort,
             Some(MissionCtrl::Retry) => {
-                *override_retry_gate = true;
-                state.lock().await.held = false;
-                return false;
+                update_mission_state(state, registry, status_tx, |state| {
+                    state.held = false;
+                })
+                .await;
+                return MissionTransition::Continue(MissionLoopMode::Launch {
+                    override_retry_gate: true,
+                });
             }
             Some(MissionCtrl::Hold) => {}
-            None => return true,
+            None => return MissionTransition::Abort,
         }
     }
 }
 
-async fn handle_child_control(
-    ctrl: Option<MissionCtrl>,
-    pid: u32,
+async fn wait_for_schedule(
     state: &Arc<Mutex<MissionState>>,
-    child: &mut tokio::process::Child,
-    override_retry_gate: &mut bool,
-) -> MissionChildDirective {
-    match ctrl {
-        Some(MissionCtrl::Hold) => {
-            send_signal(pid, "STOP");
-            state.lock().await.held = true;
-            MissionChildDirective::Continue
-        }
-        Some(MissionCtrl::Resume) => {
-            send_signal(pid, "CONT");
-            state.lock().await.held = false;
-            MissionChildDirective::Continue
-        }
-        Some(MissionCtrl::Abort) => {
-            let _ = child.start_kill();
-            {
-                let mut state = state.lock().await;
-                state.terminal = true;
-                state.held = false;
-            }
-            let _ = child.wait().await;
-            state.lock().await.pid = None;
-            MissionChildDirective::Abort
-        }
-        Some(MissionCtrl::Retry) => {
-            *override_retry_gate = true;
-            state.lock().await.held = false;
-            let _ = child.start_kill();
-            MissionChildDirective::Continue
-        }
-        None => {
-            let _ = child.start_kill();
-            MissionChildDirective::Abort
-        }
-    }
-}
-
-async fn pipe_events(
-    stdout: tokio::process::ChildStdout,
-    events_file: PathBuf,
-    history: Arc<Mutex<MissionHistory>>,
-    event_tx: broadcast::Sender<MissionEvent>,
-    state: Arc<Mutex<MissionState>>,
-) {
-    use tokio::io::AsyncWriteExt as _;
-
-    let mut lines = BufReader::new(stdout).lines();
-    let mut file = tokio::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&events_file)
-        .await
-        .ok();
-
-    while let Ok(Some(line)) = lines.next_line().await {
-        if let Some(ref mut f) = file {
-            let _ = f.write_all(format!("{line}\n").as_bytes()).await;
-        }
-        update_state_from_event(&state, &line).await;
-        let event = history.lock().await.append(line);
-        let _ = event_tx.send(event);
-    }
-}
-
-async fn update_state_from_event(state: &Arc<Mutex<MissionState>>, line: &str) {
-    let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else {
-        return;
+    registry: &Arc<Mutex<Registry>>,
+    status_tx: &watch::Sender<Vec<MissionSummary>>,
+    ctrl_rx: &mut mpsc::Receiver<MissionCtrl>,
+    wake_at_ms: u64,
+    override_retry_gate: bool,
+) -> MissionTransition {
+    let scheduled_mode = MissionLoopMode::Scheduled {
+        wake_at_ms,
+        override_retry_gate,
     };
-    let event_type = v.get("type").and_then(|t| t.as_str()).unwrap_or("");
-    let mut s = state.lock().await;
-    match event_type {
-        "phase" => {
-            if let Some(phase) = v.get("phase").and_then(|p| p.as_str()) {
-                s.phase = phase.to_string();
+    set_loop_mode(state, registry, status_tx, &scheduled_mode).await;
+
+    loop {
+        let now = now_ms();
+        if now >= wake_at_ms {
+            return MissionTransition::Continue(MissionLoopMode::Launch {
+                override_retry_gate,
+            });
+        }
+
+        let remaining_ms = wake_at_ms.saturating_sub(now).min(1_000);
+        tokio::select! {
+            _ = tokio::time::sleep(Duration::from_millis(remaining_ms)) => {}
+            ctrl = ctrl_rx.recv() => {
+                match ctrl {
+                    Some(MissionCtrl::Hold) => {
+                        set_held_state(state, registry, status_tx).await;
+                        return MissionTransition::Hold(MissionLoopMode::Launch {
+                            override_retry_gate,
+                        });
+                    }
+                    Some(MissionCtrl::Retry) => {
+                        return MissionTransition::Continue(MissionLoopMode::Launch {
+                            override_retry_gate: true,
+                        });
+                    }
+                    Some(MissionCtrl::Abort) => return MissionTransition::Abort,
+                    Some(MissionCtrl::Resume) => {}
+                    None => return MissionTransition::Abort,
+                }
             }
         }
-        "mission_outcome" => {
-            s.cycles += 1;
-            s.phase = "idle".into();
+    }
+}
+
+async fn wait_for_manual(
+    state: &Arc<Mutex<MissionState>>,
+    registry: &Arc<Mutex<Registry>>,
+    status_tx: &watch::Sender<Vec<MissionSummary>>,
+    ctrl_rx: &mut mpsc::Receiver<MissionCtrl>,
+    mode: MissionLoopMode,
+) -> MissionTransition {
+    set_loop_mode(state, registry, status_tx, &mode).await;
+
+    loop {
+        match ctrl_rx.recv().await {
+            Some(MissionCtrl::Hold) => {
+                set_held_state(state, registry, status_tx).await;
+                return MissionTransition::Hold(mode.clone());
+            }
+            Some(MissionCtrl::Retry) => {
+                return MissionTransition::Continue(MissionLoopMode::Launch {
+                    override_retry_gate: true,
+                });
+            }
+            Some(MissionCtrl::Abort) => return MissionTransition::Abort,
+            Some(MissionCtrl::Resume) => {}
+            None => return MissionTransition::Abort,
+        }
+    }
+}
+
+async fn run_mission_attempt(
+    launch: &MissionLaunchConfig,
+    override_retry_gate: bool,
+    context: AttemptContext<'_>,
+) -> MissionTransition {
+    let AttemptContext {
+        mission_name,
+        state,
+        registry,
+        status_tx,
+        ctrl_rx,
+        recorder,
+        config,
+    } = context;
+
+    recorder
+        .record(Event::EnvSnapshot {
+            ts: now_ts(),
+            vars: EnvVarStatus::from_raw_env(&launch_env_pairs(&launch.env)),
+        })
+        .await;
+
+    let (runtime_tx, mut runtime_rx) = mpsc::unbounded_channel::<Event>();
+    let event_sink = EventSink::for_callback(move |event| {
+        let _ = runtime_tx.send(event);
+    });
+    let controller = MissionController::new(
+        &launch.wasm,
+        launch_env_pairs(&launch.env),
+        launch.params.clone().map(String::into_bytes),
+        false,
+        override_retry_gate,
+        event_sink,
+        config,
+    );
+
+    let mut controller: Option<MissionController> = match controller {
+        Ok(controller) => Some(controller),
+        Err(error) => {
+            let message = format!("failed to start mission '{mission_name}': {error:#}");
+            update_mission_state(state, registry, status_tx, |state| {
+                state.last_error = Some(message.clone());
+            })
+            .await;
+            recorder.log(message).await;
+            return MissionTransition::Continue(MissionLoopMode::TerminalFailure);
+        }
+    };
+
+    loop {
+        drain_runtime_events(&mut runtime_rx, recorder).await;
+
+        if let Some(active) = controller.as_ref()
+            && let Some(completion) = active.poll_completion()
+        {
+            if let Some(active) = controller.take() {
+                active.stop();
+            }
+            flush_runtime_events(&mut runtime_rx, recorder, Duration::from_millis(250)).await;
+            let next_mode = next_mode_after_completion(&completion, config);
+            set_loop_mode(state, registry, status_tx, &next_mode).await;
+            return MissionTransition::Continue(next_mode);
+        }
+
+        tokio::select! {
+            ctrl = ctrl_rx.recv() => {
+                match ctrl {
+                    Some(MissionCtrl::Hold) => {
+                        if let Some(active) = controller.take() {
+                            active.stop();
+                        }
+                        flush_runtime_events(&mut runtime_rx, recorder, Duration::from_millis(250)).await;
+                        set_held_state(state, registry, status_tx).await;
+                        return MissionTransition::Hold(MissionLoopMode::Launch {
+                            override_retry_gate: false,
+                        });
+                    }
+                    Some(MissionCtrl::Retry) => {
+                        if let Some(active) = controller.take() {
+                            active.stop();
+                        }
+                        flush_runtime_events(&mut runtime_rx, recorder, Duration::from_millis(250)).await;
+                        return MissionTransition::Continue(MissionLoopMode::Launch {
+                            override_retry_gate: true,
+                        });
+                    }
+                    Some(MissionCtrl::Abort) => {
+                        if let Some(active) = controller.take() {
+                            active.stop();
+                        }
+                        flush_runtime_events(&mut runtime_rx, recorder, Duration::from_millis(250)).await;
+                        return MissionTransition::Abort;
+                    }
+                    Some(MissionCtrl::Resume) => {}
+                    None => {
+                        if let Some(active) = controller.take() {
+                            active.stop();
+                        }
+                        flush_runtime_events(&mut runtime_rx, recorder, Duration::from_millis(250)).await;
+                        return MissionTransition::Abort;
+                    }
+                }
+            }
+            maybe_event = runtime_rx.recv() => {
+                if let Some(event) = maybe_event {
+                    recorder.record(event).await;
+                }
+            }
+            _ = tokio::time::sleep(Duration::from_millis(100)) => {}
+        }
+    }
+}
+
+async fn drain_runtime_events(
+    runtime_rx: &mut mpsc::UnboundedReceiver<Event>,
+    recorder: &mut MissionRecorder,
+) {
+    while let Ok(event) = runtime_rx.try_recv() {
+        recorder.record(event).await;
+    }
+}
+
+async fn flush_runtime_events(
+    runtime_rx: &mut mpsc::UnboundedReceiver<Event>,
+    recorder: &mut MissionRecorder,
+    window: Duration,
+) {
+    let deadline = Instant::now() + window;
+    loop {
+        drain_runtime_events(runtime_rx, recorder).await;
+
+        if Instant::now() >= deadline {
+            return;
+        }
+
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        match tokio::time::timeout(remaining, runtime_rx.recv()).await {
+            Ok(Some(event)) => recorder.record(event).await,
+            Ok(None) | Err(_) => return,
+        }
+    }
+}
+
+async fn set_loop_mode(
+    state: &Arc<Mutex<MissionState>>,
+    registry: &Arc<Mutex<Registry>>,
+    status_tx: &watch::Sender<Vec<MissionSummary>>,
+    mode: &MissionLoopMode,
+) {
+    update_mission_state(state, registry, status_tx, |state| match mode {
+        MissionLoopMode::Launch { .. } => {
+            state.state = MissionSchedulerState::Launching;
+            state.held = false;
+            state.terminal = false;
+            state.next_wake_at_ms = None;
+        }
+        MissionLoopMode::Scheduled { wake_at_ms, .. } => {
+            state.state = MissionSchedulerState::Scheduled;
+            state.held = false;
+            state.terminal = false;
+            state.next_wake_at_ms = Some(*wake_at_ms);
+        }
+        MissionLoopMode::Idle => {
+            state.state = MissionSchedulerState::Idle;
+            state.held = false;
+            state.terminal = false;
+            state.next_wake_at_ms = None;
+        }
+        MissionLoopMode::AwaitingChange => {
+            state.state = MissionSchedulerState::AwaitingChange;
+            state.held = false;
+            state.terminal = true;
+            state.next_wake_at_ms = None;
+        }
+        MissionLoopMode::AwaitingOperator => {
+            state.state = MissionSchedulerState::AwaitingOperator;
+            state.held = false;
+            state.terminal = true;
+            state.next_wake_at_ms = None;
+        }
+        MissionLoopMode::TerminalFailure => {
+            state.state = MissionSchedulerState::TerminalFailure;
+            state.held = false;
+            state.terminal = true;
+            state.next_wake_at_ms = None;
+        }
+    })
+    .await;
+}
+
+async fn set_held_state(
+    state: &Arc<Mutex<MissionState>>,
+    registry: &Arc<Mutex<Registry>>,
+    status_tx: &watch::Sender<Vec<MissionSummary>>,
+) {
+    update_mission_state(state, registry, status_tx, |state| {
+        state.state = MissionSchedulerState::Held;
+        state.held = true;
+        state.terminal = false;
+        state.next_wake_at_ms = None;
+    })
+    .await;
+}
+
+fn apply_runtime_event(state: &mut MissionState, event: &Event) {
+    match event {
+        Event::Started { .. } => {
+            state.state = MissionSchedulerState::Running;
+            state.last_started_at_ms = Some(now_ms());
+            state.next_wake_at_ms = None;
+            state.last_error = None;
+        }
+        Event::Phase { phase, .. } => {
+            state.phase = phase_name(phase).to_string();
+        }
+        Event::RequestError { message, .. } => {
+            state.last_error = Some(message.clone());
+        }
+        Event::ArtifactReceived { kind, .. } if kind == "published_output" => {
+            state.last_error = None;
+        }
+        Event::MissionOutcome { outcome, .. } => {
+            state.cycles = state.cycles.saturating_add(1);
+            state.last_run_at_ms = Some(now_ms());
+            state.last_outcome_status = Some(outcome_status_name(outcome.status).to_string());
+            if outcome.status == MissionOutcomeStatus::Published {
+                state.last_error = None;
+            } else {
+                state.last_error = Some(outcome.message.clone());
+            }
+            state.next_wake_at_ms = None;
+        }
+        Event::ModuleExit { .. } => {
+            state.pid = None;
         }
         _ => {}
     }
 }
 
-#[cfg(test)]
-type SpawnChildHook =
-    fn(&str, &HashMap<String, String>, Option<&str>, bool) -> Result<tokio::process::Child>;
+fn next_mode_after_completion(completion: &MissionCompletion, config: &Config) -> MissionLoopMode {
+    match completion.outcome.status {
+        MissionOutcomeStatus::Published => completion
+            .snapshot
+            .describe
+            .as_ref()
+            .and_then(|describe| describe.poll_strategy.as_ref())
+            .map_or(MissionLoopMode::Idle, scheduled_mode_from_strategy),
+        MissionOutcomeStatus::RetryableFailure => {
+            if matches!(
+                completion
+                    .snapshot
+                    .last_host_decision
+                    .as_ref()
+                    .map(|decision| decision.next_attempt_policy),
+                Some(NextAttemptPolicy::ManualOnly)
+            ) {
+                return MissionLoopMode::AwaitingChange;
+            }
 
-#[cfg(test)]
-static SPAWN_CHILD_HOOK: std::sync::Mutex<Option<SpawnChildHook>> = std::sync::Mutex::new(None);
-
-fn spawn_child(
-    wasm: &str,
-    env: &HashMap<String, String>,
-    params: Option<&str>,
-    override_retry_gate: bool,
-) -> Result<tokio::process::Child> {
-    #[cfg(test)]
-    {
-        let hook = *SPAWN_CHILD_HOOK.lock().expect("spawn hook mutex poisoned");
-        if let Some(hook) = hook {
-            return hook(wasm, env, params, override_retry_gate);
+            completion
+                .snapshot
+                .cooldown_until_ms
+                .or(completion.snapshot.next_allowed_at_ms)
+                .map_or_else(
+                    || {
+                        completion
+                            .snapshot
+                            .describe
+                            .as_ref()
+                            .and_then(|describe| describe.poll_strategy.as_ref())
+                            .map_or_else(
+                                || MissionLoopMode::Scheduled {
+                                    wake_at_ms: now_ms()
+                                        .saturating_add(config.assurance.default_retry_after_ms),
+                                    override_retry_gate: false,
+                                },
+                                |strategy| {
+                                    scheduled_mode_with_backoff(
+                                        strategy,
+                                        completion.snapshot.consecutive_failures,
+                                    )
+                                },
+                            )
+                    },
+                    |wake_at_ms| MissionLoopMode::Scheduled {
+                        wake_at_ms,
+                        override_retry_gate: false,
+                    },
+                )
         }
+        MissionOutcomeStatus::OperatorActionRequired => MissionLoopMode::AwaitingOperator,
+        MissionOutcomeStatus::TerminalFailure => MissionLoopMode::TerminalFailure,
     }
-
-    let exe = std::env::current_exe()?;
-    let mut cmd = tokio::process::Command::new(&exe);
-    cmd.arg("run")
-        .arg(wasm)
-        .arg("--events")
-        .arg("--no-log-channel")
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null())
-        .kill_on_drop(true);
-
-    for (k, v) in env {
-        cmd.arg("-e").arg(format!("{k}={v}"));
-    }
-    if let Some(p) = params {
-        cmd.arg("-j").arg(p);
-    }
-    if override_retry_gate {
-        cmd.arg("--override-retry-gate");
-    }
-
-    Ok(cmd.spawn()?)
 }
 
-fn send_signal(pid: u32, sig: &str) {
-    let _ = std::process::Command::new("kill")
-        .arg(format!("-{sig}"))
-        .arg(pid.to_string())
-        .status();
+fn scheduled_mode_from_strategy(strategy: &PollStrategy) -> MissionLoopMode {
+    scheduled_mode_with_backoff(strategy, 0)
+}
+
+fn scheduled_mode_with_backoff(
+    strategy: &PollStrategy,
+    consecutive_failures: u32,
+) -> MissionLoopMode {
+    MissionLoopMode::Scheduled {
+        wake_at_ms: now_ms().saturating_add(strategy_backoff_ms(strategy, consecutive_failures)),
+        override_retry_gate: false,
+    }
+}
+
+fn strategy_backoff_ms(strategy: &PollStrategy, consecutive_failures: u32) -> u64 {
+    match strategy {
+        PollStrategy::FixedInterval { interval_secs } => u64::from(*interval_secs) * 1_000,
+        PollStrategy::ExponentialBackoff {
+            base_secs,
+            max_secs,
+        } => {
+            let shift = consecutive_failures.saturating_sub(1);
+            let factor = 1u64.checked_shl(shift).unwrap_or(u64::MAX);
+            u64::from(*base_secs)
+                .saturating_mul(factor)
+                .min(u64::from(*max_secs))
+                * 1_000
+        }
+        PollStrategy::Jittered {
+            base_secs,
+            jitter_secs,
+        } => u64::from((*base_secs).saturating_sub(*jitter_secs)) * 1_000,
+    }
+}
+
+fn launch_env_pairs(env: &HashMap<String, String>) -> Vec<(String, String)> {
+    env.iter()
+        .map(|(key, value)| (key.clone(), value.clone()))
+        .collect()
+}
+
+fn phase_name(phase: &MissionPhase) -> &'static str {
+    match phase {
+        MissionPhase::Idle => "idle",
+        MissionPhase::CoolingDown => "cooling_down",
+        MissionPhase::Fetching => "fetching",
+        MissionPhase::Parsing => "parsing",
+        MissionPhase::Publishing => "publishing",
+        MissionPhase::Failed => "failed",
+    }
+}
+
+const fn outcome_status_name(status: MissionOutcomeStatus) -> &'static str {
+    match status {
+        MissionOutcomeStatus::Published => "published",
+        MissionOutcomeStatus::RetryableFailure => "retryable_failure",
+        MissionOutcomeStatus::TerminalFailure => "terminal_failure",
+        MissionOutcomeStatus::OperatorActionRequired => "operator_action_required",
+    }
 }
 
 #[cfg(test)]

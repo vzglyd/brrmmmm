@@ -3,7 +3,7 @@ $schema: '../../.moon/cache/schemas/project.json'
 language: 'rust'
 
 project:
-  title: 'demo weather sidecar'
+  title: 'demo weather mission'
   description: 'Fetches current weather from Open-Meteo. No API key required. Demonstrates the brrmmmm host ABI.'
 
 tasks:
@@ -22,4 +22,4 @@ tasks:
       - 'Cargo.toml'
       - 'src/**/*'
     outputs:
-      - 'target/wasm32-wasip1/release/demo_weather_sidecar.wasm'
+      - 'target/wasm32-wasip1/release/demo_weather_mission.wasm'

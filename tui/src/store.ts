@@ -44,6 +44,8 @@ export function reducer(state: TuiState, event: BrrmmmmEvent): TuiState {
         hasStarted: true,
         abiVersion: event.abi_version,
         wasmPath: event.wasm_path,
+        isRunning: true,
+        error: null,
       };
 
     case "describe": {
@@ -210,7 +212,7 @@ export function reducer(state: TuiState, event: BrrmmmmEvent): TuiState {
     }
 
     case "module_exit":
-      return { ...state, isRunning: false, error: `Mission module exited: ${event.reason}` };
+      return { ...state, isRunning: false };
 
     default:
       return state;

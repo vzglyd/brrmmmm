@@ -33,6 +33,7 @@ pub enum Command {
     Watch {
         mission: String,
     },
+    WatchStatus,
     Status,
     Ping,
     Shutdown,
@@ -58,13 +59,32 @@ pub enum Response {
     Bye,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum MissionSchedulerState {
+    Launching,
+    Running,
+    Scheduled,
+    Held,
+    AwaitingChange,
+    AwaitingOperator,
+    TerminalFailure,
+    Idle,
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct MissionSummary {
     pub name: String,
+    pub state: MissionSchedulerState,
     pub phase: String,
     pub cycles: u64,
     pub wasm: String,
     pub held: bool,
     pub terminal: bool,
     pub pid: Option<u32>,
+    pub last_started_at_ms: Option<u64>,
+    pub last_run_at_ms: Option<u64>,
+    pub last_outcome_status: Option<String>,
+    pub next_wake_at_ms: Option<u64>,
+    pub last_error: Option<String>,
 }

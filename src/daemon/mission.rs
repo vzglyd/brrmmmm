@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use tokio::sync::{Mutex, broadcast, mpsc};
 
-use super::protocol::MissionSummary;
+use super::protocol::{MissionSchedulerState, MissionSummary};
 
 pub(super) const MAX_MISSIONS: usize = 128;
 pub(super) const BROADCAST_CAPACITY: usize = 1024;
@@ -20,23 +20,35 @@ pub(super) enum MissionCtrl {
 pub(super) struct MissionState {
     pub name: String,
     pub wasm: String,
+    pub state: MissionSchedulerState,
     pub held: bool,
     pub terminal: bool,
     pub phase: String,
     pub cycles: u64,
     pub pid: Option<u32>,
+    pub last_started_at_ms: Option<u64>,
+    pub last_run_at_ms: Option<u64>,
+    pub last_outcome_status: Option<String>,
+    pub next_wake_at_ms: Option<u64>,
+    pub last_error: Option<String>,
 }
 
 impl MissionState {
     pub fn summary(&self) -> MissionSummary {
         MissionSummary {
             name: self.name.clone(),
+            state: self.state,
             phase: self.phase.clone(),
             cycles: self.cycles,
             wasm: self.wasm.clone(),
             held: self.held,
             terminal: self.terminal,
             pid: self.pid,
+            last_started_at_ms: self.last_started_at_ms,
+            last_run_at_ms: self.last_run_at_ms,
+            last_outcome_status: self.last_outcome_status.clone(),
+            next_wake_at_ms: self.next_wake_at_ms,
+            last_error: self.last_error.clone(),
         }
     }
 }

@@ -14,11 +14,11 @@ Then build:
 
 ```bash
 # With Moon (from repo root)
-moon run demo-weather-sidecar:build
+moon run demo-weather-mission:build
 
 # Direct cargo (from this directory)
 cargo build --target wasm32-wasip1 --release
-# Output: target/wasm32-wasip1/release/demo_weather_sidecar.wasm
+# Output: target/wasm32-wasip1/release/demo_weather_mission.wasm
 ```
 
 ## Usage
@@ -26,7 +26,7 @@ cargo build --target wasm32-wasip1 --release
 Replace `$WASM` with the path to the built binary.
 
 ```bash
-WASM=target/wasm32-wasip1/release/demo_weather_sidecar.wasm
+WASM=target/wasm32-wasip1/release/demo_weather_mission.wasm
 
 # 1. Validate: check imports resolve and ABI version matches
 brrmmmm validate $WASM
@@ -66,8 +66,8 @@ brrmmmm run $WASM --once \
 
 ```
 logical_id:   brrmmmm.demo.weather
-name:         Demo Weather Mission Module
-abi_version:  3
+name:         Demo Weather Mission
+abi_version:  4
 poll_strategy: fixed_interval 300s
 artifacts:    raw_source_payload, normalized_payload, published_output
 ```

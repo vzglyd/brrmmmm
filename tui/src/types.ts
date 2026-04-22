@@ -63,6 +63,32 @@ export interface ModuleDescribe {
   artifact_types: string[];
 }
 
+export type MissionSchedulerState =
+  | "launching"
+  | "running"
+  | "scheduled"
+  | "held"
+  | "awaiting_change"
+  | "awaiting_operator"
+  | "terminal_failure"
+  | "idle";
+
+export interface DaemonMissionSummary {
+  name: string;
+  state: MissionSchedulerState;
+  phase: string;
+  cycles: number;
+  wasm: string;
+  held: boolean;
+  terminal: boolean;
+  pid?: number | null;
+  last_started_at_ms?: number | null;
+  last_run_at_ms?: number | null;
+  last_outcome_status?: string | null;
+  next_wake_at_ms?: number | null;
+  last_error?: string | null;
+}
+
 export type MissionPhase =
   | "idle"
   | "cooling_down"

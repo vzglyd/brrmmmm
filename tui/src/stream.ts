@@ -1,26 +1,26 @@
 import { existsSync, readFileSync } from "node:fs";
 import { createConnection, type Socket } from "node:net";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { createInterface } from "node:readline";
 
-import { type BrrmmmmEvent } from "./types.js";
+import {
+  type BrrmmmmEvent,
+  type DaemonMissionSummary,
+} from "./types.js";
 
-export type EventCallback = (event: BrrmmmmEvent) => void;
-export type ExitCallback = (code: number | null) => void;
-
-export interface StreamHandle {
+export interface WatchHandle {
   stop: () => void;
-  sendCommand: (cmd: string) => void;
 }
 
-interface LaunchArgs {
+export interface LaunchArgs {
   env: Record<string, string>;
   params?: string;
+  paramsSource: "none" | "json" | "file";
+  paramsPath?: string;
 }
 
-interface LaunchCommand {
-  type: "launch";
+export interface LaunchRequest {
   wasm: string;
   name?: string;
   env: Record<string, string>;
@@ -30,171 +30,247 @@ interface LaunchCommand {
 type DaemonCommand =
   | LaunchCommand
   | { type: "abort"; mission: string; reason: string }
+  | { type: "hold"; mission: string; reason: string }
+  | { type: "resume"; mission: string }
+  | { type: "rescue"; mission: string; action: "retry" | "abort"; reason: string }
   | { type: "status" }
-  | { type: "watch"; mission: string };
+  | { type: "watch"; mission: string }
+  | { type: "watch_status" };
+
+interface LaunchCommand {
+  type: "launch";
+  wasm: string;
+  name?: string;
+  env: Record<string, string>;
+  params?: string;
+}
 
 type DaemonResponse =
   | { type: "launched"; mission: string }
   | { type: "ok"; mission: string }
   | { type: "error"; message: string }
-  | { type: "status"; missions: Array<{ name: string }> }
+  | { type: "full"; message: string }
+  | { type: "status"; missions: DaemonMissionSummary[] }
   | { type: "event"; mission: string; line: string };
 
-/**
- * Connect to the daemon socket, launch a mission, and stream its NDJSON events.
- * The `f` command relaunches the mission with the latest in-memory params.
- */
-export function spawnEventStream(
-  _rustBin: string,
-  wasmPath: string,
-  extraArgs: string[],
-  onEvent: EventCallback,
-  onExit: ExitCallback
-): StreamHandle {
-  const socketPath = daemonSocketPath();
-  const launchArgs = parseLaunchArgs(extraArgs);
-  let missionName: string | null = null;
-  let latestParams = launchArgs.params;
-  let stopped = false;
-  let restarting = false;
-  let watchSocket: Socket | null = null;
-  let watchGeneration = 0;
+export function daemonSocketPath(): string {
+  return join(homedir(), ".brrmmmm", "daemon.sock");
+}
 
-  void bootstrap();
+export function resolveLaunchWasmPath(wasmPath: string): string {
+  return resolve(wasmPath);
+}
 
-  return {
-    stop: () => {
-      stopped = true;
-      closeWatch();
-    },
-    sendCommand: (cmd: string) => {
-      if (cmd.startsWith("params_json ")) {
-        latestParams = cmd.slice("params_json ".length).trim() || undefined;
-        return;
+export function parseLaunchArgs(extraArgs: string[]): LaunchArgs {
+  const env: Record<string, string> = {};
+  let params: string | undefined;
+  let paramsSource: LaunchArgs["paramsSource"] = "none";
+  let paramsPath: string | undefined;
+
+  for (let index = 0; index < extraArgs.length; index += 1) {
+    const arg = extraArgs[index];
+    if (arg === "-e" || arg === "--env") {
+      const value = extraArgs[index + 1];
+      index += 1;
+      if (!value) {
+        continue;
       }
-      if (cmd === "force") {
-        void restartMission();
+      const split = value.indexOf("=");
+      if (split > 0) {
+        env[value.slice(0, split)] = value.slice(split + 1);
       }
-    },
-  };
+      continue;
+    }
 
-  async function bootstrap(): Promise<void> {
-    try {
-      missionName = await launchMission();
-      openWatch(missionName);
-    } catch (error) {
-      emitFatalError(asErrorMessage(error));
+    if (arg === "-j" || arg === "--params-json") {
+      params = extraArgs[index + 1];
+      paramsSource = params ? "json" : "none";
+      index += 1;
+      continue;
+    }
+
+    if (arg === "-f" || arg === "--params-file") {
+      paramsPath = extraArgs[index + 1];
+      index += 1;
+      if (paramsPath && existsSync(paramsPath)) {
+        params = readFileSync(paramsPath, "utf8");
+        paramsSource = "file";
+      }
     }
   }
 
-  async function restartMission(): Promise<void> {
-    if (stopped || restarting || !missionName) {
-      return;
-    }
-    restarting = true;
-    const currentMission = missionName;
-    closeWatch();
-    try {
-      await sendDaemonCommand(socketPath, {
-        type: "abort",
-        mission: currentMission,
-        reason: "TUI refresh requested",
-      }).catch(() => undefined);
-      await waitForMissionAbsence(socketPath, currentMission);
-      missionName = await launchMission(currentMission);
-      openWatch(missionName);
-    } catch (error) {
-      emitFatalError(asErrorMessage(error));
-    } finally {
-      restarting = false;
-    }
+  return { env, params, paramsSource, paramsPath };
+}
+
+export async function launchMission(request: LaunchRequest): Promise<string> {
+  const response = await sendDaemonCommand({
+    type: "launch",
+    wasm: resolveLaunchWasmPath(request.wasm),
+    name: request.name,
+    env: request.env,
+    params: request.params,
+  });
+  if (response.type === "launched") {
+    return response.mission;
   }
-
-  async function launchMission(name?: string): Promise<string> {
-    const response = await sendDaemonCommand(socketPath, {
-      type: "launch",
-      wasm: wasmPath,
-      name,
-      env: launchArgs.env,
-      params: latestParams,
-    });
-    if (response.type === "launched") {
-      return response.mission;
-    }
-    if (response.type === "error") {
-      throw new Error(response.message);
-    }
-    throw new Error("unexpected response from daemon launch");
+  if (response.type === "error" || response.type === "full") {
+    throw new Error(response.message);
   }
+  throw new Error("unexpected response from daemon launch");
+}
 
-  function openWatch(mission: string): void {
-    const generation = ++watchGeneration;
-    const socket = createConnection(socketPath);
-    let failed = false;
-    watchSocket = socket;
-    const lines = createInterface({ input: socket });
+export async function rescueRetryMission(mission: string): Promise<void> {
+  await expectOkResponse({
+    type: "rescue",
+    mission,
+    action: "retry",
+    reason: "TUI force refresh requested",
+  });
+}
 
-    socket.on("connect", () => {
-      socket.write(`${JSON.stringify({ type: "watch", mission })}\n`);
-    });
+export async function abortMission(mission: string, reason: string): Promise<void> {
+  await expectOkResponse({
+    type: "abort",
+    mission,
+    reason,
+  });
+}
 
-    lines.on("line", (line) => {
-      if (generation !== watchGeneration || !line.trim()) {
-        return;
-      }
-      let response: DaemonResponse;
-      try {
-        response = JSON.parse(line) as DaemonResponse;
-      } catch {
-        return;
-      }
+export async function holdMission(mission: string, reason: string): Promise<void> {
+  await expectOkResponse({
+    type: "hold",
+    mission,
+    reason,
+  });
+}
+
+export async function resumeMission(mission: string): Promise<void> {
+  await expectOkResponse({
+    type: "resume",
+    mission,
+  });
+}
+
+export async function fetchMissionStatus(): Promise<DaemonMissionSummary[]> {
+  const response = await sendDaemonCommand({ type: "status" });
+  if (response.type === "status") {
+    return response.missions;
+  }
+  if (response.type === "error") {
+    throw new Error(response.message);
+  }
+  throw new Error("unexpected response from daemon status");
+}
+
+export function watchMission(
+  mission: string,
+  onEvent: (event: BrrmmmmEvent) => void,
+  onError: (message: string) => void,
+  onClose?: () => void,
+): WatchHandle {
+  return watchDaemonStream(
+    { type: "watch", mission },
+    (response) => {
       if (response.type === "event") {
         try {
           onEvent(JSON.parse(response.line) as BrrmmmmEvent);
         } catch {
           // Ignore malformed daemon event payloads.
         }
-      } else if (response.type === "error") {
-        failed = true;
-        emitFatalError(`daemon watch error: ${response.message}`);
+        return;
       }
-    });
-
-    socket.on("error", (error) => {
-      if (!stopped && generation === watchGeneration) {
-        failed = true;
-        emitFatalError(`daemon socket error: ${error.message}`);
+      if (response.type === "error") {
+        onError(`mission watch error: ${response.message}`);
       }
-    });
-
-    socket.on("close", () => {
-      lines.close();
-      if (!stopped && generation === watchGeneration && !restarting && !failed) {
-        onExit(0);
-      }
-    });
-  }
-
-  function closeWatch(): void {
-    watchGeneration += 1;
-    watchSocket?.destroy();
-    watchSocket = null;
-  }
-
-  function emitFatalError(message: string): void {
-    onEvent({
-      type: "fatal_error",
-      ts: new Date().toISOString(),
-      message,
-    });
-  }
+    },
+    onError,
+    onClose,
+  );
 }
 
-async function sendDaemonCommand(
-  socketPath: string,
-  command: DaemonCommand
-): Promise<DaemonResponse> {
-  const socket = await connectSocket(socketPath);
+export function watchDaemonStatus(
+  onStatus: (missions: DaemonMissionSummary[]) => void,
+  onError: (message: string) => void,
+): WatchHandle {
+  return watchDaemonStream(
+    { type: "watch_status" },
+    (response) => {
+      if (response.type === "status") {
+        onStatus(response.missions);
+        return;
+      }
+      if (response.type === "error") {
+        onError(response.message);
+      }
+    },
+    onError,
+  );
+}
+
+async function expectOkResponse(command: DaemonCommand): Promise<void> {
+  const response = await sendDaemonCommand(command);
+  if (response.type === "ok") {
+    return;
+  }
+  if (response.type === "error" || response.type === "full") {
+    throw new Error(response.message);
+  }
+  throw new Error("unexpected response from daemon");
+}
+
+function watchDaemonStream(
+  command: DaemonCommand,
+  onResponse: (response: DaemonResponse) => void,
+  onError: (message: string) => void,
+  onClose?: () => void,
+): WatchHandle {
+  const socketPath = daemonSocketPath();
+  let stopped = false;
+  let failed = false;
+  const socket = createConnection(socketPath);
+  const lines = createInterface({ input: socket });
+
+  socket.on("connect", () => {
+    socket.write(`${JSON.stringify(command)}\n`);
+  });
+
+  lines.on("line", (line) => {
+    if (!line.trim()) {
+      return;
+    }
+    try {
+      onResponse(JSON.parse(line) as DaemonResponse);
+    } catch (error) {
+      failed = true;
+      onError(asErrorMessage(error));
+    }
+  });
+
+  socket.on("error", (error) => {
+    if (stopped) {
+      return;
+    }
+    failed = true;
+    onError(asErrorMessage(error));
+  });
+
+  socket.on("close", () => {
+    lines.close();
+    if (!stopped && !failed) {
+      onClose?.();
+    }
+  });
+
+  return {
+    stop: () => {
+      stopped = true;
+      socket.destroy();
+    },
+  };
+}
+
+async function sendDaemonCommand(command: DaemonCommand): Promise<DaemonResponse> {
+  const socket = await connectSocket(daemonSocketPath());
   const lines = createInterface({ input: socket });
 
   try {
@@ -239,7 +315,7 @@ async function sendDaemonCommand(
 async function connectSocket(socketPath: string): Promise<Socket> {
   if (!existsSync(socketPath)) {
     throw new Error(
-      `cannot connect to brrmmmm daemon at ${socketPath}\nhint: run \`brrmmmm daemon start\``
+      `cannot connect to brrmmmm daemon at ${socketPath}\nrun \`brrmmmm daemon start\` first`,
     );
   }
 
@@ -256,67 +332,6 @@ async function connectSocket(socketPath: string): Promise<Socket> {
     socket.once("error", onError);
     socket.once("connect", onConnect);
   });
-}
-
-async function waitForMissionAbsence(
-  socketPath: string,
-  mission: string
-): Promise<void> {
-  for (let attempt = 0; attempt < 80; attempt += 1) {
-    const response = await sendDaemonCommand(socketPath, { type: "status" });
-    if (
-      response.type === "status" &&
-      !response.missions.some((entry) => entry.name === mission)
-    ) {
-      return;
-    }
-    await new Promise((resolve) => {
-      setTimeout(resolve, 50);
-    });
-  }
-  throw new Error(`mission '${mission}' did not leave the daemon registry`);
-}
-
-function parseLaunchArgs(extraArgs: string[]): LaunchArgs {
-  const env: Record<string, string> = {};
-  let params: string | undefined;
-
-  for (let index = 0; index < extraArgs.length; index += 1) {
-    const arg = extraArgs[index];
-    if (arg === "-e" || arg === "--env") {
-      const value = extraArgs[index + 1];
-      index += 1;
-      if (!value) {
-        continue;
-      }
-      const split = value.indexOf("=");
-      if (split > 0) {
-        env[value.slice(0, split)] = value.slice(split + 1);
-      }
-      continue;
-    }
-
-    if (arg === "-j" || arg === "--params-json") {
-      params = extraArgs[index + 1];
-      index += 1;
-      continue;
-    }
-
-    if (arg === "-f" || arg === "--params-file") {
-      const path = extraArgs[index + 1];
-      index += 1;
-      if (path && existsSync(path)) {
-        params = readFileSync(path, "utf8");
-      }
-    }
-  }
-
-  return params ? { env, params } : { env };
-}
-
-function daemonSocketPath(): string {
-  const base = process.env["BRRMMMM_HOME"] ?? join(homedir(), ".brrmmmm");
-  return join(base, "daemon.sock");
 }
 
 function asErrorMessage(error: unknown): string {

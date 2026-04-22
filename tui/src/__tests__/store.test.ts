@@ -119,7 +119,7 @@ describe("reducer", () => {
   it("module_exit sets isRunning false", () => {
     const s = reducer(makeState(), { type: "module_exit", ts: TS, reason: "done" });
     expect(s.isRunning).toBe(false);
-    expect(s.error).toContain("done");
+    expect(s.error).toBeNull();
   });
 
   it("fatal_error records transport failure without inventing module exit", () => {

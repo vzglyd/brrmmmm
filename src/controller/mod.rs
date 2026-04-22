@@ -294,9 +294,11 @@ fn reset_runtime_state_for_start(runtime_state: &mut MissionRuntimeState) {
 fn build_engine_and_module(wasm_path: &str, wasm_bytes: &[u8]) -> Result<(Engine, Module)> {
     let mut engine_config = WasmtimeConfig::new();
     engine_config.epoch_interruption(true);
-    engine_config.async_support(true);
-    let engine = Engine::new(&engine_config).context("create wasmtime engine")?;
+    let engine = Engine::new(&engine_config)
+        .map_err(|e| anyhow::anyhow!(e))
+        .context("create wasmtime engine")?;
     let module = Module::from_binary(&engine, wasm_bytes)
+        .map_err(|e| anyhow::anyhow!(e))
         .with_context(|| format!("compile WASM module: {wasm_path}"))?;
     Ok((engine, module))
 }

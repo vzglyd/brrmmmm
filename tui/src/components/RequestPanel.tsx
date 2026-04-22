@@ -42,7 +42,7 @@ export function RequestPanel({ request, requests, artifacts, describe, hasStarte
           key: "waiting",
           node: (
             <Text dimColor wrap="truncate">
-              {hasStarted ? "Waiting for first cycle..." : "Waiting for daemon launch..."}
+              {hasStarted ? "Waiting for first cycle..." : "Waiting for mission start..."}
             </Text>
           ),
         },

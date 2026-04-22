@@ -27,7 +27,7 @@ struct WeatherParams {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn brrmmmm_module_abi_version() -> u32 {
-    3
+    4
 }
 
 #[unsafe(no_mangle)]
@@ -113,9 +113,17 @@ pub extern "C" fn brrmmmm_module_start() {
         "is_day": cw.is_day == 1
     });
     publish("published_output", published.to_string().as_bytes());
-    report_outcome("published", "published_output", "weather module published output");
+    report_outcome(
+        "published",
+        "published_output",
+        "weather module published output",
+    );
 
-    log(format!("done: {location} {temp}°C {condition}", temp = cw.temperature).as_str());
+    log(format!(
+        "done: {location} {temp}°C {condition}",
+        temp = cw.temperature
+    )
+    .as_str());
 }
 
 fn network_call(request: serde_json::Value) -> Result<serde_json::Value, String> {
@@ -146,7 +154,9 @@ fn host_call_json(
     let mut buf = vec![0u8; len as usize];
     let read = unsafe { host_response_read(buf.as_mut_ptr() as i32, len) };
     if read != len {
-        return Err(format!("host response read mismatch: got={read} want={len}"));
+        return Err(format!(
+            "host response read mismatch: got={read} want={len}"
+        ));
     }
 
     let response: serde_json::Value =

@@ -1,5 +1,5 @@
 [package]
-name = "demo-weather-sidecar"
+name = "demo-weather-mission"
 version = "0.1.0"
 edition = "2024"
 publish = false

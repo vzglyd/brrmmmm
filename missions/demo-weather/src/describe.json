@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
   "logical_id": "brrmmmm.demo.weather",
-  "name": "Demo Weather Sidecar",
+  "name": "Demo Weather Mission",
   "description": "Fetches current temperature from Open-Meteo (no API key required). Demonstrates the brrmmmm host ABI.",
-  "abi_version": 3,
+  "abi_version": 4,
   "run_modes": ["managed_polling", "interactive"],
   "state_persistence": "host_persisted",
   "required_env_vars": [],
@@ -15,6 +15,10 @@
     {
       "name": "LONGITUDE",
       "description": "Decimal longitude (default: 13.41)"
+    },
+    {
+      "name": "LOCATION_NAME",
+      "description": "Human-readable label used when params.location_name is not provided."
     }
   ],
   "params": {
@@ -39,6 +43,7 @@
     "authority": "host_persisted",
     "min_interval_ms": 60000
   },
+  "acquisition_timeout_secs": 30,
   "artifact_types": [
     "raw_source_payload",
     "normalized_payload",
