@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { Box, Text, useApp, useInput } from "ink";
 import { existsSync, readFileSync, readdirSync } from "node:fs";
-import { resolve, dirname } from "node:path";
+import { basename, dirname, resolve } from "node:path";
 
 import {
   type BrrmmmmEvent,
@@ -73,8 +73,8 @@ function computeLauncherFields(describe: ModuleDescribe | null): LauncherField[]
   const paramFields = describe?.params?.fields ?? [];
   const fields =
     paramFields.length > 0
-      ? ["wasm", "env", ...paramFields.map((f) => `param:${f.key}`)]
-      : ["wasm", "env", "paramsSource", "paramsValue"];
+      ? ["wasm", "missionName", "env", ...paramFields.map((f) => `param:${f.key}`)]
+      : ["wasm", "missionName", "env", "paramsSource", "paramsValue"];
 
   return [...fields, ARM_BUTTON_FIELD, CANCEL_BUTTON_FIELD];
 }
@@ -123,7 +123,7 @@ export function App({ initialWasmPath, rustBin: _rustBin, extraArgs }: AppProps)
   const [actionError, setActionError] = useState<string | null>(null);
   const [launcher, setLauncher] = useState<LauncherState>(() => ({
     wasmPath: initialWasmPath ?? "",
-    missionName: "",
+    missionName: suggestMissionName(initialWasmPath ?? ""),
     envText: formatEnv(parsedArgs.env),
     inspectedDescribe: null,
     inspecting: false,
@@ -620,7 +620,15 @@ export function App({ initialWasmPath, rustBin: _rustBin, extraArgs }: AppProps)
         openFileBrowserAtDir(newDir);
       } else {
         const fullPath = resolve(fileBrowser.dir, entry.name);
-        setLauncher((current) => ({ ...current, wasmPath: fullPath, error: null }));
+        setLauncher((current) => ({
+          ...current,
+          wasmPath: fullPath,
+          missionName:
+            current.missionName.trim().length > 0
+              ? current.missionName
+              : suggestMissionName(fullPath),
+          error: null,
+        }));
         setFileBrowser(null);
       }
     }
@@ -791,6 +799,8 @@ export function App({ initialWasmPath, rustBin: _rustBin, extraArgs }: AppProps)
       const key =
         launcherField === "wasm"
           ? "wasmPath"
+          : launcherField === "missionName"
+            ? "missionName"
           : launcherField === "env"
             ? "envText"
             : "paramsValue";
@@ -1146,6 +1156,11 @@ function LauncherDialog({
         value={state.wasmPath}
         selected={field === "wasm"}
       />
+      <LauncherRow
+        label="Mission name"
+        value={state.missionName}
+        selected={field === "missionName"}
+      />
       {fileBrowser ? (
         <FileBrowserPanel browser={fileBrowser} />
       ) : (
@@ -1379,6 +1394,8 @@ function buildLaunchRequest(state: LauncherState) {
   if (!wasmPath.endsWith(".wasm")) {
     throw new Error("WASM path must point to a .wasm mission module");
   }
+  const missionName = state.missionName.trim();
+  validateMissionName(missionName);
 
   let params: string | undefined;
   const schemaFields = state.inspectedDescribe?.params?.fields ?? [];
@@ -1421,10 +1438,41 @@ function buildLaunchRequest(state: LauncherState) {
   }
 
   return {
+    name: missionName,
     wasm: wasmPath,
     env: parseEnvText(state.envText),
     params,
   };
+}
+
+function suggestMissionName(wasmPath: string): string {
+  const trimmed = wasmPath.trim();
+  if (!trimmed) {
+    return "";
+  }
+
+  const filename = basename(trimmed);
+  if (!filename.endsWith(".wasm")) {
+    return "";
+  }
+
+  return filename
+    .slice(0, -".wasm".length)
+    .replace(/[^A-Za-z0-9._-]+/g, "_")
+    .replace(/^_+|_+$/g, "")
+    .slice(0, 128);
+}
+
+function validateMissionName(name: string): void {
+  if (!name) {
+    throw new Error("mission name is required");
+  }
+  if (name === "." || name === "..") {
+    throw new Error("mission name must not be '.' or '..'");
+  }
+  if (!/^[A-Za-z0-9._-]+$/.test(name)) {
+    throw new Error("mission name may only use letters, numbers, '.', '_' or '-'");
+  }
 }
 
 function rotateParamsSource(

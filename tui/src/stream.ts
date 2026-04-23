@@ -23,7 +23,7 @@ export interface LaunchArgs {
 
 export interface LaunchRequest {
   wasm: string;
-  name?: string;
+  name: string;
   env: Record<string, string>;
   params?: string;
 }
@@ -42,7 +42,7 @@ type DaemonCommand =
 interface LaunchCommand {
   type: "launch";
   wasm: string;
-  name?: string;
+  name: string;
   env: Record<string, string>;
   params?: string;
 }

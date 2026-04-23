@@ -975,7 +975,7 @@ async fn handle_connection(
 async fn cmd_launch(
     context: LaunchContext<'_>,
     launch: MissionLaunchConfig,
-    name: Option<String>,
+    name: String,
 ) -> Response {
     let LaunchContext {
         home,
@@ -1000,23 +1000,19 @@ async fn cmd_launch(
         };
     }
 
-    let mission_name = if let Some(name) = name {
-        if reg.taken_names.contains(&name) {
-            return Response::Error {
-                message: format!("mission name '{name}' already taken"),
-            };
-        }
-        name
-    } else {
-        match crate::names::generate_mission_name(&reg.taken_names) {
-            Some(name) => name,
-            None => {
-                return Response::Error {
-                    message: "could not generate a unique mission name".into(),
-                };
-            }
-        }
-    };
+    if let Err(error) = crate::names::validate_mission_name(&name) {
+        return Response::Error {
+            message: format!("mission name '{name}' {error}"),
+        };
+    }
+
+    if reg.taken_names.contains(&name) {
+        return Response::Error {
+            message: format!("mission name '{name}' already taken"),
+        };
+    }
+
+    let mission_name = name;
 
     if let Err(error) = prepare_mission_storage(home, &mission_name) {
         return Response::Error {

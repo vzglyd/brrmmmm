@@ -146,6 +146,7 @@ describe("terminal rendering", () => {
     );
 
     expect(output).toContain("Arm Mission");
+    expect(output).toContain("Mission name");
     expect(output).toContain("ARM");
     expect(output).toContain("CANCEL");
   });
@@ -203,7 +204,7 @@ describe("terminal rendering", () => {
     );
 
     await session.wait(25);
-    await pressKeys(session, ["\u001B[B", "\u001B[B", "\u001B[B", "\u001B[B", "\r"]);
+    await pressKeys(session, ["\u001B[B", "\u001B[B", "\u001B[B", "\u001B[B", "\u001B[B", "\r"]);
     await session.wait(100);
 
     const output = session.read();
@@ -213,6 +214,9 @@ describe("terminal rendering", () => {
 
     expect(output).toContain("demo-mission");
     expect(output).toContain("state: launching");
+    expect(vi.mocked(stream.launchMission)).toHaveBeenCalledWith(
+      expect.objectContaining({ name: "demo_weather_sidecar" }),
+    );
   });
 });
 

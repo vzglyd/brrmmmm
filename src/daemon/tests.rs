@@ -23,7 +23,7 @@ async fn launch_rejects_relative_wasm_paths() {
         &sock,
         &Command::Launch {
             wasm: "missions/demo-weather/demo.wasm".to_string(),
-            name: Some("solar-wind".to_string()),
+            name: "solar-wind".to_string(),
             env: HashMap::new(),
             params: None,
         },
@@ -55,7 +55,7 @@ async fn published_mission_is_scheduled_from_declared_poll_strategy() {
         &sock,
         &Command::Launch {
             wasm: wasm.to_string_lossy().into_owned(),
-            name: Some(mission.to_string()),
+            name: mission.to_string(),
             env: HashMap::new(),
             params: None,
         },
@@ -128,7 +128,7 @@ async fn operator_action_mission_waits_for_rescue_and_retry_relaunches_it() {
         &sock,
         &Command::Launch {
             wasm: wasm.to_string_lossy().into_owned(),
-            name: Some(mission.to_string()),
+            name: mission.to_string(),
             env: HashMap::new(),
             params: None,
         },
@@ -217,7 +217,7 @@ async fn watch_status_streams_live_mission_updates() {
         &sock,
         &Command::Launch {
             wasm: wasm.to_string_lossy().into_owned(),
-            name: Some(mission.to_string()),
+            name: mission.to_string(),
             env: HashMap::new(),
             params: None,
         },

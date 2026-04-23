@@ -40,7 +40,7 @@ EXAMPLES:
   brrmmmm explain  mission.json
   brrmmmm daemon install
   brrmmmm daemon start
-  brrmmmm launch   mission-module.wasm
+  brrmmmm launch   mission-module.wasm --name vrx64-crypto
   brrmmmm missions
   brrmmmm hold     solar-wind --reason \"maintenance window\"
   brrmmmm resume   solar-wind
@@ -164,9 +164,9 @@ pub enum Commands {
         #[arg(value_name = "WASM", value_hint = ValueHint::FilePath)]
         wasm_path: PathBuf,
 
-        /// Assign a specific mission name instead of a generated one
+        /// Stable daemon mission name used for ~/.brrmmmm/missions/<name>/...
         #[arg(long)]
-        name: Option<String>,
+        name: String,
 
         /// Set environment variable (KEY=VALUE)
         #[arg(short = 'e', long, value_name = "KEY=VALUE", value_parser = parse_key_val)]

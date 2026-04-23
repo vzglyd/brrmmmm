@@ -9,8 +9,7 @@ use brrmmmm::abi::MissionModuleDescribe;
 pub enum Command {
     Launch {
         wasm: String,
-        #[serde(default)]
-        name: Option<String>,
+        name: String,
         #[serde(default)]
         env: HashMap<String, String>,
         #[serde(default)]

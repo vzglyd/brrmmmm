@@ -7,7 +7,7 @@ use crate::daemon::{DaemonClient, DaemonCommand, DaemonResponse, socket_path};
 
 pub fn cmd_launch(
     wasm: String,
-    name: Option<String>,
+    name: String,
     env: &[String],
     params: Option<String>,
 ) -> Result<()> {
